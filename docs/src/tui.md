@@ -153,17 +153,19 @@ set in `config.toml` for the side conversation only.
 
 ## Approval prompt
 
-In `safe` mode, Koda asks before executing tools that change anything. In
-`auto` mode, it still asks before destructive ones.
-The menu area shows the tool name, the action detail, and hotkeys:
+In Auto, Koda asks before a destructive command, a command that asks to
+leave the sandbox, and a file outside the project. The menu area shows the
+tool name, the action detail, and hotkeys:
 
 ```
   Bash  rm -rf dist/
-  [y] approve   [n] reject   [f] feedback   [a] auto   [esc] stop
+  [y] approve  [n] reject  [f] feedback  [esc] stop
 ```
 
-For a local change inside the project, `[s] this session` also appears: yes,
-and don't ask again this session for the same command or file.
+For a command leaving the sandbox with a `prefix_rule` (`git commit`, say),
+or a web page, `[s] this session` also appears: yes, and don't ask again this
+session for commands with that prefix, or for that site. See
+[Allow for this session](./approval.md#allow-for-this-session).
 
 See [Approval & trust modes](./approval.md) for the full reference.
 

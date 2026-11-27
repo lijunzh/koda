@@ -1,7 +1,9 @@
 //! Bash command safety classification.
 //!
-//! Classifies shell commands by effect: ReadOnly (auto-approve),
-//! LocalMutation (default for unknown), or Destructive (always confirm).
+//! Classifies shell commands as Destructive (asks first, even in Auto) or a
+//! LocalMutation (runs in the sandbox). There is no read-only verdict: as in
+//! Codex since it retired its known-safe list (2026-08), the sandbox decides
+//! what a command may do, and Plan runs every command in a read-only one.
 //!
 //! Pipeline (#807):
 //!
@@ -9,8 +11,7 @@
 //!    classified on its own, recursively; a destructive one makes the command
 //!    destructive. So does one whose output runs as a command (in the command
 //!    position, or handed to a shell or interpreter), and one that isn't
-//!    closed. The rest is classified with a plain word in its place, and a
-//!    command with a substitution is never ReadOnly. Until 2026-11 any
+//!    closed. The rest is classified with a plain word in its place. Until 2026-11 any
 //!    substitution was destructive, so a wait loop such as
 //!    `for i in $(seq 1 20); do …; sleep 1; done` needed approval in Auto.
 //! 1. **Raw structural check** — `RAW_DANGER_PATTERNS` matched against the
@@ -18,9 +19,10 @@
 //! 2. **Write side-effect check** — quote-aware `>` / `>>` / `| tee` detection.
 //! 3. **Token-level check** — each pipeline segment is tokenised with
 //!    [`shlex::split`] (POSIX); tokens matched against `DANGER_CHECKS` (typed
-//!    enum, not flat substrings), looking inside wrappers (`env`, `nohup`,
-//!    `xargs`, …), `sh -c`, `eval` and `find -exec`. Unparseable segments
-//!    fail-open → LocalMutation.
+//!    enum, not flat substrings), by the command's basename and past git's
+//!    global options, looking inside wrappers (`env`, `nohup`, `xargs`, …),
+//!    `sh -c`, `eval`, `trap` and `find -exec`; a shell reading its input
+//!    (`curl x |sh`) is destructive. Unparseable segments → LocalMutation.
 //!
 //! What is Destructive follows Codex (since 2026-11): a forced `rm` is the
 //! one local file operation that asks. Other changes inside the project run
@@ -41,122 +43,6 @@ use crate::ToolEffect;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// ── Read-only allowlist ───────────────────────────────────────────────────────
-
-/// Commands that are truly read-only — no filesystem writes, no state changes.
-const READ_ONLY_PREFIXES: &[&str] = &[
-    // File inspection
-    "cat ",
-    "head ",
-    "tail ",
-    "less ",
-    "more ",
-    "wc ",
-    "file ",
-    "stat ",
-    "bat ",
-    // Directory listing
-    "ls",
-    "tree",
-    "du ",
-    "df",
-    "pwd",
-    // Changing directory reads nothing and changes nothing. Leaving the
-    // project is `bash_path_lint`'s to catch; with `git` in the same
-    // command it is a change (see `cd_with_git`), as in Claude Code.
-    "cd",
-    // Search
-    "grep ",
-    "rg ",
-    "ag ",
-    "find ",
-    "fd ",
-    "fzf",
-    // System info
-    "echo ",
-    "printf ",
-    "whoami",
-    "hostname",
-    "uname",
-    "date",
-    "which ",
-    "type ",
-    "command -v ",
-    // NOTE: `env` deliberately excluded — it's a command-runner, not
-    // read-only. `env cargo build` and `env FOO=bar rm file` would auto-approve
-    // in Safe mode if listed here. See #970 for the full analysis. Bare `env`
-    // (printing environment variables) now requires approval; `printenv` is
-    // the cleaner read-only alternative and remains in the allowlist.
-    "printenv",
-    // Version checks
-    "rustc --version",
-    "node --version",
-    "npm --version",
-    "python --version",
-    "python3 --version",
-    // Git read-only
-    "git status",
-    "git log",
-    "git diff",
-    "git branch",
-    "git show",
-    "git remote",
-    "git stash list",
-    "git tag",
-    "git describe",
-    "git rev-parse",
-    "git ls-files",
-    "git blame",
-    // Docker read-only
-    "docker ps",
-    "docker images",
-    "docker logs",
-    "docker compose ps",
-    "docker compose logs",
-    // Text processing (stdout-only; sed -i caught in DANGER_CHECKS)
-    "sort ",
-    "uniq ",
-    "cut ",
-    "awk ",
-    "sed ",
-    "tr ",
-    "diff ",
-    "jq ",
-    "yq ",
-    // NOTE: `xargs` deliberately excluded — it's a command-runner, not a
-    // read-only filter. `xargs rm` would auto-approve in Safe mode if listed
-    // here. See #968 for the discovery and #969 for the broader sweep of
-    // bare-command misclassification fixes.
-    "dirname ",
-    "basename ",
-    "realpath ",
-    "readlink ",
-    // Misc
-    "tput ",
-    "true",
-    "false",
-    "test ",
-    "[ ",
-    // GitHub CLI read-only (#518, #525)
-    "gh issue view",
-    "gh issue list",
-    "gh issue status",
-    "gh pr view",
-    "gh pr list",
-    "gh pr status",
-    "gh pr checks",
-    "gh pr diff",
-    "gh repo view",
-    "gh repo clone",
-    "gh release list",
-    "gh release view",
-    "gh run view",
-    "gh run list",
-    "gh run watch",
-    "gh auth status",
-    "gh auth list",
-];
-
 // ── Token-level danger checks ─────────────────────────────────────────────────
 
 /// Structured representation of a dangerous command pattern.
@@ -175,6 +61,9 @@ enum DangerCheck {
     CmdSubFlag(&'static str, &'static str, &'static str),
     /// Command + subcommand + exact second token: `gh pr merge`, …
     CmdSubSub(&'static str, &'static str, &'static str),
+    /// Command + subcommand + an argument starting so: `git push origin
+    /// +main` (a forced refspec), `git push origin :old` (a deletion).
+    CmdSubArgStarts(&'static str, &'static str, &'static str),
 }
 
 /// Returns `true` if token `t` matches `flag` — exact, long-flag, or
@@ -198,6 +87,11 @@ fn options(args: &[String]) -> impl Iterator<Item = &String> {
 
 impl DangerCheck {
     fn matches(&self, tokens: &[String]) -> bool {
+        let tokens = normalised(tokens);
+        self.matches_normalised(&tokens)
+    }
+
+    fn matches_normalised(&self, tokens: &[String]) -> bool {
         use DangerCheck::*;
         let Some(cmd) = tokens.first() else {
             return false;
@@ -216,8 +110,52 @@ impl DangerCheck {
                     && tokens.get(1).map(|s| s.as_str()) == Some(sub)
                     && tokens.get(2).map(|s| s.as_str()) == Some(sub2)
             }
+            CmdSubArgStarts(c, sub, start) => {
+                cmd == c
+                    && tokens.get(1).map(|s| s.as_str()) == Some(sub)
+                    && tokens
+                        .get(2..)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|t| !t.starts_with('-') && t.starts_with(start))
+            }
         }
     }
+}
+
+/// A command's last path component: `/bin/rm` is `rm`, as Codex matches it.
+fn basename(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+/// Whether `word` names a shell.
+fn is_shell(word: &str) -> bool {
+    ["sh", "bash", "zsh", "dash", "ksh", "fish"].contains(&basename(word))
+}
+
+/// `tokens` with the command by its basename and, for git, its global
+/// options left out (`git -C dir -c k=v push` is `git push`), so a check
+/// names the command once.
+fn normalised(tokens: &[String]) -> Vec<String> {
+    let Some(first) = tokens.first() else {
+        return Vec::new();
+    };
+    let cmd = basename(first).to_string();
+    let mut rest = &tokens[1..];
+    if cmd == "git" {
+        loop {
+            match rest.first().map(String::as_str) {
+                Some("-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace") => {
+                    rest = rest.get(2..).unwrap_or_default();
+                }
+                Some(t) if t.starts_with("--") || t == "-P" || t == "-p" => {
+                    rest = &rest[1..];
+                }
+                _ => break,
+            }
+        }
+    }
+    std::iter::once(cmd).chain(rest.iter().cloned()).collect()
 }
 
 /// What asks for approval even in Auto mode: what the sandbox can't contain
@@ -247,6 +185,11 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     // ── Git that loses work or rewrites a remote ─────────────────────────────
     DangerCheck::CmdSubFlag("git", "push", "-f"),
     DangerCheck::CmdSubFlag("git", "push", "--force"),
+    DangerCheck::CmdSubFlag("git", "push", "--force-with-lease"),
+    DangerCheck::CmdSubFlag("git", "push", "--delete"),
+    DangerCheck::CmdSubFlag("git", "push", "--mirror"),
+    DangerCheck::CmdSubArgStarts("git", "push", "+"),
+    DangerCheck::CmdSubArgStarts("git", "push", ":"),
     DangerCheck::CmdSubFlag("git", "reset", "--hard"),
     DangerCheck::CmdSubFlag("git", "clean", "-f"), // also matches -fd, -fdc, …
     // ── GitHub CLI destructive (#518, #525, #1266) ───────────────────────────
@@ -255,38 +198,13 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     DangerCheck::CmdSubSub("gh", "repo", "delete"),
     DangerCheck::CmdSubSub("gh", "release", "delete"),
     DangerCheck::CmdSub("gh", "api"),
-    // `gh auth` was previously a blanket `CmdSub` (Destructive on every
-    // subcommand). That caught the credential-mutating ones (login/logout/…)
-    // but also `gh auth status` and `gh auth list`, which are pure reads —
-    // surprising approval prompts in Auto mode (#1266). Split into the
-    // specific destructive subcommands; the read-only forms live in
-    // `READ_ONLY_PREFIXES` above.
+    // The `gh auth` subcommands that change credentials (#1266); `gh auth
+    // status` and `gh auth list` only read.
     DangerCheck::CmdSubSub("gh", "auth", "login"),
     DangerCheck::CmdSubSub("gh", "auth", "logout"),
     DangerCheck::CmdSubSub("gh", "auth", "refresh"),
     DangerCheck::CmdSubSub("gh", "auth", "setup-git"),
     DangerCheck::CmdSubSub("gh", "auth", "token"),
-];
-
-/// Flags that make a read-only command change files. `sed` and `find` are in
-/// `READ_ONLY_PREFIXES`; with these they are a local change, which the
-/// sandbox contains (#970 sweep).
-///   -delete           → deletes matched files
-///   -exec, -execdir   → runs a command on matched files (classified below)
-///   -ok, -okdir       → like -exec, asking first
-///   -fprint, -fprintf → writes the list of matches to a file
-///   -fls              → writes an ls-style listing to a file
-const MUTATING_CHECKS: &[DangerCheck] = &[
-    DangerCheck::CmdFlag("sed", "-i"),
-    DangerCheck::CmdFlag("sed", "--in-place"),
-    DangerCheck::CmdFlag("find", "-delete"),
-    DangerCheck::CmdFlag("find", "-exec"),
-    DangerCheck::CmdFlag("find", "-execdir"),
-    DangerCheck::CmdFlag("find", "-ok"),
-    DangerCheck::CmdFlag("find", "-okdir"),
-    DangerCheck::CmdFlag("find", "-fprint"),
-    DangerCheck::CmdFlag("find", "-fprintf"),
-    DangerCheck::CmdFlag("find", "-fls"),
 ];
 
 /// Commands that run the command after their own options, which is
@@ -353,8 +271,7 @@ fn unwrap_wrappers(tokens: &[String]) -> &[String] {
 
 /// The script a shell runs with `-c`: `bash -lc 'rm -f a'` → `rm -f a`.
 fn shell_script(tokens: &[String]) -> Option<&str> {
-    let first = tokens.first()?;
-    if !["sh", "bash", "zsh", "dash", "ksh"].contains(&first.as_str()) {
+    if !is_shell(tokens.first()?) {
         return None;
     }
     let at = tokens[1..]
@@ -386,8 +303,8 @@ fn find_exec_commands(tokens: &[String]) -> Vec<&[String]> {
     out
 }
 
-/// A segment's effect by what it runs, or `None` for the read-only list to
-/// decide. Looks inside wrappers, `sh -c`, `eval` and `find -exec`, so a
+/// A segment's effect by what it runs, or `None` when it is an ordinary
+/// change. Looks inside wrappers, `sh -c`, `eval` and `find -exec`, so a
 /// forced `rm` asks wherever it is.
 fn effect_of_tokens(tokens: &[String]) -> Option<ToolEffect> {
     let inner = unwrap_wrappers(tokens);
@@ -397,10 +314,17 @@ fn effect_of_tokens(tokens: &[String]) -> Option<ToolEffect> {
     {
         return Some(ToolEffect::Destructive);
     }
-    let script = match inner.first().map(String::as_str) {
+    let script = match inner.first().map(|t| basename(t)) {
         Some("eval") => Some(inner[1..].join(" ")),
+        // `trap 'rm -rf x' EXIT` runs its script later, as Codex reads it.
+        Some("trap") => inner.get(1).cloned(),
         _ => shell_script(inner).map(str::to_string),
     };
+    // A shell with no script reads one from its input: `curl x |sh`,
+    // `| /bin/sh`.
+    if script.is_none() && inner.len() == 1 && is_shell(&inner[0]) {
+        return Some(ToolEffect::Destructive);
+    }
     if let Some(script) = script {
         return Some(match classify_bash_command(&script) {
             ToolEffect::Destructive => ToolEffect::Destructive,
@@ -413,10 +337,7 @@ fn effect_of_tokens(tokens: &[String]) -> Option<ToolEffect> {
     {
         return Some(ToolEffect::Destructive);
     }
-    MUTATING_CHECKS
-        .iter()
-        .any(|c| c.matches(inner))
-        .then_some(ToolEffect::LocalMutation)
+    None
 }
 
 // ── Raw structural patterns ───────────────────────────────────────────────────
@@ -509,13 +430,7 @@ fn defines_recursive_function(unquoted: &str) -> bool {
 /// 2. Per-segment shlex tokenisation vs `DANGER_CHECKS` → Destructive.
 ///    Segments are split on `|`, `;`, `&&`, `||`, a single `&` and newlines,
 ///    the way the shell would (see [`split_command_segments`]).
-/// 3. ReadOnly only if the command is a plain sequence (see
-///    `is_plain_command_sequence`) and every segment matches
-///    `READ_ONLY_PREFIXES`; otherwise LocalMutation.
-///
-/// ReadOnly fails closed: any shell syntax the allowlist can't vouch for
-/// (redirects, newlines, `&`, subshells, substitutions, heredocs, ...) makes
-/// the command at least LocalMutation, even if every word is harmless.
+/// 3. Anything else is a LocalMutation, which the sandbox contains.
 ///
 /// # Examples
 ///
@@ -523,15 +438,16 @@ fn defines_recursive_function(unquoted: &str) -> bool {
 /// use koda_command::bash_safety::classify_bash_command;
 /// use koda_command::ToolEffect;
 ///
-/// assert_eq!(classify_bash_command("ls -la"), ToolEffect::ReadOnly);
-/// assert_eq!(classify_bash_command("git status"), ToolEffect::ReadOnly);
+/// assert_eq!(classify_bash_command("ls -la"), ToolEffect::LocalMutation);
 /// assert_eq!(classify_bash_command("cargo build"), ToolEffect::LocalMutation);
 /// assert_eq!(classify_bash_command("rm -rf /"), ToolEffect::Destructive);
+/// assert_eq!(classify_bash_command("/bin/rm -rf build"), ToolEffect::Destructive);
+/// assert_eq!(classify_bash_command("git -C . push --force"), ToolEffect::Destructive);
 /// ```
 pub fn classify_bash_command(command: &str) -> ToolEffect {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return ToolEffect::ReadOnly;
+        return ToolEffect::LocalMutation;
     }
     if let Some(effect) = classify_heredocs(trimmed) {
         return effect;
@@ -552,7 +468,6 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     if !inner.is_empty() && runs_substitution(&outer) {
         return ToolEffect::Destructive;
     }
-    let trimmed_original = trimmed;
     let trimmed = outer.as_str();
 
     // Phase 1 — raw structural patterns on quote-stripped text. Harmless
@@ -571,43 +486,13 @@ pub fn classify_bash_command(command: &str) -> ToolEffect {
     // We must check ALL segments before short-circuiting on LocalMutation
     // because a later segment may be Destructive.
     let segments = split_command_segments(trimmed);
-    let mut worst = ToolEffect::ReadOnly;
-
-    for seg in &segments {
-        let effect = classify_segment(seg);
-        match effect {
-            ToolEffect::Destructive => return ToolEffect::Destructive,
-            ToolEffect::LocalMutation => worst = ToolEffect::LocalMutation,
-            _ => {}
-        }
+    if segments
+        .iter()
+        .any(|seg| classify_segment(seg) == ToolEffect::Destructive)
+    {
+        return ToolEffect::Destructive;
     }
-
-    // Claude Code asks for `cd` and `git` in one command: a repository in
-    // another folder brings its own config and hooks, which git runs.
-    if worst == ToolEffect::ReadOnly && cd_with_git(&segments) {
-        worst = ToolEffect::LocalMutation;
-    }
-
-    // Phase 3 — ReadOnly must be proven. `ls > out`, `ls\nrm x` or
-    // `ls & cargo build` have read-only heads but are not read-only. Checked
-    // on the original text, so a command with a substitution never is.
-    if worst == ToolEffect::ReadOnly && !is_plain_command_sequence(trimmed_original) {
-        worst = ToolEffect::LocalMutation;
-    }
-
-    worst
-}
-
-/// Whether `segments` change directory and run `git`: Claude Code's
-/// "Compound commands with cd and git require permission checks".
-fn cd_with_git(segments: &[&str]) -> bool {
-    let head = |seg: &&str| -> Option<String> {
-        let seg = strip_env_vars(seg.trim());
-        let seg = seg.trim_start_matches(['(', '{']).trim();
-        shlex::split(seg)?.into_iter().next()
-    };
-    let heads: Vec<String> = segments.iter().filter_map(head).collect();
-    heads.iter().any(|h| h == "cd") && heads.iter().any(|h| h == "git")
+    ToolEffect::LocalMutation
 }
 
 /// Phase −1 of [`classify_bash_command`]: a command with heredoc bodies is
@@ -662,7 +547,7 @@ fn classify_heredocs(command: &str) -> Option<ToolEffect> {
         }
     }
     // The terminators stay in `rest`, so its bodies are empty and this
-    // doesn't come back here. A heredoc is never read-only.
+    // doesn't come back here.
     Some(match classify_bash_command(&rest) {
         ToolEffect::ReadOnly => ToolEffect::LocalMutation,
         effect => effect,
@@ -880,8 +765,7 @@ fn is_assignment(word: &str) -> bool {
 }
 
 /// Whether `command` is only plain words and quoted strings joined by `&&`,
-/// `||`, `;` and `|`: the only shape [`classify_bash_command`] can call
-/// ReadOnly.
+/// `||`, `;` and `|`, the shape `parse_command` can describe.
 ///
 /// Same rule as Codex's `try_parse_word_only_commands_sequence`
 /// (codex-rs/shell-command), written as a scanner instead of a tree-sitter
@@ -1020,7 +904,7 @@ fn classify_segment(segment: &str) -> ToolEffect {
     let seg = seg.to_string();
 
     if seg.is_empty() {
-        return ToolEffect::ReadOnly;
+        return ToolEffect::LocalMutation;
     }
 
     // Tokenise with POSIX shlex. Returns None for unterminated quotes,
@@ -1035,41 +919,7 @@ fn classify_segment(segment: &str) -> ToolEffect {
         return effect;
     }
 
-    // Fall back to read-only allowlist.
-    // Join tokens with single spaces to normalise irregular whitespace.
-    let canonical = tokens.join(" ");
-    if matches_prefix_list(&canonical, READ_ONLY_PREFIXES) {
-        ToolEffect::ReadOnly
-    } else {
-        ToolEffect::LocalMutation
-    }
-}
-
-// ── Public helpers (also used by bash_path_lint) ──────────────────────────────
-
-/// Check if a segment matches any entry in a prefix list.
-///
-/// Each prefix is treated as a bare command (or command head). A trailing space
-/// in the prefix is **decorative only** — historically used to flag entries that
-/// 'normally take an argument' — but the matcher always accepts:
-///
-/// 1. exact match (e.g. bare `sort` at end of `grep ... | sort`)
-/// 2. match followed by a space (e.g. `sort -u`)
-/// 3. match followed by a tab
-///
-/// This avoids substring false-positives like `sortfoo` matching `sort`, while
-/// correctly classifying bare invocations of stdin-consuming filters (#944).
-fn matches_prefix_list(seg: &str, prefixes: &[&str]) -> bool {
-    for prefix in prefixes {
-        let bare = prefix.trim_end();
-        if seg == bare
-            || seg.starts_with(&format!("{bare} "))
-            || seg.starts_with(&format!("{bare}\t"))
-        {
-            return true;
-        }
-    }
-    false
+    ToolEffect::LocalMutation
 }
 
 /// How the shell reads each character of a command.
@@ -1743,230 +1593,34 @@ mod tests {
 
     // matches_prefix_list
 
-    /// Bare commands at the end of a pipeline must match prefixes that
-    /// historically used a trailing-space convention (#944 regression test).
-    #[test]
-    fn test_matches_prefix_list_bare_command() {
-        let prefixes = &["sort ", "wc ", "uniq ", "cat ", "grep "];
-        for cmd in ["sort", "wc", "uniq", "cat", "grep"] {
-            assert!(
-                matches_prefix_list(cmd, prefixes),
-                "bare `{cmd}` should match the prefix list"
-            );
-        }
-    }
-
-    /// With-argument forms must still match (no regression).
-    #[test]
-    fn test_matches_prefix_list_with_args() {
-        let prefixes = &["sort ", "wc ", "grep "];
-        for cmd in ["sort -u", "wc -l", "grep -i foo"] {
-            assert!(matches_prefix_list(cmd, prefixes), "`{cmd}` should match");
-        }
-    }
-
-    /// Tab separator (rare but legal) still matches.
-    #[test]
-    fn test_matches_prefix_list_tab_separator() {
-        let prefixes = &["sort "];
-        assert!(matches_prefix_list("sort\t-u", prefixes));
-    }
-
-    /// Substring false-positives are still rejected (the original purpose of
-    /// the trailing-space convention).
-    #[test]
-    fn test_matches_prefix_list_no_substring_false_positive() {
-        let prefixes = &["sort ", "cat ", "ls"];
-        for cmd in ["sortfoo", "catalogue", "lsof", "sortir"] {
-            assert!(
-                !matches_prefix_list(cmd, prefixes),
-                "`{cmd}` must not match (substring false-positive)"
-            );
-        }
-    }
-
     // classify_bash_command (#944)
-
-    /// Bare read-only commands at the end of a pipeline must auto-approve.
-    /// Repro table from #944 plus a sweep of common stdin-consuming filters.
-    #[test]
-    fn test_classify_bare_pipeline_tail_is_read_only() {
-        let cases = [
-            // From #944 repro table:
-            "sort",
-            "ls | sort",
-            "echo hi | wc",
-            "cat file | uniq",
-            // Real-world example from the bug report:
-            "grep -c \"^pub fn find_matches\" src/properties/*.rs | sort",
-            // Other common bare stdin filters:
-            "echo hi | cat",
-            "echo hi | head",
-            "echo hi | tail",
-            "echo hi | sed",
-            "echo hi | awk",
-            "echo hi | tr",
-            "echo hi | jq",
-            // NOTE: `echo hi | xargs` removed — fixed in #968 to correctly
-            // classify as LocalMutation (xargs runs the inner command).
-            "ls | wc",
-            "find . | sort | uniq",
-        ];
-        for cmd in cases {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should classify as ReadOnly",
-            );
-        }
-    }
-
-    /// With-argument variants must still classify as ReadOnly (no regression).
-    #[test]
-    fn test_classify_pipeline_tail_with_args_still_read_only() {
-        let cases = [
-            "ls | sort -u",
-            "echo hi | wc -l",
-            "cat file | uniq -c",
-            "find . | head -20",
-            "git log | grep WIP",
-        ];
-        for cmd in cases {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should classify as ReadOnly",
-            );
-        }
-    }
-
-    /// Mutating commands at the pipeline tail must NOT be misclassified as
-    /// ReadOnly by the broader matcher.
-    #[test]
-    fn test_classify_mutating_pipeline_tail_not_read_only() {
-        // `tee` isn't on the allowlist, and `>` fails the plain-sequence gate.
-        for cmd in [
-            "echo content | tee output.txt",
-            "echo content | tee",
-            "ls > files.txt",
-        ] {
-            assert_ne!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` must not be ReadOnly (has write side effect)",
-            );
-        }
-    }
-
-    /// Bare commands NOT in the read-only list still classify as
-    /// LocalMutation — the matcher widening doesn't leak unrelated commands.
-    #[test]
-    fn test_classify_bare_unknown_command_not_read_only() {
-        for cmd in ["cargo", "npm", "make", "docker"] {
-            assert_ne!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "bare `{cmd}` must not be misclassified as ReadOnly",
-            );
-        }
-    }
 
     // xargs classification (#968)
 
-    /// `xargs <cmd>` runs `<cmd>` as a subprocess. It must NOT auto-approve in
-    /// Safe mode, regardless of which inner command is invoked. Removing
-    /// `xargs` from READ_ONLY_PREFIXES makes any pipeline with an `xargs`
-    /// segment fall through to LocalMutation.
+    /// `xargs <cmd>` runs `<cmd>` as a subprocess, so the dangerous check
+    /// reads the command it runs.
     #[test]
-    fn test_classify_xargs_with_destructive_inner_not_read_only() {
+    fn test_classify_xargs_by_the_command_it_runs() {
+        // xargs runs its inner command: a forced `rm` inside it asks, as it
+        // does on its own; an ordinary one runs in the sandbox.
+        assert_eq!(
+            classify_bash_command("echo file | xargs rm -rf"),
+            ToolEffect::Destructive
+        );
         for cmd in [
             "ls | xargs rm",
-            "find . -name '*.tmp' | xargs rm",
-            "echo file | xargs rm -rf",
             "ls | xargs mv -t /tmp",
             "echo a b c | xargs cp -t /backup",
         ] {
-            assert_ne!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` must NOT be ReadOnly — xargs runs the inner command",
-            );
-        }
-    }
-
-    /// Even `xargs <read-only-cmd>` should not auto-approve. We can't safely
-    /// inspect the inner command without a real parser, so the conservative
-    /// stance is to require approval for *all* xargs invocations.
-    #[test]
-    fn test_classify_xargs_with_read_only_inner_still_not_auto_approved() {
-        for cmd in ["ls | xargs grep foo", "ls | xargs cat", "ls | xargs wc"] {
-            assert_ne!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should require approval — xargs is opaque to the classifier",
-            );
-        }
-    }
-
-    /// Removing `xargs` from the prefix list must not regress unrelated
-    /// read-only pipelines.
-    #[test]
-    fn test_classify_non_xargs_pipelines_still_read_only() {
-        for cmd in [
-            "ls | grep foo",
-            "cat file | sort | uniq",
-            "find . | head -20",
-            "git log | grep WIP",
-        ] {
             assert_eq!(
                 classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should still be ReadOnly",
+                ToolEffect::LocalMutation,
+                "{cmd}"
             );
         }
     }
 
     // env classification (#970)
-
-    /// `env <cmd>` runs `<cmd>` as a subprocess. It must NOT auto-approve in
-    /// Safe mode, regardless of the inner command. Same bug class as #968.
-    #[test]
-    fn test_classify_env_with_inner_command_not_read_only() {
-        for cmd in [
-            "env cargo build",
-            "env make install",
-            "env FOO=bar rm file",
-            "env PATH=/tmp ls /",
-            "env -i bash",
-        ] {
-            assert_ne!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` must NOT be ReadOnly — env runs the inner command",
-            );
-        }
-    }
-
-    /// Bare `env` (which prints environment variables) now requires approval.
-    /// `printenv` is the cleaner read-only alternative.
-    #[test]
-    fn test_classify_bare_env_requires_approval_printenv_does_not() {
-        assert_ne!(
-            classify_bash_command("env"),
-            ToolEffect::ReadOnly,
-            "bare `env` now requires approval (use `printenv` instead)",
-        );
-        assert_eq!(
-            classify_bash_command("printenv"),
-            ToolEffect::ReadOnly,
-            "`printenv` is the read-only alternative",
-        );
-        assert_eq!(
-            classify_bash_command("printenv PATH"),
-            ToolEffect::ReadOnly,
-            "`printenv VAR` reads a single var",
-        );
-    }
 
     // find with file-changing flags (#970 sweep finding)
 
@@ -2095,44 +1749,7 @@ mod tests {
         }
     }
 
-    /// Read-only `find` invocations stay ReadOnly — no regression.
-    #[test]
-    fn test_classify_find_read_only_still_read_only() {
-        for cmd in [
-            "find .",
-            "find . -name '*.rs'",
-            "find . -type f -size +1M",
-            "find . -newer reference.txt",
-            "find . -mtime -7",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should still be ReadOnly",
-            );
-        }
-    }
-
     // gh auth subcommand classification (#1266)
-
-    /// `gh auth status` and `gh auth list` are pure read-only queries about
-    /// the local auth state. They must NOT trigger an approval prompt in
-    /// Auto mode. Regression guard for #1266.
-    #[test]
-    fn test_classify_gh_auth_read_only_subcommands() {
-        for cmd in [
-            "gh auth status",
-            "gh auth status -t",
-            "gh auth status --hostname github.com",
-            "gh auth list",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` must be ReadOnly (queries local auth state, no mutation)",
-            );
-        }
-    }
 
     /// Credential-mutating `gh auth` subcommands stay Destructive. They
     /// either change which account is active, rotate tokens, or write to
@@ -2175,7 +1792,7 @@ mod tests {
         ] {
             assert_eq!(
                 classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
+                ToolEffect::LocalMutation,
                 "`{cmd}` should remain ReadOnly",
             );
         }
@@ -2227,23 +1844,6 @@ mod tests {
                 classify_bash_command(cmd),
                 ToolEffect::LocalMutation,
                 "`{cmd}` is no worse than `{piped}`, but never ReadOnly",
-            );
-        }
-    }
-
-    /// Process substitution syntax inside quoted strings is harmless and must
-    /// not trigger the danger pattern.
-    #[test]
-    fn test_classify_quoted_process_substitution_is_safe() {
-        for cmd in [
-            "echo 'use <(cmd) for bash'",
-            "echo \"see <(...) syntax\"",
-            "grep '<(' README.md",
-        ] {
-            assert_eq!(
-                classify_bash_command(cmd),
-                ToolEffect::ReadOnly,
-                "`{cmd}` should be ReadOnly (quoted, not real syntax)",
             );
         }
     }

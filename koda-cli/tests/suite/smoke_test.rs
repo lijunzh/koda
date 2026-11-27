@@ -92,28 +92,21 @@ fn mock_destructive_bash_rejected_in_auto_mode_in_headless() {
 }
 
 #[test]
-fn mock_destructive_bash_rejected_in_safe_and_default_modes_in_headless() {
-    // End-to-end regression test for #982 + #1241. Pre-fix, headless hardcoded
-    // `TrustMode::Auto`, so `--mode safe` was silently ignored and destructive
-    // actions ran without confirmation. Post-fix, `--mode safe` is honored.
-    //
-    // We test BOTH explicit `--mode safe` and the current default (`Auto` since
-    // #1241). Both must reject destructive Bash; the user gave consent for
-    // ordinary work, not for rm -rf. Tiny detail, huge difference, no bananas.
+fn mock_destructive_bash_rejected_in_default_mode_in_headless() {
+    // End-to-end regression test for #1241: with no `--mode`, headless runs
+    // in the default (`Auto`), which must still reject destructive Bash; the
+    // user gave consent for ordinary work, not for rm -rf.
     let responses = r#"[
         {"tool":"Bash","args":{"command":"rm -rf /tmp/nonexistent_test_dir"}},
         {"text":"Done."}
     ]"#;
 
-    for mode in [Some("safe"), None] {
-        let label = mode.unwrap_or("<default>");
-        let (_stdout, stderr, _success) = run_mock_with_mode("delete everything", responses, mode);
-        assert!(
-            stderr.contains("Rejected destructive action"),
-            "[mode={label}] Safe and default Auto MUST reject destructive Bash. \
-             If this fails, #982/#1241 has regressed.\nstderr: {stderr}"
-        );
-    }
+    let (_stdout, stderr, _success) = run_mock_with_mode("delete everything", responses, None);
+    assert!(
+        stderr.contains("Rejected destructive action"),
+        "The default Auto mode MUST reject destructive Bash. \
+         If this fails, #1241 has regressed.\nstderr: {stderr}"
+    );
 }
 
 /// `koda exec`'s text names a sub-agent and shows its tool calls indented

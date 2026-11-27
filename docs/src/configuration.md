@@ -88,7 +88,7 @@ Every key, in Codex's names where Codex has one:
 | `web_search_refills_per_hour` | `WebSearch` calls the budget gets back per hour, as Claude Code's `CLAUDE_CODE_WEB_SEARCH_REFILLS_PER_HOUR`. Unset: 100 in a session you attend, 0 in one nobody does (`koda exec`) |
 | `approval_wait_timeout_secs` | How long an approval, a question or the loop cap waits for a client on the [shared server](./serve.md#the-shared-server) before Koda answers no (default 86400, a day) |
 | `model_input_modalities` | What the model takes besides text, over what a local server reports and Koda's table: `["text", "image"]` for a vision model the server doesn't report; `pdf` is the third value (see [File & image attachments](./attachments.md#images)) |
-| `mode` | The [trust mode](./approval.md) a new session starts in: `auto`, `safe` or `plan` |
+| `mode` | The [trust mode](./approval.md) a new session starts in: `auto` or `plan` |
 | `oss_provider` | The local provider `--oss` uses: `llama-cpp` (default; Koda starts and stops it), `lm-studio` or `ollama` ([Local models](./local-models.md#one-command-koda---oss)) |
 | `oss_model` | The model `--oss` runs on llama.cpp: a Hugging Face `<repo>:<quant>` or a `.gguf` path; unset, Qwen3.8-Flash-Next on a Mac with 128 GB, else the 1 GB quick try |
 | `oss_check_gpu` | `false` lets `--oss` start a model while the GPU is busy (macOS); on by default |

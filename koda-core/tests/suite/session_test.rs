@@ -589,7 +589,7 @@ async fn each_turn_stores_the_context_it_ran_with() {
     switched.model_settings.reasoning_effort = Some("high".into());
     let provider = Box::new(MockProvider::new(vec![MockResponse::Text("two".into())]));
     let (mut session, _cancel) = make_session(&env, provider).await;
-    session.mode = TrustMode::Safe;
+    session.mode = TrustMode::Plan;
     session
         .run_turn_as(
             "t2".into(),
@@ -623,7 +623,7 @@ async fn each_turn_stores_the_context_it_ran_with() {
     assert_eq!(second.turn_id, "t2");
     assert_eq!(second.model, "another-model");
     assert_eq!(second.reasoning_effort.as_deref(), Some("high"));
-    assert_eq!(second.trust_mode, "safe");
+    assert_eq!(second.trust_mode, "plan");
 }
 
 /// A compaction turn stores its context too, as Codex's does: the model

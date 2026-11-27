@@ -196,15 +196,13 @@ pub(crate) async fn open(
         config_file: context_file,
         project_root,
         db,
-        sandbox,
+        sandbox: _,
         events,
         request_ids,
         open_requests,
         statuses,
         run_checked,
     } = context;
-    // The modes this session may run in, which the host enforces.
-    let rules = crate::settings::ModeRules { sandbox };
 
     let resumed = resume.is_some();
     let loaded = crate::config_file::load(&context_file)?;
@@ -251,9 +249,6 @@ pub(crate) async fn open(
             mode = saved;
         }
     }
-    // The mode rules, before anything is created: Auto needs the sandbox,
-    // and a session a person answers runs in Safe rather than Plan.
-    let mode = rules.allow(mode)?;
     // A new session takes the saved choice where the client named nothing,
     // as a Codex thread starts from `config.toml`'s defaults.
     let saved = crate::config_file::values(&loaded);
@@ -520,7 +515,6 @@ pub(crate) async fn open(
             config_file: context_file,
             alias: alias.map(str::to_string),
             pending_settings: Vec::new(),
-            rules,
             mcp,
             reload_mcp: false,
             sink,
@@ -555,8 +549,6 @@ pub(crate) struct SessionTask {
     mcp: Option<SharedMcpManager>,
     /// A `config/mcpServer/reload` arrived during the turn.
     reload_mcp: bool,
-    /// The modes the session may run in.
-    rules: crate::settings::ModeRules,
     sink: Arc<HostSink>,
     engine_tx: mpsc::Sender<EngineCommand>,
     engine_rx: mpsc::Receiver<EngineCommand>,
@@ -938,11 +930,10 @@ impl SessionTask {
             self.session.update_provider(&next);
         }
         if let Some(asked) = params.mode {
-            let mode = self.rules.allow(asked)?;
-            self.session.mode = mode;
+            self.session.mode = asked;
             self.session
                 .db
-                .set_session_mode(&id, mode.as_str())
+                .set_session_mode(&id, asked.as_str())
                 .await
                 .map_err(|e| internal(format!("couldn't record the mode: {e:#}")))?;
         }
@@ -1410,7 +1401,6 @@ impl SessionTask {
             commands,
             pending_settings,
             reload_mcp,
-            rules,
             strikes,
             held,
             check,
@@ -1451,159 +1441,154 @@ impl SessionTask {
             };
             loop {
                 tokio::select! {
-                    result = &mut turn => break result,
-                    command = commands.recv(), if keep_running => match command {
-                        Some(SessionCommand::StartTurn { reply, .. }) => {
-                            let _ = reply.send(Err(invalid("a turn is already running")));
-                        }
-                        Some(SessionCommand::Interrupt { params, reply }) => {
-                            if params.turn_id == turn_id {
-                                cancel.cancel();
-                                interrupts.push(reply);
-                            } else {
-                                let _ = reply.send(Err(invalid(format!(
-                                    "expected active turn id {} but found {turn_id}",
-                                    params.turn_id
-                                ))));
-                            }
-                        }
-                        Some(SessionCommand::Steer { params, reply }) => {
-                            if !steerable {
-                                let _ = reply.send(Err(invalid("cannot steer a compact turn")));
-                                continue;
-                            }
-                            if params.expected_turn_id != turn_id {
-                                let _ = reply.send(Err(invalid(format!(
-                                    "expected active turn id {} but found {turn_id}",
-                                    params.expected_turn_id
-                                ))));
-                                continue;
-                            }
-                            // Steering reaches the model as text.
-                            if params
-                                .input
-                                .iter()
-                                .any(|part| !matches!(part, UserInput::Text { .. }))
-                            {
-                                let _ = reply.send(Err(ErrorObject::new(
-                                    codes::INVALID_PARAMS,
-                                    "turn/steer takes text parts only; send images, mentions \
-                                     and skills with turn/start",
-                                )));
-                                continue;
-                            }
-                            let text = koda_protocol::turn::text_of(&params.input);
-                            // `try_send`: the turn isn't polled while this arm
-                            // runs, so waiting for room could wait forever.
-                            let queued = engine_tx.try_send(EngineCommand::QueueNext { text });
-                            if queued.is_ok() {
-                                sink.queue_steer(params.client_user_message_id);
-                            }
-                            let _ = reply.send(match queued {
-                                Ok(()) => to_json(TurnSteerResponse {
-                                    turn_id: turn_id.clone(),
-                                }),
-                                Err(_) => Err(internal("the turn's input is full; try again")),
-                            });
-                        }
-                        // Replaces the running turn, as Codex's
-                        // `thread/compact/start` does.
-                        Some(SessionCommand::Compact { reply }) => {
-                            if !steerable || compact_next.is_some() {
-                                let _ = reply.send(Err(invalid("a compaction is already running")));
-                            } else {
-                                cancel.cancel();
-                                compact_next = Some(reply);
-                            }
-                        }
-                        Some(SessionCommand::Rewind { reply, .. }) => {
-                            let _ = reply.send(Err(invalid(
-                                "a turn is running; stop it before rewinding",
-                            )));
-                        }
-                        Some(SessionCommand::Respond { id, result }) => {
-                            if let Some(command) = sink.answer(&id, result)
-                                && engine_tx.try_send(command).is_err()
-                            {
-                                tracing::warn!("the turn's input is full; an answer was lost");
-                            }
-                        }
-                        // Checked now, applied once the turn has ended.
-                        Some(SessionCommand::UpdateSettings { params, reply }) => {
-                            let checked = crate::settings::check_update(
-                                config,
-                                params.model.as_deref(),
-                                params.effort.as_deref(),
-                            )
-                            .and_then(|_| match params.mode {
-                                Some(mode) => rules
-                                    .allow(mode)
-                                    .map(|_| ()),
-                                None => Ok(()),
-                            });
-                            match checked {
-                                Ok(_) => {
-                                    pending_settings.push(params);
-                                    let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));
+                                    result = &mut turn => break result,
+                                    command = commands.recv(), if keep_running => match command {
+                                        Some(SessionCommand::StartTurn { reply, .. }) => {
+                                            let _ = reply.send(Err(invalid("a turn is already running")));
+                                        }
+                                        Some(SessionCommand::Interrupt { params, reply }) => {
+                                            if params.turn_id == turn_id {
+                                                cancel.cancel();
+                                                interrupts.push(reply);
+                                            } else {
+                                                let _ = reply.send(Err(invalid(format!(
+                                                    "expected active turn id {} but found {turn_id}",
+                                                    params.turn_id
+                                                ))));
+                                            }
+                                        }
+                                        Some(SessionCommand::Steer { params, reply }) => {
+                                            if !steerable {
+                                                let _ = reply.send(Err(invalid("cannot steer a compact turn")));
+                                                continue;
+                                            }
+                                            if params.expected_turn_id != turn_id {
+                                                let _ = reply.send(Err(invalid(format!(
+                                                    "expected active turn id {} but found {turn_id}",
+                                                    params.expected_turn_id
+                                                ))));
+                                                continue;
+                                            }
+                                            // Steering reaches the model as text.
+                                            if params
+                                                .input
+                                                .iter()
+                                                .any(|part| !matches!(part, UserInput::Text { .. }))
+                                            {
+                                                let _ = reply.send(Err(ErrorObject::new(
+                                                    codes::INVALID_PARAMS,
+                                                    "turn/steer takes text parts only; send images, mentions \
+                                                     and skills with turn/start",
+                                                )));
+                                                continue;
+                                            }
+                                            let text = koda_protocol::turn::text_of(&params.input);
+                                            // `try_send`: the turn isn't polled while this arm
+                                            // runs, so waiting for room could wait forever.
+                                            let queued = engine_tx.try_send(EngineCommand::QueueNext { text });
+                                            if queued.is_ok() {
+                                                sink.queue_steer(params.client_user_message_id);
+                                            }
+                                            let _ = reply.send(match queued {
+                                                Ok(()) => to_json(TurnSteerResponse {
+                                                    turn_id: turn_id.clone(),
+                                                }),
+                                                Err(_) => Err(internal("the turn's input is full; try again")),
+                                            });
+                                        }
+                                        // Replaces the running turn, as Codex's
+                                        // `thread/compact/start` does.
+                                        Some(SessionCommand::Compact { reply }) => {
+                                            if !steerable || compact_next.is_some() {
+                                                let _ = reply.send(Err(invalid("a compaction is already running")));
+                                            } else {
+                                                cancel.cancel();
+                                                compact_next = Some(reply);
+                                            }
+                                        }
+                                        Some(SessionCommand::Rewind { reply, .. }) => {
+                                            let _ = reply.send(Err(invalid(
+                                                "a turn is running; stop it before rewinding",
+                                            )));
+                                        }
+                                        Some(SessionCommand::Respond { id, result }) => {
+                                            if let Some(command) = sink.answer(&id, result)
+                                                && engine_tx.try_send(command).is_err()
+                                            {
+                                                tracing::warn!("the turn's input is full; an answer was lost");
+                                            }
+                                        }
+                                        // Checked now, applied once the turn has ended.
+                                        Some(SessionCommand::UpdateSettings { params, reply }) => {
+                                            let checked = crate::settings::check_update(
+                                                config,
+                                                params.model.as_deref(),
+                                                params.effort.as_deref(),
+                                            )
+                ;
+                                            match checked {
+                                                Ok(_) => {
+                                                    pending_settings.push(params);
+                                                    let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));
+                                                }
+                                                Err(error) => {
+                                                    let _ = reply.send(Err(error));
+                                                }
+                                            }
+                                        }
+                                        // Answered now. A new objective is told to the turn
+                                        // at its next step; a pause or clear lets it end.
+                                        Some(SessionCommand::Goal { request, reply }) => {
+                                            if !matches!(request, GoalRequest::Get) {
+                                                strikes.reset();
+                                            }
+                                            if let Some(set) =
+                                                goal_request(&db, &session_id, sink, request, reply, config.max_goal_token_budget).await
+                                                && set.objective_changed
+                                                && set.goal.status == koda_core::goal::GoalStatus::Active
+                                            {
+                                                let text = koda_core::goal::objective_updated_message(&set.goal);
+                                                if engine_tx.try_send(EngineCommand::Notice { text }).is_err() {
+                                                    tracing::warn!("the turn's input is full; the new objective waits for the next turn");
+                                                }
+                                            }
+                                        }
+                                        // The running turn keeps its servers.
+                                        Some(SessionCommand::ReloadMcp { done }) => {
+                                            *reload_mcp = true;
+                                            drop(done);
+                                        }
+                                        // The writer runs on a task of its own, so the turn
+                                        // only pauses while its queued records are stored.
+                                        Some(SessionCommand::FlushHistory { done }) => {
+                                            sink.flush_history().await;
+                                            let _ = done.send(sink.live_turn());
+                                        }
+                                        #[cfg(test)]
+                                        Some(SessionCommand::Panic) => panic!("a test's panic"),
+                                        // The turn pauses only while its stored turns are
+                                        // read; the joiner then follows it from here.
+                                        Some(SessionCommand::Join { token, reply }) => {
+                                            let _ = reply.send(join(sink, &db, &session_id, token).await);
+                                        }
+                                        // This turn's prompt has titled the session already.
+                                        Some(SessionCommand::Named { name, done }) => {
+                                            let stored = db.set_session_title(&session_id, &name).await;
+                                            let _ = done.send(stored.map_err(|e| format!("{e:#}")));
+                                        }
+                                        // Told to stop, or the host is gone: stop the turn and
+                                        // let it wind down. It bounds that itself.
+                                        Some(SessionCommand::Shutdown { done }) => {
+                                            cancel.cancel();
+                                            keep_running = false;
+                                            closing.extend(done);
+                                        }
+                                        None => {
+                                            cancel.cancel();
+                                            keep_running = false;
+                                        }
+                                    },
                                 }
-                                Err(error) => {
-                                    let _ = reply.send(Err(error));
-                                }
-                            }
-                        }
-                        // Answered now. A new objective is told to the turn
-                        // at its next step; a pause or clear lets it end.
-                        Some(SessionCommand::Goal { request, reply }) => {
-                            if !matches!(request, GoalRequest::Get) {
-                                strikes.reset();
-                            }
-                            if let Some(set) =
-                                goal_request(&db, &session_id, sink, request, reply, config.max_goal_token_budget).await
-                                && set.objective_changed
-                                && set.goal.status == koda_core::goal::GoalStatus::Active
-                            {
-                                let text = koda_core::goal::objective_updated_message(&set.goal);
-                                if engine_tx.try_send(EngineCommand::Notice { text }).is_err() {
-                                    tracing::warn!("the turn's input is full; the new objective waits for the next turn");
-                                }
-                            }
-                        }
-                        // The running turn keeps its servers.
-                        Some(SessionCommand::ReloadMcp { done }) => {
-                            *reload_mcp = true;
-                            drop(done);
-                        }
-                        // The writer runs on a task of its own, so the turn
-                        // only pauses while its queued records are stored.
-                        Some(SessionCommand::FlushHistory { done }) => {
-                            sink.flush_history().await;
-                            let _ = done.send(sink.live_turn());
-                        }
-                        #[cfg(test)]
-                        Some(SessionCommand::Panic) => panic!("a test's panic"),
-                        // The turn pauses only while its stored turns are
-                        // read; the joiner then follows it from here.
-                        Some(SessionCommand::Join { token, reply }) => {
-                            let _ = reply.send(join(sink, &db, &session_id, token).await);
-                        }
-                        // This turn's prompt has titled the session already.
-                        Some(SessionCommand::Named { name, done }) => {
-                            let stored = db.set_session_title(&session_id, &name).await;
-                            let _ = done.send(stored.map_err(|e| format!("{e:#}")));
-                        }
-                        // Told to stop, or the host is gone: stop the turn and
-                        // let it wind down. It bounds that itself.
-                        Some(SessionCommand::Shutdown { done }) => {
-                            cancel.cancel();
-                            keep_running = false;
-                            closing.extend(done);
-                        }
-                        None => {
-                            cancel.cancel();
-                            keep_running = false;
-                        }
-                    },
-                }
             }
         };
         let error = result.err().inspect(|e| {
@@ -2498,9 +2483,9 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
 
 /// Koda's own answer to a request when nobody is there to ask
 /// ([`ApprovalPolicy::Never`]), with the engine's id for it: approve what the
-/// mode let through to an approval, refuse destructive actions and anything
-/// outside the sandbox, answer a question with nothing, go on at the loop
-/// cap. What `koda exec` has always done.
+/// mode let through to an approval, refuse destructive actions, anything
+/// outside the sandbox, and any command or edit on a machine with no
+/// sandbox; answer a question with nothing, go on at the loop cap.
 fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
     let command = match event {
         EngineEvent::ApprovalRequest {
@@ -2529,6 +2514,20 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
                          approve). Adapt your plan: avoid this kind of action for the \
                          rest of this session, or ask the operator to re-run \
                          interactively."
+                    ),
+                }
+            } else if !koda_core::sandbox::is_available()
+                && matches!(tool_name.as_str(), "Bash" | "Monitor" | "Write" | "Edit")
+            {
+                // With no kernel sandbox, every command and edit asks, and
+                // nobody here can answer: running them unsandboxed and
+                // unwatched is what Auto used to refuse to start for.
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "'{tool_name}' auto-rejected: this machine has no kernel sandbox, \
+                         so every change needs a person's yes, and headless mode has \
+                         none. Read and report instead, or tell the operator to install \
+                         the sandbox or run interactively."
                     ),
                 }
             } else {
@@ -2630,7 +2629,6 @@ fn core_mode(mode: koda_protocol::state::TrustMode) -> koda_core::trust::TrustMo
     use koda_protocol::state::TrustMode as P;
     match mode {
         P::Plan => C::Plan,
-        P::Safe => C::Safe,
         P::Auto => C::Auto,
     }
 }
@@ -2827,7 +2825,8 @@ mod tests {
     }
 
     /// With nobody to ask (`koda exec`), Koda answers a sub-agent as it does
-    /// the main agent: changes go ahead, destructive actions are refused.
+    /// the main agent: changes go ahead where the sandbox holds them, and are
+    /// refused on a machine with none; destructive actions are refused.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_nobody_to_ask_a_sub_agent_gets_the_policy_answer() {
         use koda_core::approval_flow::Approver;
@@ -2836,12 +2835,18 @@ mod tests {
         let approver = HostApprover {
             sink: Arc::downgrade(&sink),
         };
-        assert_eq!(
-            approver
-                .approve(agent_request(None, ToolEffect::LocalMutation))
-                .await,
-            Some(ApprovalDecision::Approve)
-        );
+        let write = approver
+            .approve(agent_request(None, ToolEffect::LocalMutation))
+            .await;
+        if koda_core::sandbox::is_available() {
+            assert_eq!(write, Some(ApprovalDecision::Approve));
+        } else {
+            assert!(
+                matches!(&write, Some(ApprovalDecision::RejectAuto { reason })
+                    if reason.contains("no kernel sandbox")),
+                "{write:?}"
+            );
+        }
         assert!(matches!(
             approver
                 .approve(agent_request(None, ToolEffect::Destructive))

@@ -1,9 +1,10 @@
 # Sandbox
 
 Koda's kernel sandbox is **always active** — every Bash command runs
-inside a sandboxed process. The sandbox enforces the perimeter; the
-[trust mode](./approval.md) controls whether you see a confirmation
-prompt before each mutation.
+inside a sandboxed process. The sandbox decides what a command can do: in
+Auto a command that stays inside it runs without asking, and one that needs
+more asks to leave it. The [trust mode](./approval.md) picks the sandbox:
+Auto's can write the project, Plan's keeps it read-only.
 
 ## File tool read policy
 
@@ -49,9 +50,8 @@ through Bash, inside the kernel sandbox.
 > - Those files are **write-protected** by the kernel sandbox, so the model
 >   cannot modify or delete them.
 > - Network exfiltration via Bash is constrained by the sandbox's outbound
->   network policy.
-> - Trust-mode `safe` requires explicit approval before every Bash command,
->   which catches `curl`-style exfiltration attempts.
+>   network policy: commands reach only the hosts Koda's proxy allows, and
+>   a command that asks to leave the sandbox waits for your approval.
 >
 > If you work with highly sensitive secrets and want file-level read
 > protection, run koda in a containerised environment with access to only
@@ -61,8 +61,17 @@ through Bash, inside the kernel sandbox.
 ### Write restrictions
 
 Bash commands can only write to:
-- The project directory
+- The project directory, except `.git`, which is read-only
 - `/tmp` and standard cache dirs (`~/.cache`, `~/.cargo`, etc.)
+
+In Plan the project is read-only too.
+
+`.git` is read-only as it is in Codex's workspace-write sandbox, so a
+command can't rewrite history or the repository's config. `git status`,
+`git diff` and `git log` run; `git add`, `git commit`, `git checkout` and
+`git stash` write to `.git` and fail inside the sandbox. The model then asks
+to run them outside it (see
+[When a command needs to leave the sandbox](#when-a-command-needs-to-leave-the-sandbox)).
 
 The in-process file tools (`Write`, `Edit`) enforce the
 same perimeter via `safe_resolve_path` (logical check) and
@@ -164,7 +173,7 @@ point.
 
 Child agents inherit the parent's trust mode and sandbox via
 `TrustMode::clamp()` — a child can never run with less protection than
-its caller. If the parent runs in Safe mode, the child runs in Safe mode
+its caller. If the parent runs in Plan mode, the child runs in Plan mode
 even if the agent JSON specifies `"trust": "auto"`.
 
 Within that clamp, a sub-agent's calls go through the same rules as the main
@@ -180,20 +189,14 @@ agent's, and what would ask asks in the main session, naming the agent. See
 | Windows | Not supported | — |
 
 If the platform backend is unavailable (e.g. `bwrap` not installed on
-Linux), behavior depends on your trust mode:
+Linux), nothing contains a command:
 
-- **Auto mode**: koda **refuses to start** with an actionable error
-  that includes a platform-specific install hint (e.g. `apt install
-  bubblewrap` on Linux). Auto auto-approves mutating tool calls and
-  relies on the kernel sandbox to contain them — silently dropping
-  that boundary at startup is a security foot-gun.
-- **Safe mode**: koda runs unsandboxed with a one-time warning
-  (`tracing::warn!`). The human is the primary boundary in Safe
-  (every mutation prompts), so the sandbox is defense-in-depth
-  rather than the primary perimeter.
-- **Plan mode** (sub-agent only): kernel sandbox state is irrelevant
-  — Plan denies all mutating tools at the trust layer; Bash never
-  runs.
+- **Auto mode**: every command and every edit asks first, as Claude Code
+  does with its sandbox off. "This session" covers the exact command, or
+  the file for Edit and Write.
+- **Plan mode**: shell commands are refused, since no sandbox keeps them
+  read-only, and so is a search through `grep` or `find`; `Read` still
+  works.
 
 When the sandbox is there but can't be set up for one command (a project
 path the macOS profile can't name, such as one with a `"` in it, or Linux's
@@ -264,16 +267,21 @@ How Koda finds those servers differs by platform:
 When a command you need fails because of that, such as `git push` to an SSH
 remote, the model asks to run that one command outside the sandbox: a Bash
 call with `outside_sandbox: true` and a `reason`. Koda shows the command and
-the reason and waits for you, in Auto as in Safe:
+the reason and waits for you; Plan refuses it:
 
 ```text
   Bash  ⚠ outside the sandbox  git push origin main
   why: Push the commit to origin over SSH, which the sandbox blocks
-  [y] approve  [n] reject  [f] feedback  [a] auto  [esc] stop
+  [y] approve  [n] reject  [f] feedback  [esc] stop
 ```
 
 The command then runs as it would in your own shell, with no sandbox and no
-proxy. Each such call asks again; `a` and `s` don't change that. A sub-agent
+proxy. Each such call asks again, unless the model proposed a `prefix_rule`
+with it, such as `["git", "commit"]`: then `[s] this session` covers every
+later command with that prefix that leaves the sandbox. A prefix that would
+cover any program (`bash`, `python -c`, `sudo`, `git` alone) isn't offered,
+and a destructive command still asks every time (see
+[Allow for this session](./approval.md#allow-for-this-session)). A sub-agent
 asks in the main session; headless runs have no one to ask, so they're refused, and after a denial
 they're told the command can't leave the sandbox in that run. Codex
 (`require_escalated`) and Claude Code (`dangerouslyDisableSandbox`) do the
@@ -283,9 +291,9 @@ same.
 
 The **sandbox backend** (above) restricts what a sub-agent's commands can
 do. Its writes land in the project, like the main agent's and like Claude
-Code's and Codex's sub-agents; in Safe it asks for them first, in the main
-session. In Plan sub-agents are read-only, and the kernel sandbox keeps the
-project read-only for their commands.
+Code's and Codex's sub-agents; what would ask asks in the main session. In
+Plan sub-agents are read-only, and the kernel sandbox keeps the project
+read-only for their commands.
 
 An agent can ask for a worktree of its own with `"isolation": "worktree"`
 in its JSON. When a worktree holds work at the end, Koda commits what isn't
@@ -315,14 +323,8 @@ folder. A worktree git won't remove stays where it is, named in the log:
 Koda removes worktrees only through `git worktree remove`.
 
 Outside a git repository there are no worktrees. A sub-agent that needs one
-doesn't start, and the main agent is told why, so it can do the work itself:
-in Safe that means you approve each edit. In Auto, sub-agents write in the
-project as usual.
-
-Safe moves agents that have `Write` or `Edit`. An agent denied both
-stays in the project, so a testing agent can run your tests against your build
-output. Its commands aren't reviewed first, so deny `Bash` too if an agent
-shouldn't run any.
+doesn't start, and the main agent is told why, so it can do the work itself.
+Sub-agents without `"isolation": "worktree"` write in the project as usual.
 
 Sub-agents in the project share it with each other. The main agent is told
 to give each one files no other is touching.

@@ -281,7 +281,7 @@ mod tests {
         let fs = LocalFileSystem::new();
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
         let bg = crate::tools::bg_process::BgRegistry::new();
-        let trust = crate::trust::TrustMode::Safe;
+        let trust = crate::trust::TrustMode::Auto;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let ctx = crate::tools::ToolExecCtx::for_test(

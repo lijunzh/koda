@@ -334,7 +334,7 @@ impl ToolRegistry {
         Self::with_trust(
             project_root,
             max_context_tokens,
-            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
         )
     }
 
@@ -1896,7 +1896,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let registry =
-            ToolRegistry::with_trust(root.clone(), 128_000, crate::trust::TrustMode::Safe);
+            ToolRegistry::with_trust(root.clone(), 128_000, crate::trust::TrustMode::Auto);
         let write =
             |name: &str| serde_json::json!({ "command": format!("touch {name}") }).to_string();
         let run = |args: String, mode| {
@@ -1918,7 +1918,7 @@ mod tests {
             !root.join("planned").exists(),
             "a Plan turn wrote to the project"
         );
-        let safe = run(write("made"), crate::trust::TrustMode::Safe).await;
+        let safe = run(write("made"), crate::trust::TrustMode::Auto).await;
         assert!(
             root.join("made").exists(),
             "a Safe turn couldn't write: {safe:?}"

@@ -1,4 +1,4 @@
-//! A sub-agent declared with `trust: "safe"` can write, and can't run a
+//! A sub-agent declared with `trust: "auto"` can write, and can't run a
 //! destructive command nobody approved.
 //!
 //! A sub-agent's calls are judged by the session's mode and rules, as Claude
@@ -15,9 +15,9 @@ use koda_core::{engine::EngineEvent, trust::TrustMode};
 use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::{ENV_MUTEX, Env, MockProvider, MockResponse};
 
-/// Helper: write a sub-agent JSON declaring `trust: "safe"`,
+/// Helper: write a sub-agent JSON declaring `trust: "auto"`,
 /// matching the post-#1250 built-in `task` agent shape.
-fn write_safe_trust_sub_agent(env: &Env, server: &FakeLlmServer, name: &str) {
+fn write_auto_trust_sub_agent(env: &Env, server: &FakeLlmServer, name: &str) {
     let agents_dir = env.root.join(".koda/agents");
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(
@@ -26,7 +26,7 @@ fn write_safe_trust_sub_agent(env: &Env, server: &FakeLlmServer, name: &str) {
             "name": name,
             "system_prompt": "You are a write-capable sub-agent for testing.",
             "allowed_tools": [],
-            "trust": "safe",
+            "trust": "auto",
             "provider": "lmstudio",
             "model": "stub",
             "base_url": server.url()
@@ -37,14 +37,14 @@ fn write_safe_trust_sub_agent(env: &Env, server: &FakeLlmServer, name: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn safe_trust_sub_agent_can_write_files() {
+async fn auto_trust_sub_agent_can_write_files() {
     // The session is in Auto, so the sub-agent's Write runs without asking,
     // whatever the agent declares (Claude Code applies an agent's own mode
     // only when the session is in its default mode).
     let _lock = ENV_MUTEX.lock().await;
     let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
-    write_safe_trust_sub_agent(&env, &server, "writer");
+    write_auto_trust_sub_agent(&env, &server, "writer");
 
     // Sub-agent script: emit a Write tool call, then a final text reply.
     // The sub-agent's requests go to `server`, which plays this script.
@@ -119,14 +119,14 @@ async fn safe_trust_sub_agent_can_write_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn safe_trust_sub_agent_destructive_bash_is_still_blocked() {
-    // A destructive command asks even in Safe; with nobody to ask it is
+async fn auto_trust_sub_agent_destructive_bash_is_still_blocked() {
+    // A destructive command asks even in Auto; with nobody to ask it is
     // refused, and the file survives. Filesystem state is the proof: the
     // sub-agent's last reply says nothing about each call.
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
-    write_safe_trust_sub_agent(&env, &server, "destroyer");
+    write_auto_trust_sub_agent(&env, &server, "destroyer");
 
     // Pre-create the file the sub-agent will try to delete.
     let target = env.root.join("do_not_delete.txt");

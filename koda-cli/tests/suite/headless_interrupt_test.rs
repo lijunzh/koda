@@ -206,7 +206,7 @@ impl Project {
             .args(["exec", "Fix the parser", "--json"])
             .args(["--provider", "lmstudio", "--model", "stub"])
             .args(["--base-url", &server.url()])
-            .args(["--mode", "safe"])
+            .args(["--mode", "auto"])
             .arg("--project-root")
             .arg(self.root())
             .env("XDG_CONFIG_HOME", self.home())

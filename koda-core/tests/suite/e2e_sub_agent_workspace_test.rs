@@ -83,7 +83,7 @@ fn write_agent_denying(
         "system_prompt": "You write files.",
         "allowed_tools": [],
         "disallowed_tools": denied,
-        "trust": "safe",
+        "trust": "auto",
         "provider": "lmstudio",
         "model": "stub",
         "base_url": server.url()
@@ -97,10 +97,44 @@ fn write_agent_denying(
 /// Have the agent write [`WRITTEN`] and return what `InvokeAgent` told the
 /// parent model.
 async fn delegate_a_write(env: &Env, server: &FakeLlmServer) -> String {
-    let sub_responses = serde_json::json!([
-        { "tool": "Write", "args": { "file_path": WRITTEN, "content": "from the sub-agent" } },
-        { "text": "Done writing." }
-    ]);
+    let write = serde_json::json!({
+        "tool": "Write",
+        "args": { "file_path": WRITTEN, "content": "from the sub-agent" },
+    });
+    delegate(env, server, write).await
+}
+
+/// A command that writes [`WRITTEN`] outside the sandbox, which asks first
+/// in Auto.
+fn escalated_write() -> serde_json::Value {
+    serde_json::json!({
+        "tool": "Bash",
+        "args": {
+            "command": format!("printf 'from the sub-agent' > {WRITTEN}"),
+            "outside_sandbox": true,
+            "reason": "test",
+        },
+    })
+}
+
+/// A plain command that creates [`WRITTEN`] outside the sandbox, with a
+/// prefix ("touch") that "allow for session" covers.
+fn escalated_touch() -> serde_json::Value {
+    serde_json::json!({
+        "tool": "Bash",
+        "args": {
+            "command": format!("touch {WRITTEN}"),
+            "outside_sandbox": true,
+            "reason": "test",
+            "prefix_rule": ["touch"],
+        },
+    })
+}
+
+/// Have the agent make `call` and return what `InvokeAgent` told the parent
+/// model.
+async fn delegate(env: &Env, server: &FakeLlmServer, call: serde_json::Value) -> String {
+    let sub_responses = serde_json::json!([call, { "text": "Done writing." }]);
     server.mount_script_json(&sub_responses.to_string()).await;
     env.insert_user_message("delegate a write").await;
     let provider = MockProvider::new(vec![
@@ -187,21 +221,22 @@ async fn in_auto_outside_git_the_edit_still_lands_in_the_project() {
     assert!(env.root.join(WRITTEN).exists());
 }
 
-/// In Safe a sub-agent asks for its edit in the main session, as the main
-/// agent does (Claude Code), and an approved edit lands in the project.
+/// What asks for the main agent asks for a sub-agent too, in the main
+/// session (Claude Code): leaving the sandbox. An approved command lands in
+/// the project.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_safe_the_sub_agent_asks_and_an_approved_edit_lands_in_the_project() {
+async fn the_sub_agent_asks_and_an_approved_command_lands_in_the_project() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
     let approver = Answering::on(&env, ApprovalDecision::Approve);
 
-    let told = delegate_a_write(&env, &server).await;
+    let told = delegate(&env, &server, escalated_write()).await;
 
     let content = std::fs::read_to_string(env.root.join(WRITTEN))
-        .expect("the approved edit must reach the project");
+        .expect("the approved command must reach the project");
     assert_eq!(content, "from the sub-agent");
     assert!(
         branches(&env).is_empty(),
@@ -210,22 +245,22 @@ async fn in_safe_the_sub_agent_asks_and_an_approved_edit_lands_in_the_project() 
     let asked = approver.asked();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].agent_name, "writer");
-    assert_eq!(asked[0].tool_name, "Write");
+    assert_eq!(asked[0].tool_name, "Bash");
     assert_eq!(asked[0].agent_id, None, "a blocking sub-agent has no id");
     assert!(told.contains("Done writing."), "{told}");
 }
 
-/// A refused edit isn't made, and the sub-agent hears the person said no.
+/// A refused command isn't run, and the sub-agent hears the person said no.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_safe_a_refused_edit_leaves_the_project_as_it_was() {
+async fn a_refused_command_leaves_the_project_as_it_was() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
     Answering::on(&env, ApprovalDecision::Reject);
 
-    delegate_a_write(&env, &server).await;
+    delegate(&env, &server, escalated_write()).await;
 
     assert!(!env.root.join(WRITTEN).exists());
     let calls = server.chat_messages().await;
@@ -233,16 +268,16 @@ async fn in_safe_a_refused_edit_leaves_the_project_as_it_was() {
     assert!(second.contains("User rejected this action."), "{second}");
 }
 
-/// With nobody to ask, the edit is refused and the sub-agent is told why.
+/// With nobody to ask, the command is refused and the sub-agent is told why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn in_safe_with_nobody_to_ask_the_edit_is_refused() {
+async fn with_nobody_to_ask_the_command_is_refused() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
 
-    delegate_a_write(&env, &server).await;
+    delegate(&env, &server, escalated_write()).await;
 
     assert!(!env.root.join(WRITTEN).exists());
     let calls = server.chat_messages().await;
@@ -255,15 +290,15 @@ async fn in_safe_with_nobody_to_ask_the_edit_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sub_agents_allow_for_session_is_the_sessions() {
     let _lock = ENV_MUTEX.lock().await;
-    let env = Env::builder().trust(TrustMode::Safe).build().await;
+    let env = Env::builder().trust(TrustMode::Auto).build().await;
     let server = FakeLlmServer::spawn().await;
     init_repo(&env.root);
     write_agent(&env, &server, None);
     let approver = Answering::on(&env, ApprovalDecision::ApproveForSession);
-    // Two sub-agents, one after the other, each writing the same file.
-    let write =
-        serde_json::json!({ "tool": "Write", "args": { "file_path": WRITTEN, "content": "x" } });
-    let script = serde_json::json!([write, { "text": "one" }, write, { "text": "two" }]);
+    // Two sub-agents, one after the other, each running the same command
+    // outside the sandbox.
+    let touch = escalated_touch();
+    let script = serde_json::json!([touch, { "text": "one" }, touch, { "text": "two" }]);
     server.mount_script_json(&script.to_string()).await;
     env.insert_user_message("delegate twice").await;
     let invoke = |prompt: &str| {
@@ -280,6 +315,6 @@ async fn a_sub_agents_allow_for_session_is_the_sessions() {
     env.run_inference(&provider).await;
 
     assert!(env.root.join(WRITTEN).exists());
-    // The second agent's write wasn't asked about.
+    // The second agent's command wasn't asked about.
     assert_eq!(approver.asked().len(), 1);
 }

@@ -119,13 +119,19 @@ to 0.7](./upgrading-0.7.md#running-koda).
 
 ## Trust mode in headless mode
 
-There is no human to approve tool calls. Koda applies a **headless
-policy** — more restrictive than interactive Auto mode:
+There is no human to approve tool calls. Koda answers them itself with a
+**headless policy**, in the run's trust mode (Auto unless `--mode plan`):
 
-- **Approves** read-only tools: Read, Grep, Glob, WebFetch
-- **Approves** safe write tools: Write, Edit (files within the project)
-- **Rejects** all destructive operations: `rm -rf`, `git push --force`,
-  etc.
+- **Runs** what the sandbox holds, as interactive Auto does: reads, edits in
+  the project, and every Bash command inside the sandbox.
+- **Rejects** destructive operations (`rm -rf`, `git push --force`, …) and
+  any command asking to leave the sandbox, so `git commit`, which writes to
+  `.git`, can't run. The model is told no human is there to approve it.
+- **Rejects** every command and edit on a machine with no kernel sandbox
+  (no bwrap on Linux, say): nothing would contain them, and nobody is
+  there to approve each one. Such a run can only read.
+- **Approves** the rest of what would ask in a session, such as a command
+  naming a path outside the project, which the sandbox still holds.
 - **Skips** AskUser questions (prints to stderr, continues with empty answer)
 
 The sandbox enforces credential protection and write restrictions
@@ -140,15 +146,14 @@ such as summarizing a mailbox or reviewing a branch:
 koda exec --mode plan "Anything in my inbox I need to deal with?"
 ```
 
-- **Runs** tools that read: Read, Grep, Glob, web fetch and search, Bash
-  commands Koda judges read-only, and MCP tools whose server marks them
-  `readOnlyHint`.
-- **Refuses** everything else without asking: Write, Edit, other Bash
-  commands and MCP tools without the mark. The model is told the call was
-  refused and that it should say what it would do instead.
-- **Keeps the project read-only in the kernel sandbox** too, so a command
-  wrongly judged read-only still can't change it. Temp and cache
+- **Runs** tools that read: Read, Grep, Glob, web fetch and search, MCP
+  tools whose server marks them `readOnlyHint`, and every Bash command, in
+  a kernel sandbox that keeps the project read-only. Temp and cache
   directories stay writable.
+- **Refuses** everything else without asking: Write, Edit, destructive
+  commands, leaving the sandbox, and MCP tools without the mark. The model
+  is told the call was refused and that it should say what it would do
+  instead. With no sandbox on the machine, it refuses Bash commands too.
 
 An MCP server whose tools don't carry `readOnlyHint` can't be used in a
 read-only run. Codex's `exec` (read-only sandbox by default), and the plan

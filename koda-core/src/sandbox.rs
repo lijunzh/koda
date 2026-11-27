@@ -8,7 +8,7 @@
 //! ## Public API
 //!
 //! - [`build`](crate::sandbox::build) — main entry point used by `tools/shell.rs`
-//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs` to reject Auto when the sandbox is unavailable
+//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs`: with no sandbox, Auto asks before every change and Plan refuses commands
 //! - [`is_fully_denied`](crate::sandbox::is_fully_denied) — used by `tools/mod.rs` for in-process Read/Edit
 //!   parity with the kernel sandbox (#882, #898)
 //!
@@ -69,16 +69,14 @@ pub fn dependency_report() -> DependencyReport {
 /// Platform-specific install hint for an unavailable sandbox backend.
 ///
 /// Returns a multi-line string describing how to install/enable the
-/// named backend, or how to bypass via `--mode safe` when no install
-/// path exists. Pure formatter — takes a backend identifier (from
+/// named backend, or what Koda does without one when no install path
+/// exists. Pure formatter — takes a backend identifier (from
 /// [`DependencyReport::backend`]) and returns text. No I/O, no
 /// platform probing.
 ///
-/// Used by [`crate::trust::require_sandbox_for_auto`]'s caller in
-/// `koda-cli` to attach actionable setup instructions to the Auto
-/// refusal error (#1259 follow-up: replaced the dedicated
-/// `koda doctor` subcommand with inline error enrichment because
-/// the doctor's only substantive output was sandbox readiness).
+/// The host puts it in `state/read`'s sandbox report, which the TUI and
+/// `/feedback` show (#1259 follow-up: replaced the dedicated `koda doctor`
+/// subcommand, whose only substantive output was sandbox readiness).
 ///
 /// Kept tiny on purpose: the real install instructions live in
 /// `docs/src/sandbox.md` — this is the one-line nudge so a user
@@ -91,7 +89,7 @@ pub fn dependency_report() -> DependencyReport {
 ///
 /// let hint = setup_hint("bwrap");
 /// assert!(hint.contains("apt install bubblewrap"));
-/// assert!(hint.contains("--mode safe"));
+/// assert!(hint.contains("asks before every"));
 /// ```
 pub fn setup_hint(backend: &str) -> String {
     match backend {
@@ -99,17 +97,17 @@ pub fn setup_hint(backend: &str) -> String {
              Debian/Ubuntu:  sudo apt install bubblewrap\n\
              Fedora/RHEL:    sudo dnf install bubblewrap\n\
              Arch:           sudo pacman -S bubblewrap\n\
-           Or run with `--mode safe` to keep the human in the approval loop.\n"
+           Until then Koda asks before every command and edit.\n"
             .to_string(),
         "seatbelt" => "  Seatbelt is built into macOS. If it's reporting unavailable,\n\
            the `sandbox-exec` binary is missing from /usr/bin \u{2014} file an issue.\n\
-           Workaround: run with `--mode safe`.\n"
+           Until then Koda asks before every command and edit.\n"
             .to_string(),
         // `none` backend = unknown platform (Windows pre-sandbox-port,
-        // exotic Unixes). No install path; only escape is `--mode safe`.
+        // exotic Unixes). No install path: Koda asks before every change.
         _ => format!(
             "  No kernel sandbox backend exists for this platform ({}).\n\
-           Run with `--mode safe` to keep the human in the approval loop.\n",
+           Koda asks before every command and edit.\n",
             std::env::consts::OS
         ),
     }
@@ -186,28 +184,10 @@ pub fn build_with_loopback(
     let runtime = current_runtime();
     warn_if_unavailable_once(runtime.as_ref());
 
-    // Phase 5 of #934 (item 2 — `failIfUnavailable`): refuse to run
-    // unsandboxed in Auto mode. Auto's whole value proposition is
-    // "trust the kernel sandbox to contain auto-approved destructive
-    // ops" — silently dropping that boundary at process startup
-    // because `bwrap` happens to be missing is a sharp footgun.
-    // #860's confirmation-prompt downgrade is a UX fallback, not a
-    // security guarantee (the model can still read anywhere on the
-    // FS in unsandboxed Auto).
-    //
-    // Safe and Plan keep the warn-and-fallback path: the user is
-    // already in the approval loop (Safe) or the tool registry filters
-    // writes (Plan), so sandbox is defense-in-depth there, not the
-    // primary boundary. No env-var escape hatch exists by design —
-    // if you don't want fail-if-unavailable, drop to Safe/Plan.
-    if matches!(trust, crate::trust::TrustMode::Auto) && !is_available() {
-        anyhow::bail!(
-            "Kernel sandbox backend unavailable in Auto mode \u{2014} refusing to run \
-             unsandboxed. Install the platform sandbox dependency (e.g. `bwrap` on \
-             Linux) or switch to Safe/Plan mode (which keeps the user in the \
-             approval loop)."
-        );
-    }
+    // No kernel sandbox here: the command runs without one, which is why
+    // every command asks first on such a machine (`trust::check_tool`), as
+    // Claude Code asks with its sandbox off.
+    let _ = trust;
 
     // Phase 5 of #934 (PR-1): policy is now plumbed in from the caller
     // instead of synthesized here as `strict_default()`. This is the
@@ -317,8 +297,7 @@ pub fn build_unsandboxed(command: &str, project_root: &Path, policy: &SandboxPol
 /// | Trust | wall_time_secs | rationale                                                  |
 /// |-------|----------------|------------------------------------------------------------|
 /// | Plan  | 120            | Claude Code's default, as in every mode.                   |
-/// | Safe  | 120            | Matches `DEFAULT_TIMEOUT_SECS`.                            |
-/// | Auto  | 120            | Same as Safe. Raised from 60 in November 2026: eval runs asked for more than 300s often, for builds and tests. |
+/// | Auto  | 120            | Raised from 60 in November 2026: eval runs asked for more than 300s often, for builds and tests. |
 ///
 /// Tuning per-trust differently is deliberately deferred — PR-3's job
 /// is the *lift* (make limits policy-driven, not hardcoded), not the
@@ -327,9 +306,7 @@ pub fn build_unsandboxed(command: &str, project_root: &Path, policy: &SandboxPol
 pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> SandboxPolicy {
     let mut policy = SandboxPolicy::strict_default();
     policy.limits.wall_time_secs = Some(match trust {
-        crate::trust::TrustMode::Plan
-        | crate::trust::TrustMode::Safe
-        | crate::trust::TrustMode::Auto => 120,
+        crate::trust::TrustMode::Plan | crate::trust::TrustMode::Auto => 120,
     });
     // Phase 5 PR-5 of #934: deny-rule traversal depth, derived from
     // trust mode (NOT a runtime config knob — koda is config-free).
@@ -338,12 +315,11 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // less human gating exists, so the more paranoid the sandbox
     // should be. Plan mode is read-only (lowest blast radius, perf
     // matters because grep/read are hot); Auto has no human gate
-    // (highest blast radius, max paranoia). Safe sits in between.
+    // (highest blast radius, max paranoia).
     //
     // Bounds match the issue #934 spec: "default 3, max 10".
     policy.fs.mandatory_deny_search_depth = match trust {
         crate::trust::TrustMode::Plan => 3,  // read-only — perf-sensitive
-        crate::trust::TrustMode::Safe => 5,  // user gate exists, balanced
         crate::trust::TrustMode::Auto => 10, // no human gate — max paranoia
     };
     // Gap 3 of #1072 (PR-4 of #934): seed allow_write with the canonical
@@ -388,12 +364,18 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // In a worktree `.git` is a file pointing at the real one, so those paths
     // can't exist and bwrap can't start on a read-only bind of them.
     // [`git_file_denies`] protects what's really there.
+    // `.git` is read-only, as Codex's workspace-write sandbox keeps it
+    // (`protocol/src/permissions.rs`): a command can read the history
+    // (`git status`, `log`, `diff`), and one that changes the repository
+    // (`git add`, `commit`, `checkout`) asks to leave the sandbox. That also
+    // keeps out hooks, `config` and its programs, which git runs outside the
+    // sandbox at the next commit.
     if !policy.fs.allow_git_config {
         let git = canonical_root.join(".git");
         policy.fs.deny_write_within_allow = if git.is_file() {
             git_file_denies(&git).into_iter().map(Into::into).collect()
         } else {
-            vec![git.join("hooks").into(), git.join("config").into()]
+            vec![git.into()]
         };
     }
 
@@ -484,6 +466,8 @@ fn git_file_denies(git_file: &Path) -> Vec<std::path::PathBuf> {
         }
     }
 
+    // The whole of both, as a repository's own `.git` is read-only.
+    denied.extend([git_dir.clone(), common.clone()]);
     denied.extend(
         [common.join("config"), hooks]
             .into_iter()
@@ -604,7 +588,7 @@ print(\"connected\")'";
         let out = build(
             "echo \"$HTTPS_PROXY\"",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             Some(31415),
             None,
@@ -628,7 +612,7 @@ print(\"connected\")'";
         let out = build(
             "echo \"[$HTTPS_PROXY]\"",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -655,7 +639,7 @@ print(\"connected\")'";
         let out = build(
             "echo \"$ALL_PROXY|$all_proxy\"",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             Some(27182),
@@ -680,7 +664,7 @@ print(\"connected\")'";
         let out = build(
             "echo \"[$ALL_PROXY]\"",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -704,7 +688,7 @@ print(\"connected\")'";
         let out = build(
             "echo \"$HTTPS_PROXY|$ALL_PROXY\"",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             Some(8080),
             Some(1080),
@@ -737,7 +721,7 @@ print(\"connected\")'";
         let out = build(
             cmd,
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             Some(8080),
             None,
@@ -765,7 +749,7 @@ print(\"connected\")'";
         let status = build(
             "echo ok",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -785,7 +769,7 @@ print(\"connected\")'";
         let status = build(
             "touch sandbox_canary",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -813,7 +797,7 @@ print(\"connected\")'";
         let out = build(
             "f=$(mktemp \"$TMPDIR/koda-sandbox-canary.XXXXXX\") && echo \"$f\" && rm \"$f\"",
             project.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -847,7 +831,7 @@ print(\"connected\")'";
         let out = build(
             "cc t.c -o t && ./t",
             project.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -899,7 +883,7 @@ print(\"connected\")'";
         let mut cmd = build(
             "cargo build --offline",
             p,
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -930,7 +914,7 @@ print(\"connected\")'";
         let status = build(
             &format!("echo pwned > {}", target.display()),
             project.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -953,7 +937,7 @@ print(\"connected\")'";
         let status = build(
             "cat /etc/hosts > /dev/null",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -973,7 +957,7 @@ print(\"connected\")'";
         let status = build(
             "touch strict_canary",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1001,7 +985,7 @@ print(\"connected\")'";
         let status = build(
             &format!("echo pwned > {}", target.display()),
             project.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1023,7 +1007,7 @@ print(\"connected\")'";
         let status = build(
             "cat /etc/hosts > /dev/null",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1047,11 +1031,7 @@ print(\"connected\")'";
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("a\"b");
         std::fs::create_dir_all(&project).unwrap();
-        for mode in [
-            crate::trust::TrustMode::Plan,
-            crate::trust::TrustMode::Safe,
-            crate::trust::TrustMode::Auto,
-        ] {
+        for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
             let error = build(
                 "touch ran",
                 &project,
@@ -1084,7 +1064,7 @@ print(\"connected\")'";
         let status = build(
             &format!("ls {db_dir}"),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1113,7 +1093,7 @@ print(\"connected\")'";
         let status = build(
             &format!("ls {ssh_dir}"),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1143,7 +1123,7 @@ print(\"connected\")'";
         let status = build(
             &format!("touch {canary}"),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1173,7 +1153,7 @@ print(\"connected\")'";
         let status = build(
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1201,7 +1181,7 @@ print(\"connected\")'";
         let status = build(
             &format!("echo '{{}}' > {}", target.display()),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1228,7 +1208,7 @@ print(\"connected\")'";
         let status = build(
             "touch normal_file.txt",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1257,7 +1237,7 @@ print(\"connected\")'";
         let status = build(
             &format!("echo '# evil' > {}", target.display()),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1290,7 +1270,7 @@ print(\"connected\")'";
         let status = build(
             &format!("ls {ssh_dir}"),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1320,7 +1300,7 @@ print(\"connected\")'";
         let status = build(
             &format!("touch {canary}"),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1350,7 +1330,7 @@ print(\"connected\")'";
         let status = build(
             &format!("ls {aws_dir}"),
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
@@ -1370,7 +1350,7 @@ print(\"connected\")'";
     // Behavior matrix is intentionally tiny:
     //
     //   TrustMode::Auto  + sandbox unavailable  →  build() returns Err
-    //   TrustMode::Safe  + sandbox unavailable  →  build() returns Ok (warn-and-fallback)
+    //   TrustMode::Auto  + sandbox unavailable  →  build() returns Ok (warn-and-fallback)
     //   TrustMode::Plan  + sandbox unavailable  →  build() returns Ok (warn-and-fallback)
     //   *                + sandbox available    →  build() returns Ok
     //
@@ -1410,7 +1390,7 @@ print(\"connected\")'";
     }
 
     #[tokio::test]
-    async fn build_falls_back_in_safe_mode_when_sandbox_unavailable() {
+    async fn build_falls_back_in_auto_when_sandbox_unavailable() {
         if is_available() {
             eprintln!("skip: kernel sandbox is available on this host");
             return;
@@ -1419,15 +1399,15 @@ print(\"connected\")'";
         let result = build(
             "echo hi",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &koda_sandbox::SandboxPolicy::strict_default(),
             None,
             None,
         );
         assert!(
             result.is_ok(),
-            "Safe mode must keep the warn-and-fallback path \u{2014} the user is \
-             already in the approval loop: {result:?}"
+            "with no sandbox the command runs unsandboxed, after asking \
+             (trust::check_tool): {result:?}"
         );
     }
 
@@ -1460,11 +1440,7 @@ print(\"connected\")'";
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        for mode in [
-            crate::trust::TrustMode::Plan,
-            crate::trust::TrustMode::Safe,
-            crate::trust::TrustMode::Auto,
-        ] {
+        for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
             let result = build(
                 "echo hi",
                 dir.path(),
@@ -1500,12 +1476,12 @@ print(\"connected\")'";
         let mut cmd = build(
             "ulimit -n",
             dir.path(),
-            &crate::trust::TrustMode::Safe,
+            &crate::trust::TrustMode::Auto,
             &policy,
             None,
             None,
         )
-        .expect("build must succeed (Safe mode falls back if sandbox unavailable)");
+        .expect("build must succeed (it runs unsandboxed if the sandbox is unavailable)");
 
         let out = cmd.output().await.expect("spawn ok");
         assert!(out.status.success(), "child should succeed: {out:?}");
@@ -1531,11 +1507,7 @@ print(\"connected\")'";
     #[test]
     fn policy_for_agent_sets_wall_time_for_all_trust_modes() {
         let dir = tempfile::tempdir().unwrap();
-        for mode in [
-            crate::trust::TrustMode::Plan,
-            crate::trust::TrustMode::Safe,
-            crate::trust::TrustMode::Auto,
-        ] {
+        for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
             let policy = policy_for_agent(mode, dir.path());
             assert_eq!(
                 policy.limits.wall_time_secs,
@@ -1555,7 +1527,7 @@ print(\"connected\")'";
         // the new defaults; until then, presence-without-enforcement
         // is worse than absence (silent unlimited > silent ignored).
         let dir = tempfile::tempdir().unwrap();
-        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
         assert_eq!(policy.limits.cpu_time_secs, None);
         assert_eq!(policy.limits.max_rss_bytes, None);
         assert_eq!(policy.limits.max_open_fds, None);
@@ -1568,7 +1540,7 @@ print(\"connected\")'";
         // project root is materialized on disk (sub-agent dispatch can
         // build the policy before its workspace exists).
         let _ = policy_for_agent(
-            crate::trust::TrustMode::Safe,
+            crate::trust::TrustMode::Auto,
             std::path::Path::new("/nonexistent/path/that/should/not/exist"),
         );
     }
@@ -1586,7 +1558,6 @@ print(\"connected\")'";
                 .contains(&root.clone().into())
         };
         assert!(denies_root(crate::trust::TrustMode::Plan));
-        assert!(!denies_root(crate::trust::TrustMode::Safe));
         assert!(!denies_root(crate::trust::TrustMode::Auto));
     }
 
@@ -1619,7 +1590,7 @@ print(\"connected\")'";
         assert!(!out.status.success(), "touch succeeded under Plan: {out:?}");
         assert!(!dir.path().join("plan.txt").exists());
 
-        let out = run(crate::trust::TrustMode::Safe, "safe.txt").await;
+        let out = run(crate::trust::TrustMode::Auto, "safe.txt").await;
         assert!(out.status.success(), "touch failed under Safe: {out:?}");
         assert!(dir.path().join("safe.txt").exists());
     }
@@ -1632,14 +1603,6 @@ print(\"connected\")'";
         let dir = tempfile::tempdir().unwrap();
         let policy = policy_for_agent(crate::trust::TrustMode::Plan, dir.path());
         assert_eq!(policy.fs.mandatory_deny_search_depth, 3);
-    }
-
-    #[test]
-    fn policy_for_agent_safe_mode_uses_balanced_depth() {
-        // Safe has a user gate — middle of the road.
-        let dir = tempfile::tempdir().unwrap();
-        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
-        assert_eq!(policy.fs.mandatory_deny_search_depth, 5);
     }
 
     #[test]
@@ -1666,16 +1629,12 @@ print(\"connected\")'";
         let plan = policy_for_agent(crate::trust::TrustMode::Plan, dir.path())
             .fs
             .mandatory_deny_search_depth;
-        let safe = policy_for_agent(crate::trust::TrustMode::Safe, dir.path())
-            .fs
-            .mandatory_deny_search_depth;
         let auto = policy_for_agent(crate::trust::TrustMode::Auto, dir.path())
             .fs
             .mandatory_deny_search_depth;
         assert!(
-            plan < safe && safe < auto,
-            "trust permissiveness must imply paranoia depth: \
-             Plan({plan}) < Safe({safe}) < Auto({auto})"
+            plan < auto,
+            "trust permissiveness must imply paranoia depth: Plan({plan}) < Auto({auto})"
         );
     }
 
@@ -1706,8 +1665,8 @@ print(\"connected\")'";
         // parent and child share the same project root (the common case).
         let dir = tempfile::tempdir().unwrap();
         let parent = SandboxPolicy::strict_default();
-        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
-        let child_alone = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Auto, dir.path());
+        let child_alone = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
         // All fields other than allow_write must match the child's policy.
         assert_eq!(composed.fs.deny_read, child_alone.fs.deny_read);
         assert_eq!(
@@ -1740,11 +1699,7 @@ print(\"connected\")'";
         // Before this fix, allow_write was always [], making
         // compose()'s intersection vacuously correct but meaningless.
         let dir = tempfile::tempdir().unwrap();
-        for mode in [
-            crate::trust::TrustMode::Plan,
-            crate::trust::TrustMode::Safe,
-            crate::trust::TrustMode::Auto,
-        ] {
+        for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
             let policy = policy_for_agent(mode, dir.path());
             assert_eq!(
                 policy.fs.allow_write.len(),
@@ -1799,7 +1754,7 @@ print(\"connected\")'";
         root: &Path,
         policy: &SandboxPolicy,
     ) -> std::process::Output {
-        let trust = crate::trust::TrustMode::Safe;
+        let trust = crate::trust::TrustMode::Auto;
         build(&script, root, &trust, policy, None, None)
             .unwrap()
             .output()
@@ -1821,14 +1776,19 @@ print(\"connected\")'";
         let (repo, worktree) = repo_with_worktree(&parent);
         let git_dir = repo.join(".git");
         let linked = git_dir.join("worktrees/slot");
-        let policy = policy_for_agent(crate::trust::TrustMode::Safe, &worktree);
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, &worktree);
 
         // The control: the sandbox runs, and the temp root is writable.
-        let probe = git_dir.join("objects/probe");
+        let probe = parent.join("probe");
         let script = format!("touch work.txt {}", probe.display());
         let wrote = sandboxed(script, &worktree, &policy).await;
         assert!(wrote.status.success(), "{wrote:?}");
         assert!(worktree.join("work.txt").exists() && probe.exists());
+
+        // The whole repository is read-only, as a project's own `.git` is.
+        let objects = git_dir.join("objects/probe");
+        let wrote = sandboxed(format!("touch {}", objects.display()), &worktree, &policy).await;
+        assert!(!wrote.status.success() && !objects.exists(), "{wrote:?}");
 
         for target in [
             git_dir.join("config"),
@@ -1866,11 +1826,11 @@ print(\"connected\")'";
         ];
         assert!(targets.iter().all(|target| !target.exists()));
 
-        let policy = policy_for_agent(crate::trust::TrustMode::Safe, &worktree);
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, &worktree);
 
-        // The control: this directory is writable, so only the policy stops
+        // The control: the temp root is writable, so only the policy stops
         // these, and `spare` is there to move over the target.
-        let spare = linked.join("spare");
+        let spare = parent.join("spare");
         let script = format!("echo bad > {}", spare.display());
         let wrote = sandboxed(script, &worktree, &policy).await;
         assert!(wrote.status.success(), "{wrote:?}");
@@ -1930,7 +1890,7 @@ print(\"connected\")'";
         let git_dir = repo.join(".git");
         let linked = git_dir.join("worktrees/slot");
 
-        let policy = policy_for_agent(crate::trust::TrustMode::Safe, &worktree);
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, &worktree);
 
         let denied: Vec<_> = policy
             .fs
@@ -2002,7 +1962,7 @@ print(\"connected\")'";
         std::fs::write(dir.path().join(".git"), "gitdir: /repo/.git/worktrees/a\n").unwrap();
         let root = dir.path().canonicalize().unwrap();
 
-        let policy = policy_for_agent(crate::trust::TrustMode::Safe, dir.path());
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
 
         let denied: Vec<_> = policy
             .fs
@@ -2020,11 +1980,7 @@ print(\"connected\")'";
         // before the workspace is materialized on disk.  canonicalize()
         // fails on missing paths; the fallback to raw path must not panic.
         let path = std::path::Path::new("/nonexistent/project/root/xyz");
-        for mode in [
-            crate::trust::TrustMode::Plan,
-            crate::trust::TrustMode::Safe,
-            crate::trust::TrustMode::Auto,
-        ] {
+        for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
             let policy = policy_for_agent(mode, path);
             assert_eq!(
                 policy.fs.allow_write.len(),
@@ -2042,14 +1998,11 @@ print(\"connected\")'";
         // build_command_inner are last-match-overridden by the overlay's
         // allow_write, neutralizing the entire #1073 protection.
         // strict_default() sets allow_git_config = false, so every trust
-        // mode must seed the deny pair.
+        // mode must seed the deny: the whole `.git`, as Codex keeps it
+        // read-only.
         let dir = tempfile::tempdir().unwrap();
         let canonical = dir.path().canonicalize().unwrap();
-        for mode in [
-            crate::trust::TrustMode::Plan,
-            crate::trust::TrustMode::Safe,
-            crate::trust::TrustMode::Auto,
-        ] {
+        for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
             let policy = policy_for_agent(mode, dir.path());
             assert!(
                 !policy.fs.allow_git_config,
@@ -2062,12 +2015,8 @@ print(\"connected\")'";
                 .map(|p| p.as_path())
                 .collect();
             assert!(
-                denies.contains(&canonical.join(".git/hooks").as_path()),
-                "{mode:?}: deny_write_within_allow must contain .git/hooks, got {denies:?}"
-            );
-            assert!(
-                denies.contains(&canonical.join(".git/config").as_path()),
-                "{mode:?}: deny_write_within_allow must contain .git/config, got {denies:?}"
+                denies.contains(&canonical.join(".git").as_path()),
+                "{mode:?}: deny_write_within_allow must contain .git, got {denies:?}"
             );
         }
     }
@@ -2084,7 +2033,7 @@ print(\"connected\")'";
             .fs
             .deny_read
             .push(koda_sandbox::PathPattern::new("/etc/secrets"));
-        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Auto, dir.path());
         assert!(
             composed
                 .fs
@@ -2102,7 +2051,7 @@ print(\"connected\")'";
         let dir = tempfile::tempdir().unwrap();
         let mut parent = SandboxPolicy::strict_default();
         parent.limits.wall_time_secs = Some(10);
-        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Safe, dir.path());
+        let composed = compose_child_policy(&parent, crate::trust::TrustMode::Auto, dir.path());
         assert_eq!(
             composed.limits.wall_time_secs,
             Some(10),

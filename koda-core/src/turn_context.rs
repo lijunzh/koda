@@ -277,7 +277,7 @@ mod tests {
             cancel.clone(),
             &cache,
             &bg_agents,
-            TrustMode::Safe,
+            TrustMode::Auto,
             &tools,
             &allows,
         );
@@ -285,7 +285,7 @@ mod tests {
         // Assert: every field is reachable + carries the value we passed.
         assert_eq!(ctx.project_root, root.as_path());
         assert_eq!(ctx.session_id, "session-smoke");
-        assert!(matches!(ctx.mode, TrustMode::Safe));
+        assert!(matches!(ctx.mode, TrustMode::Auto));
         assert!(!ctx.cancel.is_cancelled());
         // sub_agent_cache + bg_agents + db + config + tools + sink are
         // pointer-equal to the inputs — checked transitively by

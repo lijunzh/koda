@@ -38,7 +38,7 @@ async fn new_starts_a_fresh_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn rename_and_status() {
-    let tui = TestTui::start_safe(vec![]).await;
+    let tui = TestTui::start(vec![]).await;
     tui.run(async |driver: Driver| {
         driver.submit("/rename Parser work").await;
         driver.wait_for_screen("Renamed to \"Parser work\"").await;
@@ -47,7 +47,7 @@ async fn rename_and_status() {
         let screen = driver.screen();
         assert!(screen.contains("Parser work"), "{screen}");
         assert!(screen.contains("stub-model"), "{screen}");
-        assert!(screen.contains("safe"), "{screen}");
+        assert!(screen.contains("auto"), "{screen}");
         driver
     })
     .await;

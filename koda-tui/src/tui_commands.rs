@@ -363,18 +363,6 @@ async fn handle_resume_session(
                     0 => tui_output::err_msg(buffer, format!("No session found matching '{id}'.")),
                     1 => {
                         let target = &matches[0];
-                        // Auto needs the host's sandbox: refused here,
-                        // before switching, as the host would refuse it.
-                        if target.mode == Some(TrustMode::Auto) && !mode.1.available {
-                            tui_output::err_msg(
-                                buffer,
-                                format!(
-                                    "Cannot resume session in Auto mode: {}",
-                                    crate::mode::auto_refused(mode.1)
-                                ),
-                            );
-                            return;
-                        }
                         // The TUI opens it on the host before the next turn.
                         session.id = target.id.clone();
                         let short_id = target.id[..8].to_string();
@@ -473,7 +461,7 @@ fn show_help(buffer: &mut ScrollBuffer) {
         ("↑ / ↓", "Cycle through input history"),
         ("Ctrl+R", "Reverse history search"),
         ("Tab", "Autocomplete @file path or /command"),
-        ("Shift+Tab", "Cycle the mode: Safe, Auto, Plan"),
+        ("Shift+Tab", "Switch the mode: Auto, Plan"),
     ];
     for (key, desc) in input_keys {
         tui_output::emit_line(

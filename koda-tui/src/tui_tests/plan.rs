@@ -13,16 +13,16 @@ fn proposed_plan() -> ResponseTemplate {
 
 /// `/plan <prompt>` enters Plan and sends the prompt, whose turn tells the
 /// model it plans; a proposed plan is drawn framed, and "Implement this
-/// plan?" switches to Safe and sends "Implement the plan.", as Codex's TUI
+/// plan?" switches to Auto and sends "Implement the plan.", as Codex's TUI
 /// does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-async fn plan_then_implement_it_in_safe() {
+async fn plan_then_implement_it() {
     use koda_state::session_store::SessionStore;
-    let tui = TestTui::start_safe(vec![proposed_plan(), text("All done.")]).await;
+    let tui = TestTui::start(vec![proposed_plan(), text("All done.")]).await;
     let driver = tui
         .run(async |driver: Driver| {
-            driver.wait_for_screen("SAFE").await;
+            driver.wait_for_screen("AUTO").await;
             driver.submit("/plan add a greeting").await;
             driver.wait_for_screen("Implement this plan?").await;
             let screen = driver.screen();
@@ -35,7 +35,7 @@ async fn plan_then_implement_it_in_safe() {
             assert!(planning.contains("plan mode"), "{planning}");
             assert!(planning.contains("<proposed_plan>"), "{planning}");
 
-            // The first choice: implement it in Safe.
+            // The first choice: implement it, in Auto.
             driver.press(KeyCode::Enter);
             driver.wait_for_screen("All done.").await;
             let implementing = driver.model_call(2).await;
@@ -47,14 +47,14 @@ async fn plan_then_implement_it_in_safe() {
                 !implementing.contains("Read-only session"),
                 "still told it plans: {implementing}"
             );
-            driver.wait_for_screen("SAFE").await;
+            driver.wait_for_screen("AUTO").await;
             driver.wait_for_screen_without(BUSY_PROMPT).await;
             driver
         })
         .await;
     let session = driver.sessions().await.remove(0);
     let mode = driver.db().await.get_session_mode(&session).await.unwrap();
-    assert_eq!(mode.as_deref(), Some("safe"));
+    assert_eq!(mode.as_deref(), Some("auto"));
 }
 
 /// Typing while "Implement this plan?" is up is a reply: the menu goes,
@@ -62,9 +62,9 @@ async fn plan_then_implement_it_in_safe() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn typing_a_reply_keeps_planning() {
-    let tui = TestTui::start_safe(vec![proposed_plan(), text("All done.")]).await;
+    let tui = TestTui::start(vec![proposed_plan(), text("All done.")]).await;
     tui.run(async |driver: Driver| {
-        driver.wait_for_screen("SAFE").await;
+        driver.wait_for_screen("AUTO").await;
         driver.submit("/plan add a greeting").await;
         driver.wait_for_screen("Implement this plan?").await;
         driver.type_keys("use French");

@@ -41,7 +41,7 @@ pub fn is_mcp_tool_name(name: &str) -> bool {
 /// MCP tools declare hints via `ToolAnnotations`:
 /// - `readOnlyHint: true` → `ToolEffect::ReadOnly`
 /// - `destructiveHint: true` → `ToolEffect::Destructive`
-/// - Otherwise → `ToolEffect::RemoteAction` (conservative default — prompts in Safe mode)
+/// - Otherwise → `ToolEffect::RemoteAction` (conservative default)
 ///
 /// This maps directly to the TrustMode approval matrix, so MCP tools
 /// plug into the existing permission system with zero special-casing.

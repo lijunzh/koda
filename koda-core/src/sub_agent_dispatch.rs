@@ -629,7 +629,7 @@ fn run_sub_agent<'a>(
         let provider = crate::providers::create_provider(&sub_config.provider_settings());
         // A sub-agent writes in the project, like the main agent and like
         // Claude Code's and Codex's sub-agents, so its edits land where the user
-        // expects; in Safe mode it asks for them as the main agent does. An
+        // expects; what would ask for the main agent asks for it too. An
         // agent that asks for a worktree (`isolation`) gets one instead. Where a
         // worktree is needed and can't be had, the sub-agent doesn't start: the
         // project is no substitute.
@@ -1399,10 +1399,14 @@ fn run_sub_agent<'a>(
                                 effective_root_ref,
                             )
                         });
-                        if session_key
-                            .as_deref()
-                            .is_some_and(|key| session_allows.contains(key))
-                        {
+                        if effect.is_some_and(|effect| {
+                            session_allows.covers(
+                                &tc.function_name,
+                                &parsed_args,
+                                effect,
+                                effective_root_ref,
+                            )
+                        }) {
                             approval = ToolApproval::AutoApprove;
                         }
 
@@ -2145,10 +2149,8 @@ mod release_workspace_tests {
 
     #[test]
     fn only_an_agent_that_asks_gets_a_worktree() {
-        use TrustMode::{Auto, Plan, Safe};
-        assert!(!needs_worktree(Safe, AgentIsolation::None));
+        use TrustMode::{Auto, Plan};
         assert!(!needs_worktree(Auto, AgentIsolation::None));
-        assert!(needs_worktree(Safe, AgentIsolation::Worktree));
         assert!(needs_worktree(Auto, AgentIsolation::Worktree));
         assert!(!needs_worktree(Plan, AgentIsolation::Worktree));
     }

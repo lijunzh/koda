@@ -830,10 +830,9 @@ pub(crate) async fn execute_tools_sequential(
         let session_key = effect.and_then(|effect| {
             trust::session_allow_key(&tc.function_name, &parsed_args, effect, project_root)
         });
-        if session_key
-            .as_deref()
-            .is_some_and(|key| session_allows.contains(key))
-        {
+        if effect.is_some_and(|effect| {
+            session_allows.covers(&tc.function_name, &parsed_args, effect, project_root)
+        }) {
             approval = ToolApproval::AutoApprove;
         }
 
@@ -991,19 +990,19 @@ mod tests {
         let calls = vec![make_tool_call("Read"), make_tool_call("Grep")];
         assert!(can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
 
+    /// A write runs in the sandbox without asking in Auto, so it joins a
+    /// parallel batch; in Plan it's refused, and the batch runs in order.
     #[test]
-    fn test_cannot_parallelize_writes() {
+    fn a_write_parallelizes_in_auto_but_not_in_plan() {
         let calls = vec![make_tool_call("Read"), make_tool_call("Write")];
-        assert!(!can_parallelize(
-            &calls,
-            TrustMode::Safe,
-            Path::new("/test/project"),
-        ));
+        let root = Path::new("/test/project");
+        assert!(can_parallelize(&calls, TrustMode::Auto, root));
+        assert!(!can_parallelize(&calls, TrustMode::Plan, root));
     }
 
     #[test]
@@ -1020,7 +1019,7 @@ mod tests {
         ];
         assert!(!can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
@@ -1034,9 +1033,8 @@ mod tests {
         }
     }
 
-    /// Read-only commands auto-approve in every mode but Plan's refusals, so
-    /// a batch of them runs in parallel, with reads, as Codex runs shell
-    /// calls in parallel.
+    /// Commands in the sandbox run without asking, so a batch of them runs in
+    /// parallel, with reads, as Codex runs shell calls in parallel.
     #[test]
     fn read_only_bash_joins_a_parallel_batch() {
         let calls = vec![
@@ -1044,30 +1042,34 @@ mod tests {
             bash("ls -la src"),
             make_tool_call("Read"),
         ];
-        for mode in [TrustMode::Safe, TrustMode::Auto] {
-            assert!(
-                can_parallelize(&calls, mode, Path::new("/test/project")),
-                "{mode:?}"
-            );
-        }
-    }
-
-    /// In Auto a command that changes files runs in the sandbox without a
-    /// question, so it runs in parallel too, as in Codex. In Safe it asks,
-    /// and the batch splits: the reads run together, the rest in order.
-    #[test]
-    fn a_mutating_bash_parallelizes_in_auto_only() {
-        let calls = vec![bash("git status"), bash("touch new.txt")];
         assert!(can_parallelize(
             &calls,
             TrustMode::Auto,
             Path::new("/test/project")
         ));
-        assert!(!can_parallelize(
-            &calls,
-            TrustMode::Safe,
-            Path::new("/test/project")
-        ));
+    }
+
+    /// In Auto a command that changes files runs in the sandbox without a
+    /// question, so it runs in parallel too, as in Codex. One asking to leave
+    /// the sandbox asks, and the batch runs in order.
+    #[test]
+    fn a_command_leaving_the_sandbox_keeps_the_batch_in_order() {
+        let root = Path::new("/test/project");
+        let calls = vec![bash("git status"), bash("touch new.txt")];
+        assert!(can_parallelize(&calls, TrustMode::Auto, root));
+        let leaving = ToolCall {
+            id: "t3".to_string(),
+            function_name: "Bash".to_string(),
+            arguments: serde_json::json!({
+                "command": "git commit -m x",
+                "outside_sandbox": true,
+                "reason": "commit",
+            })
+            .to_string(),
+            thought_signature: None,
+        };
+        let calls = vec![bash("git status"), leaving];
+        assert!(!can_parallelize(&calls, TrustMode::Auto, root));
     }
 
     #[test]
@@ -1075,7 +1077,7 @@ mod tests {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("InvokeAgent")];
         assert!(can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Auto,
             Path::new("/test/project"),
         ));
     }
@@ -1145,19 +1147,19 @@ mod tests {
         // InvokeAgent is ReadOnly (sub-agents inherit parent's approval mode)
         assert!(!cat.is_mutating_call("InvokeAgent", &null));
 
-        // Args-aware showcase: Bash with a benign command is
-        // ReadOnly; this is the bug the legacy name-only function
-        // could not catch.
+        // A command can change whatever the sandbox lets it, so every
+        // Bash call counts as a mutation, `echo` included (no read-only
+        // list since 0.8.0, as Codex has none).
         let echo = serde_json::json!({"command": "echo hello"});
-        assert!(!cat.is_mutating_call("Bash", &echo));
+        assert!(cat.is_mutating_call("Bash", &echo));
     }
 
     #[test]
-    fn test_mixed_batch_not_fully_parallelizable() {
+    fn test_mixed_batch_not_fully_parallelizable_in_plan() {
         let calls = vec![make_tool_call("InvokeAgent"), make_tool_call("Write")];
         assert!(!can_parallelize(
             &calls,
-            TrustMode::Safe,
+            TrustMode::Plan,
             Path::new("/test/project"),
         ));
     }

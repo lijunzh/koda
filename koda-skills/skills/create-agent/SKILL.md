@@ -52,7 +52,7 @@ obvious requests like "make me a test-running agent." Things worth asking
 about when unclear:
 
 - **Read-only or write-capable?** ("Will this agent modify files?")
-  Read-only → `trust: "plan"`. Write-capable → `trust: "safe"`.
+  Read-only → `trust: "plan"`. Write-capable → `trust: "auto"`.
 - **Project or personal scope?** Project = `.koda/agents/<name>.json`,
   personal/cross-project = `~/.config/koda/agents/<name>.json`
 - **Cheap model or default?** Default uses the main agent's model;
@@ -94,16 +94,16 @@ tokens since read-only agents don't need memory context.
   "name": "refactor",
   "description": "Refactors code per user instructions while preserving behavior.",
   "system_prompt": "You refactor code while preserving behavior. Run tests after each change.",
-  "trust": "safe",
+  "trust": "auto",
   "model": "gemini-2.5-flash"
 }
 ```
 
 Use this shape for: refactorers, fixers, generators, anything that
-modifies the workspace. `trust: "safe"` auto-approves Write/Edit when
-invoked as a sub-agent (sub-agents have no live human channel for
-approval prompts), while still blocking destructive ops. `model`
-override lets you save cost for high-volume workers.
+modifies the workspace. `trust: "auto"` runs its edits and commands in
+the sandbox, in the session's mode (a Plan session keeps it read-only);
+destructive commands ask in the main session. `model` override lets you
+save cost for high-volume workers.
 
 #### Read-only-with-execution
 
@@ -112,16 +112,15 @@ override lets you save cost for high-volume workers.
   "name": "tester",
   "description": "Runs the test suite and reports failures. Does NOT modify files.",
   "system_prompt": "You run tests and report results. You can run any read-only command including builds and tests, but never write files.",
-  "trust": "safe",
+  "trust": "auto",
   "disallowed_tools": ["Write", "Edit"]
 }
 ```
 
-Rare but useful escape valve: `trust: "safe"` allows mutating Bash
-(needed for `cargo test`, `npm test`, `make`), but the explicit
-`disallowed_tools` denylist forbids file mutations. Pre-#1250 this was
-implicit; post-#1250 you must spell it out because Safe trust no
-longer auto-blocks Write/Edit on its own.
+Rare but useful escape valve: `trust: "auto"` lets Bash build and test
+(`cargo test`, `npm test`, `make` write build output), but the explicit
+`disallowed_tools` denylist forbids file edits. `trust: "plan"` would
+keep the project read-only, and most builds would fail.
 
 ### 4. Field reference
 
@@ -129,7 +128,7 @@ longer auto-blocks Write/Edit on its own.
 
 - `name` — agent identifier (used with `InvokeAgent`)
 - `system_prompt` — behavioral instructions for the LLM
-- `trust` — `"plan"`, `"safe"`, or `"auto"`. **Always declare this.**
+- `trust` — `"plan"` or `"auto"`. **Always declare this.**
 
 **Highly recommended:**
 
@@ -160,7 +159,7 @@ longer auto-blocks Write/Edit on its own.
 
 - `write_access` — superseded by `trust`. Old agents with
   `write_access: true` still work but emit a deprecation warning at
-  load. Migrate to `trust: "safe"`.
+  load. Migrate to `trust: "auto"`.
 
 ### 5. Write and confirm
 
@@ -196,4 +195,4 @@ For a battle-tested example, read `koda-core/agents/explore.json`. It
 demonstrates: `trust: "plan"` for kernel-enforced read-only,
 `skip_memory: true` for token savings, and a tight `description` that
 the main agent can reason about. For a write-capable example, read
-`task.json` (`trust: "safe"`).
+`task.json` (`trust: "auto"`).

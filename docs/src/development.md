@@ -39,7 +39,7 @@ koda/
 │   │   ├── sub_agent_dispatch.rs # Sub-agent invocation dispatch
 │   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
 │   │   ├── tool_normalize.rs # Tool name normalization (snake_case → PascalCase)
-│   │   ├── trust.rs        # TrustMode (Plan/Safe/Auto), ToolApproval, check_tool()
+│   │   ├── trust.rs        # TrustMode (Plan/Auto), ToolApproval, check_tool()
 │   │   ├── truncate.rs     # Token-safe output truncation
 │   │   ├── turn_context.rs # TurnContext and ToolExecutionContext bundles
 │   │   ├── version.rs      # Background version checker (queries crates.io)
@@ -158,7 +158,7 @@ koda/
 │   │   ├── model_effort.rs # Reasoning effort levels per model
 │   │   └── provider_catalog.rs # Static metadata for every supported provider
 │   └── tests/              # Each provider's HTTP behaviour against a stub server
-├── koda-command/           # Shell command classification (bash_safety.rs, ToolEffect) and path linting (bash_path_lint.rs)
+├── koda-command/           # Shell command classification (bash_safety.rs, ToolEffect) and scratch paths (scratch_path.rs)
 ├── koda-mcp/               # MCP client: config, manager, tool bridge
 ├── koda-skills/            # Skill discovery and activation
 │   └── skills/             # Built-in skills (SKILL.md files)

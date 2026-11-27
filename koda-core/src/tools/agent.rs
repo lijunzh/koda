@@ -81,7 +81,7 @@ AGENT SELECTION
 - For read-only exploration / search / analysis, use `explore` (faster, cheaper, no isolated workspace)
 - For implementation that needs file writes, use `task` (general-purpose worker)
 - Sub-agents write in the project, so give each one files no other is touching, and don't edit those files yourself until it returns
-- In Safe mode its work lands on a branch instead, and its result names the branch
+- An agent with `isolation: worktree` works on a branch instead, and its result names the branch
 
 WHEN NOT TO USE InvokeAgent
 
@@ -465,7 +465,7 @@ mod tests {
         let fs = koda_sandbox::fs::LocalFileSystem;
         let caps = crate::output_caps::OutputCaps::for_context(100_000);
         let bg = crate::tools::bg_process::BgRegistry::new();
-        let trust = crate::trust::TrustMode::Safe;
+        let trust = crate::trust::TrustMode::Auto;
         let policy = koda_sandbox::SandboxPolicy::default();
         let skills = crate::skills::SkillRegistry::default();
         let ctx = crate::tools::ToolExecCtx::for_test(

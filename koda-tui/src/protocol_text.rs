@@ -99,7 +99,7 @@ pub fn declined(output: &str) -> Declined<'_> {
     {
         return Declined::AutoRejected { reason };
     }
-    if output.starts_with("[plan mode]") || output.starts_with("[safe mode] Action blocked") {
+    if output.starts_with("[plan mode]") {
         return Declined::Blocked;
     }
     Declined::Other
@@ -205,7 +205,6 @@ mod tests {
             declined("[plan mode] Not run: this session is read-only"),
             Declined::Blocked
         );
-        assert_eq!(declined("[safe mode] Action blocked."), Declined::Blocked);
         // What Koda tells the model, read from where it is written.
         assert_eq!(
             declined(koda_client::protocol::item::PLAN_BLOCKED_MESSAGE),

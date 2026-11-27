@@ -78,9 +78,9 @@ and a recompile.
   change, change the code.
   
   *Documented exceptions* (each justified by a non-interactive scenario):
-  - `--mode safe|auto|plan` (or `mode` in config.toml) — trust mode for headless runs
-    where `/safe` and `/auto` slash commands aren't reachable mid-session.
-    `plan` (read-only) exists only for headless runs.
+  - `--mode auto|plan` (or `mode` in config.toml) — the trust mode a run
+    starts in, for headless runs where `Shift+Tab` and `/plan` aren't
+    reachable mid-session. `plan` makes a run read-only.
   - `--mcp-config` — the MCP servers for one run, for scripts and evals that
     need exactly those servers. It's endpoint data (P1 below), and nothing is
     saved.
@@ -123,7 +123,7 @@ One person builds it, one person maintains it, one person debugs it.
 This is the principle that prevents koda from becoming Cursor. Cursor is
 capable but complex — extension systems, agent modes, model routing
 tiers, configuration surfaces. Koda chooses simplicity: fewer concepts,
-one binary, match dispatch, three trust modes. We'd rather be slightly
+one binary, match dispatch, two trust modes. We'd rather be slightly
 less capable than incomprehensible.
 
 - **Easy to reason about.** If a reader, human or agent, can't understand
@@ -1038,7 +1038,7 @@ different set.
   helper for fork, named, and bg paths. **Critical**: `parent_runtime`
   must be the runtime `mode` parameter threaded through dispatch —
   never `parent_config.trust`, which is the *startup* value and is
-  not updated by `/safe`/`/auto` toggles (#1022 B19). The structural
+  not updated by `Shift+Tab` or `/plan` (#1022 B19). The structural
   lint test in `koda-cli/tests/suite/regression_test.rs` enforces this at
   CI time.
 - **Sandbox never widens**. `compose_child_policy(parent_policy, child_trust,
@@ -1054,15 +1054,15 @@ different set.
   edits land where the user expects. Copying the
   project per sub-agent (`clonefile(2)` on macOS) lost finished work, because
   a copy needs a way back that a shared directory doesn't, and it was gone
-  with the copy. Worktrees remain for two cases: an agent that sets
-  `"isolation": "worktree"`, and any writer in Safe mode, because a sub-agent
-  has no approval channel and Safe promises nothing changes without the
-  user's OK. A branch with work on it always survives release.
+  with the copy. A worktree remains for an agent that sets
+  `"isolation": "worktree"`. (Safe mode, removed in 0.8.0, gave every writer
+  one too.) A branch with work on it always survives
+  release.
   **A required worktree that can't be made does not silently downgrade**
   (#1022 B21), whether provisioning failed or there is no git repository:
   the dispatch short-circuits with a structural failure marker (see next
   invariant) instead of dropping the sub-agent into the project, which would
-  break Safe's promise. The user-visible warning surfaces through
+  ignore the isolation the agent asked for. The user-visible warning surfaces through
   `EngineEvent::Info` so it isn't buried in trace logs.
 - **Structural failures use the `[ERROR: ...]` marker convention**
   (#1022 B18, B21). When a sub-agent can't produce an answer for
@@ -1201,12 +1201,13 @@ different set.
 
 - **Per-tool `is_concurrency_safe(args)` predicate** (Gemini CLI). Not
   needed for `Bash`: a batch runs in parallel when every call auto-approves
-  and no two write the same file (`can_parallelize`), so read-only `Bash`
-  joins it in every mode, and in Auto a command that changes files does too,
-  as Codex runs every shell call in parallel. In Safe a mutating command asks,
-  and the batch splits: the auto-approved calls run together, the rest in
-  order. Tests: `read_only_bash_joins_a_parallel_batch`,
-  `a_mutating_bash_parallelizes_in_auto_only`.
+  and no two write the same file (`can_parallelize`), so every sandboxed
+  `Bash` call joins it, as Codex runs every shell call in parallel. A call
+  that asks (a destructive command, one leaving the sandbox) keeps the batch
+  in order, and so does an edit refused in Plan. Tests:
+  `read_only_bash_joins_a_parallel_batch`,
+  `a_command_leaving_the_sandbox_keeps_the_batch_in_order`,
+  `a_write_parallelizes_in_auto_but_not_in_plan`.
 - **Sibling-cancel on parallel `Bash` failure** (Claude Code). Per-batch
   child `CancellationToken` + typed `[Cancelled: parallel call X errored]`
   result. ~30 LOC.
@@ -1372,15 +1373,18 @@ For operational details, see the [trust module docs](https://docs.rs/koda-core/l
 
 ### Security Model (P2)
 
-Per-tool safety classification with three trust modes and hardcoded floors
+Per-tool safety classification with two trust modes and hardcoded floors
 that override mode settings for high-risk operations.
 
 The LLM is semi-trusted — capable of mistakes, not adversarial. Every tool
 call is classified into one of four effects (ReadOnly, LocalMutation,
-Destructive, RemoteAction). TrustMode (Plan/Safe/Auto) determines which
-effects need confirmation. Hardcoded floors ensure outside-project writes
-always require confirmation regardless of mode. The kernel sandbox
-(always active) enforces the perimeter.
+Destructive, RemoteAction). TrustMode (Plan/Auto) picks the kernel sandbox
+and determines which effects need confirmation: Plan's sandbox keeps the
+project read-only, Auto's can write it but keeps `.git` read-only.
+Edit and Write stay in the project and temp directories, and ask before
+changing Koda's own settings. A shell command's paths aren't checked, as in
+Codex: the sandbox decides what it can write. The kernel sandbox (always active) enforces the
+perimeter.
 
 **TrustMode is the single mechanism** (#1250). The same `TrustMode` enum
 derives kernel sandbox bounds, per-tool approval rules, and sub-agent
@@ -1415,30 +1419,41 @@ user-facing mental-model doc).
   `sh -c`, `eval` or `find -exec`. Koda adds what the sandbox can't contain
   or what loses work for good, since it has no undo: `git reset --hard`,
   `git clean -f`, `git push --force`, publishing, `gh` merges, deletes,
-  auth and `api`, `sudo`, disk tools and reboots. Safe mode still asks for
-  every change.
+  auth and `api`, `sudo`, disk tools and reboots.
+- **Two modes, and the sandbox decides, as in Codex** (0.8.0). Until 0.7.x
+  a third mode, Safe, asked before every change, and a read-only command
+  list told it which commands weren't changes. Codex has no such mode: its
+  sandbox decides what a command can do, and a command that needs more asks
+  to leave it. Koda removed Safe and the read-only list. Auto's sandbox
+  keeps `.git` read-only, as Codex's workspace-write does, so `git add`,
+  `git commit`, `git checkout` and `git stash` ask to leave the sandbox. An
+  agent JSON still declaring `"trust": "safe"` loads as Plan with a warning;
+  `mode = "safe"` in a config gets a message, and a session stored in Safe
+  reopens in Auto.
 - **A yes can cover the rest of the session, in memory only** (2026-11).
-  At a prompt for a local change inside the project, `s` approves and stops
-  asking for the same Bash command or the same file until the session ends
-  (`trust::SessionAllows`, `trust::session_allow_key`). This is Codex's
-  model. Claude Code instead writes "don't ask again" rules to a per-machine
+  At a prompt, `s` approves and stops asking for the same kind of call
+  until the session ends (`trust::SessionAllows`,
+  `trust::session_allow_key`): a command leaving the sandbox by its
+  `prefix_rule` (`git commit`), as Codex's session approval; a web page by
+  its site; and, on a machine with no sandbox, the exact command or file.
+  This is Codex's model. Claude Code instead writes "don't ask again" rules to a per-machine
   settings file, which would make Koda's behaviour depend on dotfiles that
   differ between machines, and would be a second gating mechanism beside
-  `TrustMode`. A session allow only remembers a yes the mode asked for, and
-  is never offered for destructive actions, leaving the sandbox, remote
-  actions or the outside-project floor. In recorded eval sessions run in
-  Safe mode, it would have removed about 40% of prompts.
-- **Sub-agents resolve `⏸ confirm` cells using a context-sensitive
-  matrix** (`check_tool_for_sub_agent`, #1251). Sub-agents have no live
-  human approval channel by design — the master TUI is the only
-  confirm-prompt surface. So what the master matrix would treat as
-  `⏸ confirm` resolves to **auto-approve for mutations** (the user
-  already trusted this sub-agent enough to spawn it; nagging would be
-  useless without a UI to nag in) and **block for destructive ops**
-  (we still want a backstop on the worst ops, even when no one's home
-  to confirm). This pins the bug fix from #1249.
+  `TrustMode`. A session allow only remembers a yes the mode asked for. It
+  never covers a destructive command or the outside-project floor, and a
+  prefix that would run any program (`bash`, `python -c`, `git` alone,
+  `sudo`, Codex's banned list) isn't offered.
+- **Sub-agents ask in the main session.** A sub-agent's calls go through
+  the same matrix as the main agent's, in the session's mode, as Claude
+  Code's sub-agents inherit the session's mode and rules. What would ask
+  for the main agent is shown in the main session, naming the agent
+  (`approval_flow::Approver`, answered by `koda-server`'s `HostApprover`).
+  With nobody to ask (`koda exec`), destructive actions and leaving the
+  sandbox are refused. This replaced the context-sensitive sub-agent matrix
+  of #1251, which approved mutations and blocked destructive ops.
 - **Per-agent trust declaration via `trust:` field** (#1247, #1252).
-  Agent JSONs declare `"trust": "plan" | "safe" | "auto"`. The legacy
+  Agent JSONs declare `"trust": "plan" | "auto"`; absent means Auto, and
+  any other value (`"safe"` included) loads as Plan with a warning. The legacy
   `write_access: bool` field is deprecated but still loads with a
   deprecation warning. The new field is strictly more expressive: it
   captures sandbox bounds + approval rules + sub-agent defaults in one
@@ -1461,29 +1476,22 @@ user-facing mental-model doc).
   pushed. Bash now says what the sandbox allows, and takes
   `outside_sandbox: true` with a `reason`. `BashTool::classify` makes such a
   call `Destructive` whatever the command, so the existing matrix gives the
-  right answer with no new rule: Safe and Auto ask, showing the reason;
-  Plan, sub-agents and headless refuse. It runs with no kernel profile and
+  right answer with no new rule: Auto asks, showing the reason, for a
+  sub-agent in the main session; Plan and headless refuse. It runs with no kernel profile and
   no proxy, keeping the environment scrub and resource limits, plus
   `SSH_AUTH_SOCK` for keys held by an agent. A sandbox denial in the output
   points to it. This is the peers' shape: Codex's `require_escalated` with a
   `justification`, Claude Code's `dangerouslyDisableSandbox`, each approved
   by the user. Unlike them there is no setting to pre-approve commands; each
-  call asks.
-- **A Bash command is ReadOnly only when proven** (`bash_safety.rs`).
-  ReadOnly auto-approves in every mode, so it fails closed: the command
-  must be plain words and quoted strings joined only by `&&`, `||`, `;` and
-  `|`, with every segment on the read-only allowlist. Newlines, a single
-  `&`, redirects, heredocs, subshells, braces, substitutions and line
-  continuations all make it at least LocalMutation, even when each word is
-  harmless. The exception is `2>&1` and output to exactly `/dev/null`:
-  they write no file, and agents add them to read-only commands all the
-  time, so this is a deliberate departure from Codex, whose word-only
-  parse rejects every redirect. Before, the
-  allowlist judged only each segment's first word, so `ls\nrm -rf /`
-  and `ls & rm -rf /` passed as ReadOnly. The rule is Codex's
-  (`try_parse_word_only_commands_sequence`), done with a quote-aware
-  scanner instead of a tree-sitter parse. Destructive detection is
-  separate and keeps looking everywhere: it splits on newlines and `&` too.
+  call asks, unless a "this session" yes to its `prefix_rule` covers it.
+- **No Bash command is ReadOnly** (`bash_safety.rs`, 0.8.0). The
+  classifier looks only for destructive commands; anything else is
+  LocalMutation, and the sandbox decides what it can do, as in Codex, which
+  keeps no read-only list. Until 0.7.x a command was ReadOnly when proven
+  harmless (plain words joined by `&&`, `||`, `;` and `|`, each segment on a
+  read-only allowlist) so Safe mode needn't ask; with Safe gone nothing
+  needs the list. Destructive detection keeps looking everywhere: it splits
+  on newlines and `&` too.
 - **A heredoc body is data, as in Codex** (`bash_safety.rs`,
   `classify_heredocs`). The shell hands the body to a command; it doesn't
   run it. So the command is classified without its bodies, and code in one
@@ -1525,12 +1533,11 @@ user-facing mental-model doc).
 
 **Accepted risks**:
 1. Destructive detection in shell commands is heuristic — complex syntax can
-   hide a destructive command (it still needs approval as LocalMutation in
-   Safe mode, but Auto mode approves it)
+   hide a destructive command, which Auto then runs inside the sandbox
 2. Inside the sandbox the network is the proxy's allowlist, which covers `cargo fetch` and `npm install`; anything else needs an approved `outside_sandbox` call, which runs with the user's full network
-3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), `Auto`
-   refuses to start or resume; `Safe`/`Plan` may still run with warnings and
-   human approval floors
+3. If the sandbox backend is unavailable (e.g. no bwrap on Linux), nothing
+   contains a command: Auto asks before every command and edit, and Plan
+   refuses commands. A headless run refuses every command and edit there
 
 ### Content the Agent Reads Is Data (P1, P3)
 

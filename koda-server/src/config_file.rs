@@ -1051,7 +1051,7 @@ model_max_output_tokens = 4096
             batch(
                 &[
                     ("model_context_window", json!(65536)),
-                    ("mode", json!("safe")),
+                    ("mode", json!("plan")),
                     ("model_providers.anthropic.request_max_retries", json!(6)),
                     ("tui.syntax_highlight", json!(false)),
                     ("sandbox.allow_local_binding", json!(true)),
@@ -1062,7 +1062,7 @@ model_max_output_tokens = 4096
         .unwrap();
         let config = file.load().unwrap().config;
         assert_eq!(config.model_context_window, Some(65_536));
-        assert_eq!(config.mode, Some(koda_config::TrustMode::Safe));
+        assert_eq!(config.mode, Some(koda_config::TrustMode::Plan));
         assert_eq!(
             config.model_providers["anthropic"].request_max_retries,
             Some(6)

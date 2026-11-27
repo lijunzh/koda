@@ -131,16 +131,7 @@ impl Tui {
         let mut command = Command::new(env!("CARGO_BIN_EXE_koda"));
         command.args(model.map(|m| ["--model", m]).into_iter().flatten());
         if pinned {
-            command
-                .args(["--max-context-tokens", "64000"])
-                // Safe unless the test picks a mode (clap refuses `--mode`
-                // twice).
-                .args(
-                    (!flags.contains(&"--mode"))
-                        .then_some(["--mode", "safe"])
-                        .into_iter()
-                        .flatten(),
-                );
+            command.args(["--max-context-tokens", "64000"]);
         }
         command
             .args(flags)
@@ -437,8 +428,13 @@ fn tool_call_delta(calls: &[(&str, Value)]) -> Value {
     json!({"choices": [{"delta": {"tool_calls": calls}}]})
 }
 
+/// A `Bash` call writing `name` that asks first: it asks to leave the
+/// sandbox, the call that asks in Auto.
 fn write_file(name: &str) -> (&'static str, Value) {
-    ("Write", json!({"file_path": name, "content": "x\n"}))
+    (
+        "Bash",
+        json!({"command": format!("printf 'x\\n' > {name}"), "outside_sandbox": true, "reason": "test"}),
+    )
 }
 
 fn final_text() -> ResponseTemplate {
@@ -547,14 +543,28 @@ fn bash(command: &str) -> ResponseTemplate {
     tool_calls(&[("Bash", json!({ "command": command }))])
 }
 
-/// `s` approves a local change for the rest of the session: the same command
-/// runs again without a prompt. A destructive command doesn't offer `s`, and
-/// pressing it there does nothing.
+/// A `Bash` call asking to leave the sandbox, offering `prefix_rule` for the
+/// session's answer.
+fn outside_bash(command: &str, prefix_rule: &[&str]) -> ResponseTemplate {
+    tool_calls(&[(
+        "Bash",
+        json!({
+            "command": command, "outside_sandbox": true, "reason": "test",
+            "prefix_rule": prefix_rule,
+        }),
+    )])
+}
+
+/// `s` allows a command's prefix for the rest of the session, as Codex's
+/// prefix rule does: a later command starting with it leaves the sandbox
+/// without a prompt, while another command still asks. A destructive
+/// command doesn't offer `s`, and pressing it there does nothing.
 #[tokio::test(flavor = "multi_thread")]
-async fn s_allows_a_command_for_the_session_but_not_a_destructive_one() {
+async fn s_allows_a_prefix_for_the_session_but_not_a_destructive_command() {
     let server = scripted_model(vec![
-        bash("touch a.txt"),
-        bash("touch a.txt"),
+        outside_bash("touch a.txt", &["touch"]),
+        outside_bash("touch b.txt", &["touch"]),
+        outside_bash("mkdir build", &["mkdir"]),
         bash("rm -rf build"),
     ])
     .await;
@@ -565,7 +575,13 @@ async fn s_allows_a_command_for_the_session_but_not_a_destructive_one() {
     tui.wait_for_screen("[s] this session");
     tui.type_text("s");
 
-    // The repeat runs unasked, so the next prompt is the destructive one.
+    // `touch b.txt` runs unasked, so the next prompt is another prefix's.
+    tui.wait_for_screen("mkdir build");
+    tui.wait_for_screen("[y] approve");
+    assert!(home.path().join("b.txt").exists(), "{}", tui.screen());
+    assert_eq!(model_calls(&server).await.len(), 3);
+    tui.type_text("y");
+
     tui.wait_for_screen("rm -rf build");
     tui.wait_for_screen("[y] approve");
     assert!(
@@ -575,11 +591,12 @@ async fn s_allows_a_command_for_the_session_but_not_a_destructive_one() {
     );
     tui.type_text("s");
     assert!(tui.screen().contains("[y] approve"), "{}", tui.screen());
-    assert_eq!(model_calls(&server).await.len(), 3);
+    assert_eq!(model_calls(&server).await.len(), 4);
 
     tui.type_text("y");
     tui.wait_for_screen("All done.");
     assert!(home.path().join("a.txt").exists());
+    assert!(!home.path().join("build").exists());
 }
 
 /// Stopping at the second call of a batch keeps what the first one did.
@@ -774,22 +791,17 @@ async fn a_resumed_session_shows_and_keeps_its_history() {
     assert!(sent.contains("and now?"), "{sent}");
 }
 
-/// Shift+Tab switches Safe to Auto through the host, which records it with
-/// the session; on a machine without a sandbox it skips Auto for Plan and
-/// says why.
+/// Shift+Tab switches Auto to Plan through the host, which records it with
+/// the session.
 #[tokio::test(flavor = "multi_thread")]
 async fn shift_tab_switches_the_mode_through_the_host() {
     use koda_state::session_store::SessionStore;
     let server = scripted_model(vec![final_text()]).await;
     let home = home();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.wait_for_screen("SAFE");
+    tui.wait_for_screen("AUTO");
     tui.type_text("\x1b[Z");
-    tui.wait_for_screen_that(
-        |screen| screen.contains("AUTO") || screen.contains("Auto skipped"),
-        "show Auto, or why it was skipped",
-    );
-    let switched = tui.screen().contains("AUTO");
+    tui.wait_for_screen("PLAN");
     tui.submit("hello");
     tui.wait_for_screen("All done.");
     let session = quit_and_read_session_id(&mut tui);
@@ -797,11 +809,7 @@ async fn shift_tab_switches_the_mode_through_the_host() {
         .await
         .unwrap();
     let stored = db.get_session_mode(&session).await.unwrap();
-    if switched {
-        assert_eq!(stored.as_deref(), Some("auto"));
-    } else {
-        assert_ne!(stored.as_deref(), Some("auto"));
-    }
+    assert_eq!(stored.as_deref(), Some("plan"));
 }
 
 /// A session resumed by an id prefix opens in the mode it last ran in, as
@@ -1670,27 +1678,30 @@ async fn a_sub_agent_row_shows_while_it_works() {
 }
 
 /// An edit's approval shows its diff above the dialog, drawn from the
-/// request's `changes` (6h-b2), and the edit runs once approved.
+/// request's `changes` (6h-b2), and the edit runs once approved. In Auto an
+/// edit asks only for Koda's own settings, so it edits a file there.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edits_approval_shows_its_diff() {
-    let edit = json!({"file_path": "a.txt", "old_str": "old line", "new_str": "new line"});
+    let file = ".config/koda/notes.md";
+    let edit = json!({"file_path": file, "old_str": "old line", "new_str": "new line"});
     let server = scripted_model(vec![
         // Koda edits only a file the model has read.
-        tool_calls(&[("Read", json!({"file_path": "a.txt"}))]),
+        tool_calls(&[("Read", json!({"file_path": file}))]),
         tool_calls(&[("Edit", edit)]),
     ])
     .await;
     let home = home();
-    std::fs::write(home.path().join("a.txt"), "old line\n").unwrap();
+    std::fs::create_dir_all(home.path().join(".config/koda")).unwrap();
+    std::fs::write(home.path().join(file), "old line\n").unwrap();
     let mut tui = Tui::start_with_model(home.path(), &server.url());
 
     tui.submit("edit it");
-    tui.wait_for_output("approve");
+    tui.wait_for_screen("[y] approve");
     tui.wait_for_screen("1 - old line");
     tui.wait_for_screen("1 + new line");
     tui.type_text("y");
     tui.wait_for_screen("All done.");
-    let content = std::fs::read_to_string(home.path().join("a.txt")).unwrap();
+    let content = std::fs::read_to_string(home.path().join(file)).unwrap();
     assert_eq!(content, "new line\n");
 }
 
@@ -2011,7 +2022,7 @@ async fn notifications_go_out_only_while_the_terminal_is_unfocused() {
     tui.type_text("\x1b[O");
     let start = tui.output_len();
     tui.submit("first prompt");
-    tui.wait_for_output_after(start, &format!("{OSC9}Approval requested: Write"));
+    tui.wait_for_output_after(start, &format!("{OSC9}Approval requested: Bash"));
     tui.approve_until(|| home.path().join("a.txt").exists());
     tui.wait_for_output_after(start, &format!("{OSC9}All done."));
 

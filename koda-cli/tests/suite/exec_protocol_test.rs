@@ -1326,18 +1326,18 @@ async fn a_run_starts_in_the_files_mode() {
     let server = stub(vec![], no_other_calls).await;
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("koda")).unwrap();
-    std::fs::write(tmp.path().join("koda/config.toml"), "mode = \"safe\"\n").unwrap();
+    std::fs::write(tmp.path().join("koda/config.toml"), "mode = \"plan\"\n").unwrap();
 
     let plain = command(&server, tmp.path());
     let run = finish(plain).await;
     assert!(run.output.status.success(), "{}", run.stdout);
-    assert_eq!(run.lines[0]["params"]["session"]["mode"], "safe");
+    assert_eq!(run.lines[0]["params"]["session"]["mode"], "plan");
 
     let mut flagged = command(&server, tmp.path());
-    flagged.args(["-c", "mode=plan"]);
+    flagged.args(["-c", "mode=auto"]);
     let run = finish(flagged).await;
     assert!(run.output.status.success(), "{}", run.stdout);
-    assert_eq!(run.lines[0]["params"]["session"]["mode"], "plan");
+    assert_eq!(run.lines[0]["params"]["session"]["mode"], "auto");
 }
 
 /// A setting variable Koda no longer reads changes nothing, and the run
@@ -1347,7 +1347,7 @@ async fn a_retired_variable_is_named_and_ignored() {
     let server = stub(vec![], no_other_calls).await;
     let tmp = tempfile::tempdir().unwrap();
     let mut run = command(&server, tmp.path());
-    run.env("KODA_MODEL", "from-env").env("KODA_MODE", "safe");
+    run.env("KODA_MODEL", "from-env").env("KODA_MODE", "plan");
     let run = finish(run).await;
     assert!(run.output.status.success(), "{}", run.stdout);
     let session = &run.lines[0]["params"]["session"];

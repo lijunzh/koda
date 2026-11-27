@@ -353,7 +353,7 @@ fn the_settings_keys_load() {
 model_reasoning_effort = "high"
 model_context_window = 131072
 model_post_turn_compact_threshold_percent = 80
-mode = "safe"
+mode = "plan"
 
 [model_providers.anthropic]
 request_max_retries = 6
@@ -375,7 +375,7 @@ allow_local_binding = true
     assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
     assert_eq!(config.model_context_window, Some(131_072));
     assert_eq!(config.model_post_turn_compact_threshold_percent, Some(80));
-    assert_eq!(config.mode, Some(TrustMode::Safe));
+    assert_eq!(config.mode, Some(TrustMode::Plan));
     let anthropic = &config.model_providers["anthropic"];
     assert_eq!(anthropic.request_max_retries, Some(6));
     assert_eq!(anthropic.stream_max_retries, Some(3));

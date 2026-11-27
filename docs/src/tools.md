@@ -1,9 +1,10 @@
 # Tools reference
 
-Koda exposes these tools to the model. In **Safe** trust mode you'll
-be prompted before each mutating call. In **Auto** mode, mutating ops
-within the project sandbox auto-approve, but **destructive** ops still
-prompt. See [Trust modes](./approval.md) for the canonical matrix.
+Koda exposes these tools to the model. In **Auto** trust mode, edits and
+commands inside the project sandbox run without asking; destructive
+commands, leaving the sandbox and files outside the project ask first. In
+**Plan**, edits are refused and commands run in a read-only sandbox. See
+[Trust modes](./approval.md) for the canonical matrix.
 
 **Search goes through the shell, as in Claude Code.** The model searches
 with `grep` and `find` in `Bash`, which run the ugrep and bfs built into
@@ -64,7 +65,8 @@ The programs are inside the `koda` executable (`koda --koda-run-as-ugrep`
 and `--koda-run-as-bfs` run them), so every install has them, and they run in
 the sandbox like any command. If that executable is gone, for instance
 after an upgrade while Koda runs, the functions fall back to the system's
-`grep` and `find`. A search is read-only, so it doesn't ask in Safe mode.
+`grep` and `find`. A search runs in the sandbox like any command, so it
+doesn't ask, in Plan as in Auto.
 
 `shell_search = false` in `config.toml` brings back `Grep`, `Glob` and
 `List` and runs `grep` and `find` as the system has them.
@@ -87,9 +89,9 @@ the program printed:
 - **The output is plain text:** colours and cursor movements are removed.
   The full output, as the program wrote it, is also in the log the start
   names. Up to 1 MiB of output not yet read is kept.
-- **Approval:** typing counts as a change, so Safe mode asks before each
-  input and Plan mode refuses it; Auto types without asking, since the
-  program runs in the sandbox. Reading never asks.
+- **Approval:** typing counts as a change, so Plan mode refuses it; Auto
+  types without asking, since the program runs in the sandbox. Reading
+  never asks.
 - **The sandbox** opens to the program its own terminal and nothing else:
   it can't reach your terminal or any other.
 - **Not with `outside_sandbox`:** an approval covers one command, not
@@ -174,8 +176,8 @@ the conversation.
   decides whether to fetch it.
 - **Where it can't go:** `localhost`, private addresses and cloud metadata
   endpoints, on the first request and on every redirect.
-- **Asking:** a fetch from a site can carry data out in its URL, so Safe and
-  Plan ask first and Auto doesn't, as in Claude Code. About 90 documentation
+- **Asking:** a fetch from a site can carry data out in its URL, so Plan
+  asks first and Auto doesn't, as in Claude Code. About 90 documentation
   sites (Claude Code's list: docs.python.org, doc.rust-lang.org, MDN, React,
   Django, the AWS docs and others) never ask. "Allow for session" covers the
   site.
@@ -244,20 +246,21 @@ prompts and the sandbox ([Approval](approval.md), [Sandbox](sandbox.md)).
 
 ## Approval behaviour by trust mode
 
-| Category | Tools | Plan | Safe | Auto |
-|----------|-------|------|------|------|
-| Read-only | Read, Grep, Glob, List, ListAgents, WebSearch, RecallContext, TodoWrite, GetGoal, CreateGoal, UpdateGoal, WebFetch on a documentation site | ✅ Auto | ✅ Auto | ✅ Auto |
-| Fetching a page | WebFetch on any other site | ⏸ Prompt | ⏸ Prompt | ✅ Auto |
-| Internal | ActivateSkill | ✅ Auto | ✅ Auto | ✅ Auto |
-| Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ⏸ Prompt | ✅ Auto |
-| Agent calls | InvokeAgent, SpawnAgent | ✅ Auto | ✅ Auto | ✅ Auto |
-| User interaction | AskUser | ⏸ Prompt | ⏸ Prompt | ⏸ Prompt |
-| Safe shell | `git status`, `grep`, `cargo test` | ✅ Auto | ✅ Auto | ✅ Auto |
-| Mutating shell | `echo > file`, `gh issue create` | ❌ Deny | ⏸ Prompt | ✅ Auto |
-| Destructive shell | `rm -rf`, `sudo`, `git push --force`, `git reset --hard` | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
-| Outside-project write | Write/Edit to paths outside project root | ❌ Deny | ⏸ Prompt | ⏸ Prompt |
+| Category | Tools | Plan | Auto |
+|----------|-------|------|------|
+| Read-only | Read, Grep, Glob, List, ListAgents, WebSearch, RecallContext, TodoWrite, GetGoal, CreateGoal, UpdateGoal, WebFetch on a documentation site | ✅ Auto | ✅ Auto |
+| Fetching a page | WebFetch on any other site | ⏸ Prompt | ✅ Auto |
+| Internal | ActivateSkill | ✅ Auto | ✅ Auto |
+| Mutations | Write, Edit, MemoryWrite, Cargo | ❌ Deny | ✅ Auto |
+| Agent calls | InvokeAgent, SpawnAgent | ✅ Auto | ✅ Auto |
+| User interaction | AskUser | ⏸ Prompt | ⏸ Prompt |
+| Shell, inside the sandbox | `git status`, `cargo test`, `echo > file`, `gh issue create` | ✅ Auto (read-only sandbox) | ✅ Auto |
+| Shell, leaving the sandbox | `outside_sandbox: true` (`git commit`, `git push` over SSH) | ❌ Deny | ⏸ Prompt |
+| Destructive shell | `rm -rf`, `sudo`, `git push --force`, `git reset --hard` | ❌ Deny | ⏸ Prompt |
+| Outside-project write | Write/Edit of Koda's settings (elsewhere outside the project and temp directories: refused) | ❌ Deny | ⏸ Prompt |
 
-See [Trust modes](./approval.md) for the canonical policy matrix and
-the sub-agent context-sensitive variant (sub-agents resolve `⏸ Prompt`
-as auto-approve for mutations and block for destructive ops, since
-there's no human channel to prompt into).
+With no sandbox on the machine, Auto prompts for every shell command and
+edit, and Plan denies shell commands. Sub-agents follow the session's mode,
+and their prompts appear in the main session
+([Sub-agents ask in the main session](./approval.md#sub-agents-ask-in-the-main-session)).
+See [Trust modes](./approval.md) for the canonical policy matrix.

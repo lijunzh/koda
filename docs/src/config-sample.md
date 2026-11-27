@@ -77,9 +77,9 @@ unknown key in `-c` stops the run instead.
 
 # ── Sessions ───────────────────────────────────────────────────────────
 
-# The trust mode a new session starts in: auto, safe or plan.
+# The trust mode a new session starts in: auto or plan.
 # Unset: auto.
-# mode = "safe"
+# mode = "plan"
 
 # The agent sessions run: a built-in (default, task, explore) or the name
 # of a JSON file in .koda/agents/ or ~/.config/koda/agents/.
@@ -241,9 +241,10 @@ model_provider = "llama-cpp"
 base_url = "http://127.0.0.1:8080/v1"
 ```
 
-To ask before every change, and to see files you mention only by path:
+To start each session in Plan, which only looks until you switch to Auto, and
+to see files you mention only by path:
 
 ```toml
-mode = "safe"
+mode = "plan"
 file_mentions = false
 ```

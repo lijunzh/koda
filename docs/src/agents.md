@@ -13,7 +13,7 @@ read for one more release, with a warning in the log, so move its files to
   "name": "testgen",
   "system_prompt": "You are a test generation specialist. When asked to write tests, always use the project's existing test patterns.",
   "model": "gemini-2.5-flash",
-  "trust": "safe",
+  "trust": "auto",
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 }
 ```
@@ -24,8 +24,8 @@ read for one more release, with a warning in the log, so move its files to
 |-------|----------|-------------|
 | `name` | ✓ | Identifier used with `--agent <name>` and `InvokeAgent` |
 | `system_prompt` | ✓ | The agent's persona and instructions |
-| `trust` | | `"plan"` (read-only), `"safe"` (write-capable, default), or `"auto"` (auto-approve mutations within sandbox). See [Trust modes](./approval.md). |
-| `isolation` | | `"worktree"` to work in a git worktree of its own and leave the work on a branch. It needs a git repository: without one, the agent doesn't start. By default it writes in the project, asking first in Safe mode, as the main agent does. See [Where sub-agents write](sandbox.md#where-sub-agents-write). |
+| `trust` | | `"auto"` (write-capable: edits and commands run in the sandbox) or `"plan"` (read-only). An agent that names none runs in Auto, without `Write` and `Edit` unless it has the legacy `write_access: true` (see [Migration](#migration-from-write_access)). The session's mode caps it: in a Plan session every agent is read-only. Any other value, `"safe"` included (removed in 0.8.0), loads as `"plan"` with a warning in the log. See [Trust modes](./approval.md). |
+| `isolation` | | `"worktree"` to work in a git worktree of its own and leave the work on a branch. It needs a git repository: without one, the agent doesn't start. By default it writes in the project, as the main agent does. See [Where sub-agents write](sandbox.md#where-sub-agents-write). |
 | `model` | | Model alias or ID (defaults to current saved model) |
 | `allowed_tools` | | Subset of tools the agent can call (defaults to all) |
 | `disallowed_tools` | | Tools to deny even if `allowed_tools` is empty |
@@ -56,7 +56,7 @@ syscall level — strictly stronger than soft-denying `Write`/`Edit`
 in `disallowed_tools`. (Soft-denying still works as a behavioral floor
 for tools the matrix can't gate, like `InvokeAgent` or `AskUser`.)
 
-### Write-capable worker (Safe trust)
+### Write-capable worker (Auto trust)
 
 The default shape for agents that need to make changes:
 
@@ -64,16 +64,17 @@ The default shape for agents that need to make changes:
 {
   "name": "testgen",
   "system_prompt": "You write tests. Match the project's existing patterns.",
-  "trust": "safe",
+  "trust": "auto",
   "allowed_tools": ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 }
 ```
 
-Its calls go through the session's rules: in a Safe session its edits ask
-first, in the main session, naming the agent; see
+Its calls go through the session's rules: its edits and commands run in the
+sandbox, and what would ask the main agent (a destructive command, leaving the
+sandbox) asks in the main session, naming the agent; see
 [Sub-agents ask in the main session](./approval.md#sub-agents-ask-in-the-main-session).
 
-### Read-only with execution escape valve (Safe trust + denied writes)
+### Read-only with execution escape valve (Auto trust + denied writes)
 
 For agents that need to run tests / inspect runtime state but should
 never modify code:
@@ -82,15 +83,15 @@ never modify code:
 {
   "name": "tester",
   "system_prompt": "You verify behavior by running tests. Never edit source.",
-  "trust": "safe",
+  "trust": "auto",
   "disallowed_tools": ["Write", "Edit"]
 }
 ```
 
-This is **strictly different** from `trust: "plan"`: the agent can
-still call `Bash` (run `cargo test`, `pytest`, etc.) but the trust
-matrix's auto-approve for mutating tools is overridden by the soft
-denylist. Plan would deny `Bash` outright as a mutation.
+This is **strictly different** from `trust: "plan"`: the agent can't
+call `Write` or `Edit`, but its `Bash` commands run in Auto's sandbox, which
+can write the project, so `cargo test` and `pytest` can write their build
+output. Plan runs `Bash` too, but with the project read-only.
 
 ## Migration from `write_access`
 
@@ -98,7 +99,7 @@ The legacy `write_access: bool` field is deprecated. The mapping:
 
 | Old shape                                      | New shape                                         |
 |-----------------------------------------------|---------------------------------------------------|
-| `{ "write_access": true }`                     | `{ "trust": "safe" }`                              |
+| `{ "write_access": true }`                     | `{ "trust": "auto" }`                              |
 | `{ "write_access": false }`                    | `{ "trust": "plan" }`                              |
 | `{ "write_access": false, "disallowed_tools": [...] }` | `{ "trust": "plan", "disallowed_tools": [...] }`   |
 
@@ -106,7 +107,7 @@ Pre-existing JSONs without `trust` still work via a back-compat
 default-deny: `write_access: false` (or absent) injects
 `Write`/`Edit` into `disallowed_tools` at load. Adding `trust`
 explicitly **skips** the legacy default-deny so an explicit
-`trust: "safe"` declaration works cleanly without surprise denials.
+`trust: "auto"` declaration works cleanly without surprise denials.
 
 A deprecation warning is logged at load when both `trust` and
 `write_access: true` appear in the same JSON.
@@ -122,7 +123,7 @@ Long-running write agents that legitimately need more can opt up:
 ```json
 {
   "name": "big-refactor",
-  "trust": "safe",
+  "trust": "auto",
   "max_iterations": 100,
   "...": "..."
 }
@@ -156,12 +157,12 @@ koda --agent testgen     ← run the session as a named agent
 
 The main model dispatches to sub-agents via the `InvokeAgent` tool. Each
 sub-agent gets its own model, tools, and session. Write-capable sub-agents
-write where your mode says: see [Where sub-agents write](./sandbox.md#where-sub-agents-write).
+write in the project unless they ask for a worktree: see [Where sub-agents write](./sandbox.md#where-sub-agents-write).
 
 ## Built-in agents
 
 | Agent     | Trust  | Purpose                                                                                                                |
 |-----------|--------|------------------------------------------------------------------------------------------------------------------------|
-| `default` | safe   | General-purpose coding assistant — the master agent shape                                                              |
-| `task`    | safe   | Generic write-capable sub-agent for `InvokeAgent` dispatch                                                             |
+| `default` | auto   | General-purpose coding assistant — the master agent shape                                                              |
+| `task`    | auto   | Generic write-capable sub-agent for `InvokeAgent` dispatch                                                             |
 | `explore` | plan   | Read-only investigation sub-agent — code review, dependency tracing, audit trails                                      |

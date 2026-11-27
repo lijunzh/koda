@@ -41,22 +41,22 @@ The model works through [tools](./tools.md):
 
 ## Approval and the sandbox
 
-Koda classifies every tool call by its effect: **read-only**, a **local
-change** (an edit, a build), a **remote action**, or **destructive** (`rm
--rf`, `git push --force`). Your trust mode decides what happens to each:
+Every command runs in a [kernel sandbox](./sandbox.md): Seatbelt on macOS,
+bubblewrap on Linux. Writes stay in the project and temporary folders, `.git`
+and credential folders are read-only or blocked, and the network goes through
+Koda's proxy. The sandbox, not a list of commands, decides what a command can
+do. Your [trust mode](./approval.md) picks the sandbox and what asks first:
 
-- **Auto** (the default) runs reads and local changes in the project, and
-  asks before anything destructive or outside the project.
-- **Safe** asks before every change.
-- **Plan** only looks, then proposes a plan for you to approve.
+- **Auto** (the default) runs edits and commands inside the sandbox without
+  asking. It asks before a destructive command (`rm -rf`, `git push
+  --force`), a command that needs to leave the sandbox, and a file outside
+  the project.
+- **Plan** only looks: commands run in a read-only sandbox, edits are
+  refused, and the model proposes a plan for you to approve.
 
-Under all three, every command runs in a [kernel sandbox](./sandbox.md):
-Seatbelt on macOS, bubblewrap on Linux. Writes stay in the project and
-temporary folders, credential folders are blocked, and the network goes
-through Koda's proxy. The approval decides whether a command runs; the
-sandbox limits what it can do when it does. When the sandbox blocks something
-you need, such as `git push` over SSH, the model can ask to run that one
-command outside it, and you approve it.
+When the sandbox blocks something you need, such as `git commit` (which
+writes to `.git`) or `git push` over SSH, the model asks to run that command
+outside it, with its reason, and you approve it.
 
 ## Context
 

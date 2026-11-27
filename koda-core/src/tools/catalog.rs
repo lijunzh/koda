@@ -650,7 +650,12 @@ mod tests {
         let catalog = ToolCatalog::new();
         let echo = serde_json::json!({"command": "echo hi"});
         let rm = serde_json::json!({"command": "rm -rf /tmp/foo"});
-        assert_eq!(catalog.classify_call("Bash", &echo), ToolEffect::ReadOnly);
+        // No command is read-only since 0.8.0: the sandbox decides what it
+        // can change.
+        assert_eq!(
+            catalog.classify_call("Bash", &echo),
+            ToolEffect::LocalMutation
+        );
         assert_eq!(catalog.classify_call("Bash", &rm), ToolEffect::Destructive,);
     }
 
