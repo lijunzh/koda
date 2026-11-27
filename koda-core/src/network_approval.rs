@@ -4,7 +4,7 @@
 //! A sandboxed command reaches the network only through the session's
 //! proxies. A host on the allow-list goes through; for any other, the proxy
 //! asks here, and this asks the person through the session's
-//! [`Approver`], with the host (Codex's `networkApprovalContext`). As in
+//! [`Approver`](crate::approval_flow::Approver), with the host (Codex's `networkApprovalContext`). As in
 //! Codex:
 //!
 //! - **"Yes"** lets this connection through. The next one asks again.
