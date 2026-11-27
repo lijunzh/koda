@@ -405,6 +405,33 @@ session too.
 /verbose off  ← folded view
 ```
 
+## `/focus [on|off]`
+
+Turns focus view on or off, as Claude Code's `/focus`. In focus view a
+finished turn shows its prompt, one row and its answer:
+
+```text
+❯ why does the build fail on Linux?
+  ▸ Worked for 2m 5s · 17 tool calls · 2 files +40 −12
+  ───
+  The linker can't find …
+```
+
+Everything else the turn showed (its rows, notes, thinking and diffs) is
+behind that row: click it, or focus it with `F4` and press `Enter`, to
+open it, as any folded row. The turn that is running shows its steps
+until its answer is in. A turn that was stopped or failed isn't folded.
+`Ctrl+O` still shows everything.
+
+The choice is kept for new sessions, as `[tui] view_mode` in `config.toml`
+(`focus`, or unset for the default view).
+
+```text
+/focus      ← switch
+/focus on   ← focus view
+/focus off  ← default view
+```
+
 ## `/vim`
 
 Toggles vim-mode editing in the input composer. When enabled, the

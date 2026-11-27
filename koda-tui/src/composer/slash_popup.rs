@@ -125,6 +125,11 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     ("/status", "Show the session, model, mode and context", None),
     ("/stop", "Stop all background processes (also /clean)", None),
     ("/verbose", "Every step in full, or folded (Ctrl+O)", None),
+    (
+        "/focus",
+        "Finished turns as prompt, one line and answer",
+        None,
+    ),
     ("/vim", "Toggle vim-mode editing in the input", None),
 ];
 

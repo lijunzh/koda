@@ -575,6 +575,12 @@ impl TuiContext {
         let completer = crate::completer::InputCompleter::with_file_search(file_search.clone());
 
         let mut scroll_buffer = ScrollBuffer::new(2500);
+        // The view the file names, as Claude Code's `viewMode`.
+        match crate::user_config::tui().view_mode.unwrap_or_default() {
+            koda_config::ViewMode::Default => {}
+            koda_config::ViewMode::Verbose => scroll_buffer.set_full(true),
+            koda_config::ViewMode::Focus => scroll_buffer.set_turns_folded(true),
+        }
         scroll_buffer.push_lines(startup_lines);
         // A resumed session's earlier turns, drawn as they were live, as
         // Codex's TUI replays a resumed thread.

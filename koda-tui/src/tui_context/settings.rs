@@ -348,6 +348,31 @@ pub(crate) async fn save_choice(
     }
 }
 
+/// Save the view new sessions start in, `[tui] view_mode`; `None` removes
+/// it, for the default view.
+pub(crate) async fn save_view_mode(
+    client: &koda_client::InProcessClient,
+    mode: Option<koda_config::ViewMode>,
+) {
+    use koda_client::protocol::config::{ConfigBatchWriteParams, ConfigEdit, MergeStrategy};
+    let value = mode
+        .and_then(|mode| serde_json::to_value(mode).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let saved = client
+        .request::<methods::ConfigBatchWrite>(ConfigBatchWriteParams {
+            edits: vec![ConfigEdit {
+                key_path: "tui.view_mode".into(),
+                value,
+                merge_strategy: MergeStrategy::Replace,
+            }],
+            expected_version: None,
+        })
+        .await;
+    if let Err(e) = saved {
+        tracing::warn!("couldn't save the view: {e}");
+    }
+}
+
 /// Store provider `provider`'s API key through the host
 /// (`modelProvider/apiKey/set`), which also makes it the one this run uses.
 /// Returns the host's error.

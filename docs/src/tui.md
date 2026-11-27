@@ -75,6 +75,13 @@ keyboard, as in Codex: `F4` puts the focus on the last row on screen
 (drawn reversed), `↑`/`↓` move it, `Enter` opens or closes the row, `→`
 opens and `←` closes it, and `Esc` or `F4` leaves.
 
+**Focus view** (`/focus`, as Claude Code's) folds further: a finished turn
+shows its prompt, one row, `▸ Worked for 2m 5s · 17 tool calls · 2 files +40
+−12`, and its answer. The row opens as any other. It's off by default, as
+in Claude Code; `/focus` keeps the choice for new sessions, and `[tui]
+view_mode` (`default`, `verbose` or `focus`) picks the view a session
+starts in.
+
 ## Typing during inference
 
 You can type while Koda is thinking or running tools. The input area stays

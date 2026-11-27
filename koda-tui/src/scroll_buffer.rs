@@ -23,6 +23,10 @@ const MAX_CACHE_LINES: usize = 10_000;
 /// redraw, not a re-render. One item (a row, a thought, a call's output) can
 /// also be opened on its own in the folded view ([`ScrollBuffer::toggle`]),
 /// which shows its [`Fold::Full`] lines there too.
+///
+/// Focus view (`/focus`, as Claude Code's) folds further: a finished turn's
+/// steps, everything but its prompt and answer, go behind one
+/// [`Fold::Turn`] row, which opens on its own as any other item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Fold {
     /// Shown in both views: everything that isn't folded.
@@ -36,6 +40,8 @@ pub enum Fold {
     Heading,
     /// Full view only, or its item opened: the lines folding hides.
     Full,
+    /// Focus view only: the row a finished turn's steps fold behind.
+    Turn,
 }
 
 /// One rendered line and how to show it.
@@ -47,6 +53,9 @@ struct Entry {
     /// The item it belongs to ([`ScrollBuffer::new_item`]), which opens and
     /// closes as one.
     item: Option<u64>,
+    /// The finished turn whose steps it is one of, which focus view hides
+    /// until that turn's row is opened ([`ScrollBuffer::fold_turn`]).
+    turn: Option<u64>,
 }
 
 /// Scrollable buffer of rendered `Line`s with sticky-bottom auto-scroll.
@@ -62,6 +71,9 @@ pub struct ScrollBuffer {
     /// The full view is on: [`Fold::Full`] lines are shown instead of
     /// [`Fold::Folded`] ones.
     full: bool,
+
+    /// Focus view is on: a finished turn's steps are behind its row.
+    turns_folded: bool,
 
     /// Scroll offset: number of lines scrolled UP from the bottom.
     /// 0 = viewing the bottom (latest content).
@@ -94,6 +106,7 @@ impl ScrollBuffer {
             entries: VecDeque::with_capacity(cap),
             first_seq: 0,
             full: false,
+            turns_folded: false,
             scroll_offset: 0,
             sticky_bottom: true,
             cached_term_width: 80,
@@ -108,11 +121,15 @@ impl ScrollBuffer {
         if self.full {
             return matches!(entry.fold, Fold::Always | Fold::Full);
         }
+        if self.turns_folded && entry.turn.is_some_and(|turn| !self.opened.contains(&turn)) {
+            return false;
+        }
         let open = entry.item.is_some_and(|item| self.opened.contains(&item));
         match entry.fold {
             Fold::Always | Fold::Heading => true,
             Fold::Folded => !open,
             Fold::Full => open,
+            Fold::Turn => self.turns_folded,
         }
     }
 
@@ -155,6 +172,7 @@ impl ScrollBuffer {
             gutter: 0,
             fold,
             item,
+            turn: None,
         });
     }
 
@@ -165,6 +183,7 @@ impl ScrollBuffer {
             gutter: gutter_width,
             fold: Fold::Always,
             item: None,
+            turn: None,
         });
     }
 
@@ -195,6 +214,7 @@ impl ScrollBuffer {
                 gutter: 0,
                 fold,
                 item,
+                turn: None,
             });
         }
         self.enforce_capacity();
@@ -249,6 +269,7 @@ impl ScrollBuffer {
                 gutter: 0,
                 fold: Fold::Folded,
                 item,
+                turn: None,
             },
         );
         if self.sticky_bottom {
@@ -297,6 +318,47 @@ impl ScrollBuffer {
         }
     }
 
+    /// Fold the turn whose steps were pushed from `start` (a
+    /// [`Self::next_seq`] value) on: in focus view, the lines from `start`
+    /// to the answer, which runs from `answer.0` to `answer.1`, and those
+    /// after it go behind `row`, put where the steps start. Returns the
+    /// turn's item, which opens as any other. Nothing is folded for a turn
+    /// with no answer or nothing shown before it.
+    pub fn fold_turn(&mut self, start: u64, answer: (u64, u64), row: Line<'static>) -> Option<u64> {
+        let index =
+            |seq: u64| (seq.saturating_sub(self.first_seq) as usize).min(self.entries.len());
+        let (from, answer_from, answer_to) = (index(start), index(answer.0), index(answer.1));
+        let steps = (from..answer_from).any(|i| {
+            matches!(
+                self.entries[i].fold,
+                Fold::Always | Fold::Heading | Fold::Folded
+            )
+        });
+        if !steps {
+            return None;
+        }
+        let turn = self.new_item();
+        for i in (from..answer_from).chain(answer_to..self.entries.len()) {
+            self.entries[i].turn = Some(turn);
+        }
+        self.foldable.insert(turn);
+        self.entries.insert(
+            from,
+            Entry {
+                line: row,
+                gutter: 0,
+                fold: Fold::Turn,
+                item: Some(turn),
+                turn: None,
+            },
+        );
+        self.enforce_capacity();
+        if self.sticky_bottom {
+            self.scroll_offset = 0;
+        }
+        Some(turn)
+    }
+
     // ── Opening one item ─────────────────────────────────
 
     /// Whether `item` is opened in the folded view.
@@ -316,6 +378,24 @@ impl ScrollBuffer {
             self.opened.insert(item);
         } else {
             self.opened.remove(&item);
+        }
+        // A turn's row points down while it is open.
+        let (from, to) = if open {
+            ("\u{25b8}", "\u{25be}")
+        } else {
+            ("\u{25be}", "\u{25b8}")
+        };
+        if let Some(row) = self
+            .entries
+            .iter_mut()
+            .rev()
+            .find(|e| e.fold == Fold::Turn && e.item == Some(item))
+        {
+            for span in &mut row.line.spans {
+                if span.content.contains(from) {
+                    span.content = span.content.replacen(from, to, 1).into();
+                }
+            }
         }
         self.set_from_top(from_top, term_width, viewport_height);
     }
@@ -456,6 +536,20 @@ impl ScrollBuffer {
     /// Whether the full view is on.
     pub fn is_full(&self) -> bool {
         self.full
+    }
+
+    /// Whether focus view is on.
+    pub fn turns_folded(&self) -> bool {
+        self.turns_folded
+    }
+
+    /// Turn focus view on or off. The view goes to the bottom, as when the
+    /// full view is switched.
+    pub fn set_turns_folded(&mut self, folded: bool) {
+        if self.turns_folded != folded {
+            self.turns_folded = folded;
+            self.scroll_to_bottom();
+        }
     }
 
     /// Switch between the folded and the full view. The view goes to the
@@ -628,6 +722,7 @@ impl ScrollBuffer {
                 gutter: 0,
                 fold: Fold::Always,
                 item: None,
+                turn: None,
             });
         }
         self.first_seq = self.first_seq.saturating_sub(count as u64);
