@@ -7,18 +7,20 @@
 use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use koda_core::config::{KodaConfig, ProviderType};
 use koda_server::socket::{Options, ServeError, serve_with_config};
 use koda_server::stdio::ServeArgs;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
-use koda_test_utils::openai::{model, text};
+use koda_test_utils::openai::{model, text, usage};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::oneshot;
+use tokio::net::{TcpListener, TcpStream, UnixStream};
+use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -50,13 +52,145 @@ fn safe(server: &FakeLlmServer) -> KodaConfig {
 }
 
 fn config(server: &FakeLlmServer) -> KodaConfig {
+    config_at(server.url())
+}
+
+/// [`config`] for a model at `url`.
+fn config_at(url: String) -> KodaConfig {
     let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
-    config.base_url = server.url();
+    config.base_url = url;
     config.model = "stub".to_string();
     config.model_settings.model = "stub".to_string();
     config.max_context_tokens = 100_000;
     config.model_settings.max_context_tokens = 100_000;
     config
+}
+
+/// A model whose first reply streams `before`, then holds its stream open
+/// until [`PausedModel::release`], then streams `after`: a reply caught
+/// part-way, which `FakeLlmServer` can't do, as it sends a body whole.
+/// Every later request is answered "(no more replies)".
+struct PausedModel {
+    url: String,
+    release: Arc<Notify>,
+    _serving: JoinHandle<()>,
+}
+
+impl PausedModel {
+    async fn start(before: &[&str], after: &[&str]) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let release = Arc::new(Notify::new());
+        let replies = Arc::new(AtomicUsize::new(0));
+        let owned =
+            |pieces: &[&str]| -> Vec<String> { pieces.iter().map(|p| p.to_string()).collect() };
+        let (before, after) = (owned(before), owned(after));
+        let serving = {
+            let release = Arc::clone(&release);
+            tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let (release, replies) = (Arc::clone(&release), Arc::clone(&replies));
+                    let (before, after) = (before.clone(), after.clone());
+                    tokio::spawn(async move {
+                        let _ = answer_one(stream, &release, &replies, &before, &after).await;
+                    });
+                }
+            })
+        };
+        Self {
+            url,
+            release,
+            _serving: serving,
+        }
+    }
+
+    /// Let the first reply stream the rest.
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+/// Answer one HTTP request on `stream`, then close it: a chat request with
+/// a streamed reply ([`PausedModel`]), anything else with a 404.
+async fn answer_one(
+    mut stream: TcpStream,
+    release: &Notify,
+    replies: &AtomicUsize,
+    before: &[String],
+    after: &[String],
+) -> std::io::Result<()> {
+    let mut reader = BufReader::new(&mut stream);
+    let mut head = String::new();
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).await? == 0 {
+            return Ok(());
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse().unwrap_or(0);
+        }
+        if line == "\r\n" {
+            break;
+        }
+        if head.is_empty() {
+            head = line;
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).await?;
+    if !(head.starts_with("POST ") && head.contains("/chat/completions")) {
+        return stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+            .await;
+    }
+    stream
+        .write_all(
+            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+              transfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+        )
+        .await?;
+    async fn event(stream: &mut TcpStream, data: Value) -> std::io::Result<()> {
+        let event = format!("data: {data}\n\n");
+        let chunk = format!("{:x}\r\n{event}\r\n", event.len());
+        stream.write_all(chunk.as_bytes()).await?;
+        stream.flush().await
+    }
+    let piece = |p: &String| json!({"choices": [{"delta": {"content": p}}]});
+    if replies.fetch_add(1, Ordering::SeqCst) == 0 {
+        for p in before {
+            event(&mut stream, piece(p)).await?;
+        }
+        release.notified().await;
+        for p in after {
+            event(&mut stream, piece(p)).await?;
+        }
+    } else {
+        event(&mut stream, piece(&"(no more replies)".to_string())).await?;
+    }
+    event(
+        &mut stream,
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    )
+    .await?;
+    event(&mut stream, usage(200, 20)).await?;
+    let done = "data: [DONE]\n\n";
+    let chunk = format!("{:x}\r\n{done}\r\n0\r\n\r\n", done.len());
+    stream.write_all(chunk.as_bytes()).await
+}
+
+/// The text a session's message `item` was streamed in `lines`.
+fn streamed(lines: &[Value], item: &str) -> String {
+    lines
+        .iter()
+        .filter(|l| l["method"] == "item/agentMessage/delta" && l["params"]["itemId"] == item)
+        .map(|l| l["params"]["delta"].as_str().unwrap())
+        .collect()
 }
 
 /// A running `koda serve` on a socket in a temp folder.
@@ -1705,5 +1839,256 @@ async fn a_message_over_the_limit_ends_its_connection() {
 
     let mut other = Client::ready(&koda).await;
     other.start_session().await;
+    koda.stop().await;
+}
+
+/// A client that joins while the model's reply is still streaming is
+/// answered with the message as it stands, its text so far, then hears the
+/// rest of it as it streams, so the two make the reply once, nothing
+/// doubled or dropped, as Codex merges a thread's active turn into
+/// `thread/resume`. The other join test joins at an approval, with no text
+/// open. A second client whose join races the rest of the stream ends
+/// with the same text: the join is answered in its place among the
+/// session's messages, so what streamed before it is in the answer and
+/// what streamed after is heard.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_joins_while_the_reply_streams_gets_the_text_so_far_then_the_rest() {
+    let whole = "The answer, after some thought, is forty-two.";
+    // One piece before the pause, so its text reaches the clients as one
+    // delta: Koda holds back a piece's last few bytes in case a tag
+    // straddles two pieces, so that delta is only part of the piece.
+    let model = PausedModel::start(
+        &["The answer, after some thought, is "],
+        &["forty", "-two", "."],
+    )
+    .await;
+    let koda = Server::start(config_at(model.url.clone()), Duration::from_secs(60)).await;
+    let mut first = Client::ready(&koda).await;
+    let session = first.start_session().await;
+    first
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": [{"type": "text", "text": "what is it?"}]}),
+        )
+        .await
+        .unwrap();
+    // The reply has streamed as far as it goes until the model goes on.
+    let mut heard = first.until_method("item/agentMessage/delta").await;
+    let item = heard.last().unwrap()["params"]["itemId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let so_far = streamed(&heard, &item);
+    assert!(
+        !so_far.is_empty() && so_far.len() < whole.len() && whole.starts_with(&so_far),
+        "{so_far:?}"
+    );
+
+    let mut joiner = Client::ready(&koda).await;
+    let joined = joiner
+        .request("session/resume", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert!(
+        joiner
+            .seen()
+            .iter()
+            .all(|l| session_of(l) != Some(session.as_str()) || is_broadcast(l)),
+        "nothing of the turn before the answer"
+    );
+    let turn = joined["session"]["turns"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(turn["status"], "inProgress", "{turn}");
+    let message = turn["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item.as_str())
+        .unwrap_or_else(|| panic!("the open message isn't in the turn: {turn}"));
+    assert_eq!(message["type"], "agentMessage", "{message}");
+    assert_eq!(message["text"], so_far, "the text so far: {message}");
+    assert!(message["completedAtMs"].is_null(), "still open: {message}");
+
+    // This one's join races the rest of the reply.
+    let mut racer = Client::ready(&koda).await;
+    let join = racer
+        .send_request("session/resume", json!({"sessionId": session}))
+        .await;
+    model.release();
+    let raced = racer.response(join).await.unwrap();
+    assert_eq!(
+        streamed(&racer.seen(), &item),
+        "",
+        "no delta before the answer"
+    );
+    let raced_turn = raced["session"]["turns"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    let raced_text = raced_turn["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item.as_str())
+        .and_then(|i| i["text"].as_str())
+        .unwrap_or_else(|| panic!("the message isn't in the turn: {raced_turn}"))
+        .to_string();
+    let raced_rest = if raced_turn["status"] == "inProgress" {
+        racer.until_method("turn/completed").await
+    } else {
+        Vec::new()
+    };
+    assert_eq!(
+        raced_text + &streamed(&raced_rest, &item),
+        whole,
+        "answered with {raced_turn}, then heard {raced_rest:?}"
+    );
+
+    // The rest reaches the first joiner once, the message's start not again.
+    let rest = joiner.until_method("turn/completed").await;
+    assert_eq!(
+        format!("{so_far}{}", streamed(&rest, &item)),
+        whole,
+        "{rest:?}"
+    );
+    assert!(
+        !rest
+            .iter()
+            .any(|l| l["method"] == "item/started" && l["params"]["item"]["id"] == item.as_str()),
+        "{rest:?}"
+    );
+    let completed = rest
+        .iter()
+        .find(|l| l["method"] == "item/completed" && l["params"]["item"]["id"] == item.as_str())
+        .unwrap_or_else(|| panic!("the message never completed: {rest:?}"));
+    assert_eq!(completed["params"]["item"]["text"], whole, "{completed}");
+    heard.extend(first.until_method("turn/completed").await);
+    assert_eq!(
+        streamed(&heard, &item),
+        whole,
+        "the first client heard it all"
+    );
+    koda.stop().await;
+}
+
+/// A turn goes on when its only client disconnects while the reply
+/// streams, as a Codex thread runs on without subscribers: it finishes with
+/// nobody connected, and a client that connects afterwards finds the whole
+/// reply and the turn completed, not interrupted or cut off where the
+/// client left. The session is closed and opened again first, so the turn
+/// comes from what was stored, not from memory.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_whose_client_leaves_mid_stream_finishes_for_the_next_client() {
+    // Longer than the few bytes Koda holds back, so some of it is heard.
+    let model =
+        PausedModel::start(&["The first half of the reply, "], &["and ", "the rest."]).await;
+    let koda = Server::start(config_at(model.url.clone()), Duration::from_millis(300)).await;
+    let mut watcher = Client::ready(&koda).await;
+    let mut first = Client::ready(&koda).await;
+    let session = first.start_session().await;
+    first
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": [{"type": "text", "text": "go on"}]}),
+        )
+        .await
+        .unwrap();
+    first.until_method("item/agentMessage/delta").await;
+    drop(first);
+    // A round trip on another connection, so the server has had the time
+    // to see the first one close before the reply goes on.
+    watcher.request("state/read", json!({})).await.unwrap();
+    model.release();
+
+    // With no client, the turn ends, and the session then closes.
+    let mut statuses = Vec::new();
+    while statuses.last() != Some(&json!({"type": "notLoaded"})) {
+        let heard = watcher.until_method("session/status/changed").await;
+        let last = heard.last().unwrap();
+        assert_eq!(session_of(last), Some(session.as_str()), "{last}");
+        statuses.push(last["params"]["status"].clone());
+    }
+    assert_eq!(
+        statuses[statuses.len() - 2],
+        json!({"type": "idle"}),
+        "{statuses:?}"
+    );
+
+    let mut next = Client::ready(&koda).await;
+    let opened = next
+        .request("session/resume", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert!(
+        next.seen()
+            .iter()
+            .any(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str())),
+        "opened from the store"
+    );
+    let turns = opened["session"]["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 1, "{opened}");
+    assert_eq!(turns[0]["status"], "completed", "{opened}");
+    let items = turns[0]["items"].as_array().unwrap();
+    let kinds: Vec<&str> = items.iter().map(|i| i["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["userMessage", "agentMessage"], "{opened}");
+    assert_eq!(
+        items[1]["text"], "The first half of the reply, and the rest.",
+        "{opened}"
+    );
+    koda.stop().await;
+}
+
+/// Each connection is told of the config file's problems right after its
+/// `initialize` answer, a second connection as well as the first, as Codex
+/// sends `configWarning` to each client it initializes. The host says them
+/// once, when the server starts, so a server that only passed them on
+/// would warn whoever was connected then and nobody after.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_connection_is_warned_about_the_config_file() {
+    let server = model(vec![]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("config").join("config.toml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "modle = \"stub\"\n").unwrap();
+    let koda = Server::start_in(dir.path(), config(&server), Duration::from_secs(60)).await;
+    let warnings = |lines: &[Value]| -> Vec<Value> {
+        lines
+            .iter()
+            .filter(|l| l["method"] == "configWarning")
+            .map(|l| l["params"].clone())
+            .collect()
+    };
+
+    // The first may be told after its answer or as the host says it, so
+    // it waits for the warning; not the whole `WAIT`, if it never comes.
+    let mut first = Client::ready(&koda).await;
+    let heard = tokio::time::timeout(Duration::from_secs(5), first.until_method("configWarning"))
+        .await
+        .expect("the first connection was never warned");
+    let warning = heard.last().unwrap()["params"].clone();
+    assert!(
+        warning["summary"].as_str().unwrap().contains("`modle`"),
+        "{warning}"
+    );
+    assert_eq!(warning["path"], file.display().to_string(), "{warning}");
+    first.request("state/read", json!({})).await.unwrap();
+    assert_eq!(warnings(&first.seen()), Vec::<Value>::new(), "said once");
+
+    // The second connection: after its answer, before anything it asks next.
+    let mut second = Client::connect(&koda).await;
+    let init = second
+        .send_request(
+            "initialize",
+            json!({"clientInfo": {"name": "second", "version": "0"}}),
+        )
+        .await;
+    second.response(init).await.unwrap();
+    assert_eq!(warnings(&second.seen()), Vec::<Value>::new(), "not before");
+    second.request("state/read", json!({})).await.unwrap();
+    assert_eq!(warnings(&second.seen()), [warning]);
     koda.stop().await;
 }
