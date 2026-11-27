@@ -69,7 +69,7 @@ enum DangerCheck {
 /// Returns `true` if token `t` matches `flag` — exact, long-flag, or
 /// combined short-flag (e.g. `-f` matches `-fd`, `-fdc`).
 fn flag_matches(t: &str, flag: &str) -> bool {
-    if t == flag {
+    if t == flag || long_option_is(t, flag) {
         return true;
     }
     // Combined short flags: `-fd` should match flag `-f`
@@ -78,6 +78,15 @@ fn flag_matches(t: &str, flag: &str) -> bool {
         return t[1..].contains(ch);
     }
     false
+}
+
+/// Whether `t` names the long option `full`, as git and getopt read it:
+/// any prefix of it (`--force-w` is `--force-with-lease`), with or without
+/// `=value`. An ambiguous prefix is refused by the command, so counting it
+/// costs nothing.
+fn long_option_is(t: &str, full: &str) -> bool {
+    let name = t.split_once('=').map_or(t, |(name, _)| name);
+    full.starts_with("--") && name.starts_with("--") && name.len() > 2 && full.starts_with(name)
 }
 
 /// The arguments before `--`: after it, `-f` is a file name.
@@ -135,13 +144,26 @@ fn is_shell(word: &str) -> bool {
 
 /// `tokens` with the command by its basename and, for git, its global
 /// options left out (`git -C dir -c k=v push` is `git push`), so a check
-/// names the command once.
+/// names the command once. For gh, its repository option goes wherever it
+/// is: `gh pr -R o/r merge 12` is `gh pr merge 12`.
 fn normalised(tokens: &[String]) -> Vec<String> {
     let Some(first) = tokens.first() else {
         return Vec::new();
     };
     let cmd = basename(first).to_string();
     let mut rest = &tokens[1..];
+    if cmd == "gh" {
+        let mut out = vec![cmd];
+        let mut words = rest.iter();
+        while let Some(t) = words.next() {
+            if t == "-R" || t == "--repo" {
+                words.next();
+            } else if !(t.starts_with("--repo=") || (t.starts_with("-R") && t.len() > 2)) {
+                out.push(t.clone());
+            }
+        }
+        return out;
+    }
     if cmd == "git" {
         loop {
             match rest.first().map(String::as_str) {
@@ -171,6 +193,7 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     // ── Privilege escalation ─────────────────────────────────────────────────
     DangerCheck::Cmd("sudo"),
     DangerCheck::Cmd("su"),
+    DangerCheck::Cmd("doas"),
     // ── Low-level disk operations ────────────────────────────────────────────
     DangerCheck::Cmd("dd"),
     DangerCheck::Cmd("mkfs"),
@@ -183,15 +206,19 @@ const DANGER_CHECKS: &[DangerCheck] = &[
     DangerCheck::CmdSub("npm", "publish"),
     DangerCheck::CmdSub("cargo", "publish"),
     // ── Git that loses work or rewrites a remote ─────────────────────────────
+    // A long option matches any prefix of it, as git reads it (`--force-w`).
     DangerCheck::CmdSubFlag("git", "push", "-f"),
     DangerCheck::CmdSubFlag("git", "push", "--force"),
     DangerCheck::CmdSubFlag("git", "push", "--force-with-lease"),
+    DangerCheck::CmdSubFlag("git", "push", "-d"),
     DangerCheck::CmdSubFlag("git", "push", "--delete"),
+    DangerCheck::CmdSubFlag("git", "push", "--prune"),
     DangerCheck::CmdSubFlag("git", "push", "--mirror"),
     DangerCheck::CmdSubArgStarts("git", "push", "+"),
     DangerCheck::CmdSubArgStarts("git", "push", ":"),
     DangerCheck::CmdSubFlag("git", "reset", "--hard"),
     DangerCheck::CmdSubFlag("git", "clean", "-f"), // also matches -fd, -fdc, …
+    DangerCheck::CmdSubFlag("git", "clean", "--force"),
     // ── GitHub CLI destructive (#518, #525, #1266) ───────────────────────────
     DangerCheck::CmdSubSub("gh", "pr", "merge"),
     DangerCheck::CmdSubSub("gh", "issue", "delete"),
@@ -227,6 +254,11 @@ const WRAPPERS: &[(&str, &[&str])] = &[
     ("exec", &["-a"]),
     ("nice", &["-n"]),
     ("timeout", &["-s", "-k", "--signal", "--kill-after"]),
+    ("setsid", &[]),
+    ("stdbuf", &["-i", "-o", "-e"]),
+    ("caffeinate", &["-t", "-w"]),
+    // `busybox rm -rf x` runs its `rm` applet.
+    ("busybox", &[]),
     (
         "xargs",
         &[
@@ -236,13 +268,17 @@ const WRAPPERS: &[(&str, &[&str])] = &[
 ];
 
 /// The command inside any wrappers: `env X=1 nohup rm -f a` → `rm -f a`.
+/// An `env -S` stays: its command is one string (see [`env_split_string`]).
 fn unwrap_wrappers(tokens: &[String]) -> &[String] {
     let mut rest = tokens;
     for _ in 0..8 {
         let Some(first) = rest.first() else { break };
-        let Some((name, takes_value)) = WRAPPERS.iter().find(|(w, _)| w == first) else {
+        let Some((name, takes_value)) = WRAPPERS.iter().find(|(w, _)| *w == basename(first)) else {
             break;
         };
+        if *name == "env" && env_split_string(rest).is_some() {
+            break;
+        }
         let mut i = 1;
         while let Some(t) = rest.get(i) {
             if *name == "env" && t.contains('=') && !t.starts_with('-') {
@@ -269,7 +305,43 @@ fn unwrap_wrappers(tokens: &[String]) -> &[String] {
     rest
 }
 
-/// The script a shell runs with `-c`: `bash -lc 'rm -f a'` → `rm -f a`.
+/// The command line `env -S` splits and runs, with the words after it:
+/// `env -S 'rm -rf a'` → `rm -rf a`. `None` for an `env` without `-S`.
+fn env_split_string(tokens: &[String]) -> Option<String> {
+    if basename(tokens.first()?) != "env" {
+        return None;
+    }
+    let mut i = 1;
+    while let Some(t) = tokens.get(i) {
+        let (line, next) = if t == "-S" || (long_option_is(t, "--split-string") && !t.contains('='))
+        {
+            (tokens.get(i + 1)?.clone(), i + 2)
+        } else if let Some(v) = t.strip_prefix("-S") {
+            (v.to_string(), i + 1)
+        } else if long_option_is(t, "--split-string") {
+            (t.split_once('=')?.1.to_string(), i + 1)
+        } else if t == "-u" || t == "-C" {
+            i += 2;
+            continue;
+        } else if t.starts_with('-') || t.contains('=') {
+            i += 1;
+            continue;
+        } else {
+            return None;
+        };
+        let rest = tokens.get(next..).unwrap_or_default();
+        return Some(
+            std::iter::once(line)
+                .chain(rest.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    None
+}
+
+/// The script a shell runs with `-c`: `bash -lc 'rm -f a'` → `rm -f a`. It
+/// is the first word after the options: `bash -c -- 'rm -f a'` too.
 fn shell_script(tokens: &[String]) -> Option<&str> {
     if !is_shell(tokens.first()?) {
         return None;
@@ -277,7 +349,77 @@ fn shell_script(tokens: &[String]) -> Option<&str> {
     let at = tokens[1..]
         .iter()
         .position(|t| t.starts_with('-') && !t.starts_with("--") && t[1..].contains('c'))?;
-    tokens.get(at + 2).map(String::as_str)
+    let mut i = at + 2;
+    while let Some(t) = tokens.get(i) {
+        if t == "--" {
+            return tokens.get(i + 1).map(String::as_str);
+        }
+        if !t.starts_with(['-', '+']) {
+            return Some(t);
+        }
+        // `-o pipefail` and `-O extglob` take a value.
+        i += if ["-o", "+o", "-O", "+O"].contains(&t.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    None
+}
+
+/// The command `watch` runs, which it hands to `sh -c` as one line:
+/// `watch -n 1 'rm -f a'` → `rm -f a`.
+fn watch_script(tokens: &[String]) -> Option<String> {
+    let mut i = 1;
+    while let Some(t) = tokens.get(i) {
+        if t == "--" {
+            i += 1;
+            break;
+        }
+        if !t.starts_with('-') {
+            break;
+        }
+        i += if ["-n", "--interval", "-q", "--equexit"].contains(&t.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    let rest = tokens.get(i..).filter(|rest| !rest.is_empty())?;
+    Some(rest.join(" "))
+}
+
+/// The command `script` records: its `-c` script (util-linux, `script -c
+/// 'rm -f a'`), or the words after the log file (BSD and macOS, `script -q
+/// /dev/null rm -f a`).
+fn script_command(tokens: &[String]) -> Option<String> {
+    let mut i = 1;
+    while let Some(t) = tokens.get(i) {
+        if t == "-c"
+            || t == "--command"
+            || (t.starts_with('-') && !t.starts_with("--") && t.ends_with('c'))
+        {
+            return tokens.get(i + 1).cloned();
+        }
+        if let Some(v) = t.strip_prefix("--command=") {
+            return Some(v.to_string());
+        }
+        if t == "--" {
+            i += 1;
+            break;
+        }
+        if !t.starts_with('-') {
+            break;
+        }
+        i += if ["-F", "-t", "-T", "-B", "-E", "-I", "-O", "-m"].contains(&t.as_str()) {
+            2
+        } else {
+            1
+        };
+    }
+    // The first word left is the log file.
+    let rest = tokens.get(i + 1..).filter(|rest| !rest.is_empty())?;
+    Some(rest.join(" "))
 }
 
 /// The commands `find` runs: each `-exec … ;` (or `+`), `-execdir`, `-ok`,
@@ -318,6 +460,9 @@ fn effect_of_tokens(tokens: &[String]) -> Option<ToolEffect> {
         Some("eval") => Some(inner[1..].join(" ")),
         // `trap 'rm -rf x' EXIT` runs its script later, as Codex reads it.
         Some("trap") => inner.get(1).cloned(),
+        Some("env") => env_split_string(inner),
+        Some("watch") => watch_script(inner),
+        Some("script") => script_command(inner),
         _ => shell_script(inner).map(str::to_string),
     };
     // A shell with no script reads one from its input: `curl x |sh`,
@@ -884,16 +1029,18 @@ fn harmless_redirect_len(s: &str) -> Option<usize> {
 /// Returns `LocalMutation` on parse failure (fail-open — the user sees the
 /// prompt and can decide; we never auto-approve unparseable syntax).
 fn classify_segment(segment: &str) -> ToolEffect {
-    let seg = strip_env_vars(segment.trim());
+    let seg = decode_ansi_c(segment.trim());
+    let seg = strip_env_vars(&seg);
     let seg = strip_redirections(&seg);
     // Strip leading/trailing subshell `(...)` and group `{...}` brackets so
     // commands wrapped in them are still classified by their inner command
     // (#972). E.g. `(rm -rf /)` should classify the same as `rm -rf /`.
     // Conservative: only strips outermost layer; nested cases like `((rm))`
     // still work because the leading `(` chars are all stripped together.
-    let mut seg = strip_function_header(seg.trim())
+    let seg = strip_function_header(seg.trim())
         .trim_start_matches(['(', '{'])
         .trim();
+    let mut seg = case_arm(seg).trim();
     // An escaped `\;` ends `find -exec`; only a bare one closes a group.
     while let Some(rest) = seg.strip_suffix([')', '}', ';']) {
         if rest.ends_with('\\') {
@@ -920,6 +1067,156 @@ fn classify_segment(segment: &str) -> ToolEffect {
     }
 
     ToolEffect::LocalMutation
+}
+
+/// The command in a `case` arm: `case x in a) rm -f b` and, after `;;`,
+/// `b) rm -f c` are `rm -f …`. Any other segment comes back as it is.
+fn case_arm(seg: &str) -> &str {
+    let lexed = lex(seg);
+    let close = lexed
+        .iter()
+        .find(|&&(_, c, kind)| kind == Lex::Code && c == ')')
+        .map(|&(b, _, _)| b);
+    let Some(close) = close else {
+        return seg;
+    };
+    let header = &seg[..close];
+    let is_case = header
+        .strip_prefix("case")
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+        && header.split_whitespace().any(|w| w == "in");
+    // A pattern is the first word and a command follows it; `reboot)` closes
+    // a subshell instead.
+    let first_word =
+        !header.contains(char::is_whitespace) && seg[close + 1..].starts_with(char::is_whitespace);
+    if is_case || first_word {
+        &seg[close + 1..]
+    } else {
+        seg
+    }
+}
+
+/// `segment` with each `$'…'` (ANSI-C quoting) decoded into plain single
+/// quotes and each `$"…"` read as `"…"`, so the tokens are the words bash
+/// runs: `$'rm' -rf a` is `rm -rf a`, as is `$'\x72m' -rf a`.
+fn decode_ansi_c(segment: &str) -> String {
+    let chars: Vec<char> = segment.chars().collect();
+    let mut out = String::with_capacity(segment.len());
+    let mut in_double = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '\\' => {
+                out.extend(&chars[i..chars.len().min(i + 2)]);
+                i += 2;
+                continue;
+            }
+            '\'' if !in_double => {
+                let end = (i + 1..chars.len())
+                    .find(|&j| chars[j] == '\'')
+                    .unwrap_or(chars.len() - 1);
+                out.extend(&chars[i..=end]);
+                i = end + 1;
+                continue;
+            }
+            '"' => in_double = !in_double,
+            // `$"…"` is a translated string: `"…"` with no translation.
+            '$' if !in_double && chars.get(i + 1) == Some(&'"') => {
+                i += 1;
+                continue;
+            }
+            '$' if !in_double && chars.get(i + 1) == Some(&'\'') => {
+                let mut word = String::new();
+                let mut j = i + 2;
+                let mut closed = false;
+                while let Some(&q) = chars.get(j) {
+                    match q {
+                        '\'' => {
+                            closed = true;
+                            j += 1;
+                            break;
+                        }
+                        '\\' => j = ansi_c_escape(&chars, j + 1, &mut word),
+                        _ => {
+                            word.push(q);
+                            j += 1;
+                        }
+                    }
+                }
+                if !closed {
+                    out.extend(&chars[i..]);
+                    break;
+                }
+                out.push('\'');
+                out.push_str(&word.replace('\'', "'\\''"));
+                out.push('\'');
+                i = j;
+                continue;
+            }
+            _ => {}
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Decode the escape after a backslash at `at` in a `$'…'` string into
+/// `word`, as bash does; returns the index after it. An unknown escape
+/// stays as written.
+fn ansi_c_escape(chars: &[char], at: usize, word: &mut String) -> usize {
+    let Some(&e) = chars.get(at) else {
+        word.push('\\');
+        return at;
+    };
+    let simple = match e {
+        'a' => Some('\x07'),
+        'b' => Some('\x08'),
+        'e' | 'E' => Some('\x1b'),
+        'f' => Some('\x0c'),
+        'n' => Some('\n'),
+        'r' => Some('\r'),
+        't' => Some('\t'),
+        'v' => Some('\x0b'),
+        '\\' | '\'' | '"' | '?' => Some(e),
+        _ => None,
+    };
+    if let Some(ch) = simple {
+        word.push(ch);
+        return at + 1;
+    }
+    // `\cX` is control-X.
+    if e == 'c'
+        && let Some(&x) = chars.get(at + 1)
+    {
+        word.extend(char::from_u32(x as u32 & 0x1f));
+        return at + 2;
+    }
+    let (radix, max, start) = match e {
+        'x' => (16, 2, at + 1),
+        'u' => (16, 4, at + 1),
+        'U' => (16, 8, at + 1),
+        '0'..='7' => (8, 3, at),
+        _ => {
+            word.push('\\');
+            word.push(e);
+            return at + 1;
+        }
+    };
+    let digits: String = chars[start.min(chars.len())..]
+        .iter()
+        .take(max)
+        .take_while(|d| d.is_digit(radix))
+        .collect();
+    if digits.is_empty() {
+        word.push('\\');
+        word.push(e);
+        return at + 1;
+    }
+    let value = u32::from_str_radix(&digits, radix).unwrap_or(0xfffd);
+    word.push(char::from_u32(value).unwrap_or('\u{fffd}'));
+    start + digits.chars().count()
 }
 
 /// How the shell reads each character of a command.

@@ -37,11 +37,11 @@ Vendored modules (see per-file headers for upstream paths and local diffs):
       codex-rs/protocol/src/parse_command.rs (at f277e313f1; split by
       Koda's own scanner instead of tree-sitter, without PowerShell)
 
-Data (at upstream commit ad0ab3d832):
+Data (at upstream commit 57b493a648):
 
   koda-core/src/trust.rs (BANNED_PREFIXES)
       from BANNED_PREFIX_SUGGESTIONS in codex-rs/core/src/exec_policy.rs
-      (with sudo, xargs and ruby added)
+      (with xargs added)
 
 Prompt text (at upstream commit 05ae1b0fdd5ab412d24248acc76c5d9f6f275440):
 

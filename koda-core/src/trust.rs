@@ -550,7 +550,9 @@ const PREFIX_KEY: &str = "Bash-prefix\0";
 
 /// Prefixes too broad to allow, as Codex refuses to suggest them
 /// (`BANNED_PREFIX_SUGGESTIONS`, `codex-rs/core/src/exec_policy.rs`): each
-/// would run any program or script.
+/// would run any program or script, or (`rm`) remove anything. Codex's
+/// whole list, its Windows shells included (`pwsh` runs on macOS and
+/// Linux too), plus `xargs`.
 const BANNED_PREFIXES: &[&[&str]] = &[
     &["bash"],
     &["bash", "-c"],
@@ -591,13 +593,17 @@ const BANNED_PREFIXES: &[&[&str]] = &[
     &["bun", "run"],
     &["npm", "run"],
     &["pnpm", "run"],
+    &["yarn", "run"],
     &["python"],
     &["python", "-"],
     &["python", "-c"],
     &["python3"],
     &["python3", "-"],
     &["python3", "-c"],
+    &["pythonw"],
     &["py"],
+    &["py", "-3"],
+    &["pyw"],
     &["pypy"],
     &["pypy3"],
     &["perl"],
@@ -612,6 +618,31 @@ const BANNED_PREFIXES: &[&[&str]] = &[
     &["julia", "-e"],
     &["Rscript"],
     &["osascript"],
+    &["rm"],
+    &["cmd"],
+    &["cmd", "/c"],
+    &["cmd", "/k"],
+    &["cmd.exe"],
+    &["cmd.exe", "/c"],
+    &["cmd.exe", "/k"],
+    &["powershell"],
+    &["powershell", "-Command"],
+    &["powershell", "-EncodedCommand"],
+    &["powershell", "-File"],
+    &["powershell", "-c"],
+    &["powershell.exe"],
+    &["powershell.exe", "-Command"],
+    &["powershell.exe", "-EncodedCommand"],
+    &["powershell.exe", "-File"],
+    &["powershell.exe", "-c"],
+    &["pwsh"],
+    &["pwsh", "-Command"],
+    &["pwsh", "-EncodedCommand"],
+    &["pwsh", "-File"],
+    &["pwsh", "-c"],
+    &["pwsh", "-e"],
+    &["pwsh", "-ec"],
+    &["pwsh", "-f"],
 ];
 
 /// A command's words, when it is one plain command: no `&&`, `|`, `;`,
@@ -1291,6 +1322,35 @@ mod tests {
             session_allow_key("Bash", &bare, resolve_tool_effect("Bash", &bare), root),
             None
         );
+    }
+
+    /// Codex's banned prefixes Koda lacked until 2026-11-27 aren't offered
+    /// either.
+    #[test]
+    fn codexs_whole_banned_list_is_refused() {
+        for (command, rule) in [
+            ("rm build.log", serde_json::json!(["rm"])),
+            ("yarn run build", serde_json::json!(["yarn", "run"])),
+            ("py -3 x.py", serde_json::json!(["py", "-3"])),
+            ("pythonw x.py", serde_json::json!(["pythonw"])),
+            ("pyw x.py", serde_json::json!(["pyw"])),
+            ("pwsh -c ls", serde_json::json!(["pwsh", "-c"])),
+            (
+                "powershell -File x.ps1",
+                serde_json::json!(["powershell", "-File"]),
+            ),
+            ("cmd /c dir", serde_json::json!(["cmd", "/c"])),
+        ] {
+            let args = serde_json::json!({
+                "command": command, "outside_sandbox": true, "reason": "r", "prefix_rule": rule,
+            });
+            assert_eq!(session_prefix(&args), None, "{command} {rule}");
+        }
+        let args = serde_json::json!({
+            "command": "yarn run build", "outside_sandbox": true, "reason": "r",
+            "prefix_rule": ["yarn", "run", "build"],
+        });
+        assert!(session_prefix(&args).is_some(), "a narrower prefix is fine");
     }
 
     /// An allowed prefix covers later commands that start with it and ask
