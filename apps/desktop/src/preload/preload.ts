@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('koda', {
   respond: (id: number | string, result: unknown) => ipcRenderer.invoke('koda:respond', id, result),
   /** Replace an older server whose turns are running: `wait` for them, or `stop` them. */
   replaceServer: (turns: 'wait' | 'stop') => ipcRenderer.invoke('koda:replaceServer', turns),
+  /** A new session in a folder the user picks; resolves with it, or null if they cancelled. */
+  newSession: () => ipcRenderer.invoke('koda:newSession'),
+  /** Delete a session once the user confirms; resolves with whether it was deleted. */
+  deleteSession: (id: string) => ipcRenderer.invoke('koda:deleteSession', id),
   /** Try starting or joining the server again. */
   retry: () => ipcRenderer.invoke('koda:retry'),
   /** Quit and open the app again: after an update, the new one. */

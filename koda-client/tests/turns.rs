@@ -4663,3 +4663,56 @@ async fn an_unlisted_host_asks_and_the_answer_decides() {
         koda.client.shutdown().await;
     }
 }
+
+/// A session resumed without a folder opens in its own, as Codex's
+/// `thread/resume` falls back to the thread's stored cwd, not in the host's:
+/// a client that resumes by id alone (the desktop app) gets the session where
+/// it was. One whose folder is gone is refused rather than moved.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_resumed_by_id_alone_opens_in_its_own_folder() {
+    let server = FakeLlmServer::spawn().await;
+    let dir = tempfile::tempdir().unwrap();
+    let client = client(config(&server), &dir).await;
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let elsewhere = elsewhere.canonicalize().unwrap();
+    let started = client
+        .request::<methods::SessionStart>(SessionStartParams {
+            cwd: Some(elsewhere.to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session;
+    let close = |id: String| {
+        client.request::<methods::SessionUnsubscribe>(SessionUnsubscribeParams { session_id: id })
+    };
+    close(started.id.clone()).await.unwrap();
+
+    let resumed = client
+        .request::<methods::SessionResume>(SessionResumeParams {
+            session_id: started.id.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(resumed.cwd.as_deref(), Some(elsewhere.to_str().unwrap()));
+    close(started.id.clone()).await.unwrap();
+
+    std::fs::remove_dir(&elsewhere).unwrap();
+    let error = server_error(
+        client
+            .request::<methods::SessionResume>(SessionResumeParams {
+                session_id: started.id,
+                ..Default::default()
+            })
+            .await,
+    );
+    assert!(
+        error.message.contains("no longer exists"),
+        "{}",
+        error.message
+    );
+    client.shutdown().await;
+}

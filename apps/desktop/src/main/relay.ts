@@ -36,6 +36,14 @@ const PAGE_METHODS: ReadonlySet<string> = new Set([
 const CHECKED: Readonly<Record<string, (params: Record<string, unknown>) => string | null>> = {
   // `baseUrl` would send the provider's stored key to that address.
   'model/list': (params) => (params.baseUrl === undefined ? null : 'model/list takes no baseUrl from the page'),
+  // Opening a session by its id alone: the server opens it in the folder it
+  // was started in. A `cwd` would move where its commands may write, and
+  // `config`, `baseUrl` or `approvalPolicy` would change what it runs with.
+  'session/resume': (params) => {
+    const extra = Object.keys(params).filter((key) => key !== 'sessionId');
+    if (extra.length) return `session/resume takes only sessionId from the page, not ${extra.join(', ')}`;
+    return typeof params.sessionId === 'string' ? null : 'session/resume needs a sessionId';
+  },
 };
 
 /** Every method the relay knows: for the test that each still exists in the protocol. */
