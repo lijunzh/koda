@@ -19,7 +19,7 @@ mod requests;
 mod review;
 mod session_cmds;
 pub(crate) mod settings;
-mod side;
+pub(crate) mod side;
 pub(crate) mod skills;
 
 pub(crate) use host_messages::{next_host_event, turn_started};

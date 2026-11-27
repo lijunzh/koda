@@ -235,9 +235,10 @@ impl TuiContext {
             Outgoing::Notification(ServerNotification::TurnStarted(started)) => {
                 side.main_turn = Some(started.turn.id.clone());
             }
+            // A turn's own requests are withdrawn with `serverRequest/resolved`
+            // (below); a background agent's outlives the turn and stays.
             Outgoing::Notification(ServerNotification::TurnCompleted(_)) => {
                 side.main_turn = None;
-                side.waiting.clear();
                 tui_output::dim_msg(
                     &mut self.scroll_buffer,
                     "The main session's turn has ended.".to_string(),
