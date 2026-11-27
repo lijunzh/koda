@@ -1134,19 +1134,6 @@ impl SessionStore for Database {
         Ok(row.map(|r| r.0).unwrap_or_default())
     }
 
-    /// Get the last user message in a session.
-    async fn last_user_message(&self, session_id: &str) -> Result<String> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT content FROM messages
-             WHERE session_id = ? AND role = 'user' AND content IS NOT NULL
-             ORDER BY id DESC LIMIT 1",
-        )
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|r| r.0).unwrap_or_default())
-    }
-
     /// Delete a session and everything stored for it, and with it the
     /// sessions of the sub-agents it ran, and theirs: nothing lists them once
     /// their parent is gone. One transaction.
@@ -1244,18 +1231,6 @@ impl SessionStore for Database {
                 .bind(session_id)
                 .fetch_optional(&self.pool)
                 .await?;
-        Ok(row.and_then(|r| r.0))
-    }
-
-    async fn get_session_idle_secs(&self, session_id: &str) -> Result<Option<i64>> {
-        // julianday diff * 86400 gives whole seconds; NULL when never accessed.
-        let row: Option<(Option<i64>,)> = sqlx::query_as(
-            "SELECT CAST((julianday('now') - julianday(last_accessed_at)) * 86400 AS INTEGER)
-             FROM sessions WHERE id = ?",
-        )
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
         Ok(row.and_then(|r| r.0))
     }
 

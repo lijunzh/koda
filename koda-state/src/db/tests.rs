@@ -1188,25 +1188,6 @@ async fn test_load_all_messages_includes_compacted() {
 }
 
 #[tokio::test]
-async fn test_last_user_message() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    db.insert_message(&session, &Role::User, Some("hey"), None, None, None)
-        .await
-        .unwrap();
-    db.insert_message(&session, &Role::Assistant, Some("yo"), None, None, None)
-        .await
-        .unwrap();
-    db.insert_message(&session, &Role::User, Some("latest"), None, None, None)
-        .await
-        .unwrap();
-
-    let last = db.last_user_message(&session).await.unwrap();
-    assert_eq!(last, "latest");
-}
-
-#[tokio::test]
 async fn test_session_mode_roundtrip() {
     let (db, _tmp) = setup().await;
     let session = db.create_session("default", _tmp.path()).await.unwrap();
@@ -1238,24 +1219,6 @@ async fn test_set_session_title() {
     let sessions = db.list_sessions(10, _tmp.path()).await.unwrap();
     let found = sessions.iter().find(|s| s.id == session).unwrap();
     assert_eq!(found.title.as_deref(), Some("My Cool Session"));
-}
-
-#[tokio::test]
-async fn test_get_session_idle_secs() {
-    let (db, _tmp) = setup().await;
-    let session = db.create_session("default", _tmp.path()).await.unwrap();
-
-    // Fresh session — insert a message to set a timestamp.
-    db.insert_message(&session, &Role::User, Some("hi"), None, None, None)
-        .await
-        .unwrap();
-
-    let idle = db.get_session_idle_secs(&session).await.unwrap();
-    // Could be None or Some depending on DB impl, but if Some it should be small.
-    if let Some(secs) = idle {
-        assert!(secs < 5, "just created, idle: {secs}");
-    }
-    // Test passes either way — we're just verifying no crash.
 }
 
 #[tokio::test]
