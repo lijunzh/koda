@@ -326,6 +326,13 @@ fn check_tool_inner(
                 // for `rm -rf /`. For sub-agents this becomes Blocked below.
                 ToolApproval::NeedsConfirmation
             }
+            // An MCP tool runs outside the sandbox, so one that may reach
+            // anything asks, as Codex asks unless its server marks it
+            // read-only, or non-destructive and closed-world
+            // (`requires_mcp_tool_approval`).
+            ToolEffect::RemoteAction if crate::mcp::is_mcp_tool_name(tool_name) => {
+                ToolApproval::NeedsConfirmation
+            }
             ToolEffect::RemoteAction | ToolEffect::LocalMutation => {
                 // Safety net: if the kernel sandbox is unavailable, Auto mode
                 // loses its perimeter. Downgrade mutating ops to
@@ -1106,6 +1113,29 @@ mod tests {
         let args = serde_json::json!({"path": "src/main.rs"});
         assert_eq!(
             check_tool("Write", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    /// An MCP tool with no hints may reach anything: Auto asks, as Codex
+    /// does, and Plan refuses it.
+    #[test]
+    fn an_mcp_tool_that_may_reach_anything_asks() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({});
+        assert_eq!(
+            check_tool("tracker__close", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::NeedsConfirmation,
+        );
+        assert_eq!(
+            check_tool("tracker__close", &args, TrustMode::Plan, Some(root)),
+            ToolApproval::Blocked,
+        );
+        // A page off the documentation list is a remote action too, and
+        // still runs in Auto.
+        let fetch = serde_json::json!({ "url": "https://example.com/" });
+        assert_eq!(
+            check_tool("WebFetch", &fetch, TrustMode::Auto, Some(root)),
             ToolApproval::AutoApprove,
         );
     }

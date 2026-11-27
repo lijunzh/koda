@@ -138,6 +138,21 @@ a tool named `navigate` on the `playwright` server becomes `playwright__navigate
 
 The model can call these tools directly. No extra configuration is required.
 
+## Which tools ask
+
+An MCP tool runs in its server, outside Koda's sandbox, so its server's
+annotations decide whether it asks, as in Codex:
+
+| The server marks the tool | Auto | Plan |
+|---------------------------|------|------|
+| `readOnlyHint: true` | ✅ runs | ✅ runs |
+| `destructiveHint: false` and `openWorldHint: false` | ✅ runs | ❌ refused |
+| `destructiveHint: true` | ⏸ asks | ❌ refused |
+| anything else, no annotations included | ⏸ asks | ❌ refused |
+
+"This session" on the question covers the same call again. `koda exec`
+refuses a tool that would ask, as Codex's `exec` does.
+
 ## Resources
 
 A server can offer resources: an issue, a schema, a document. Mention one

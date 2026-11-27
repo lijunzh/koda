@@ -2567,6 +2567,17 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
                          interactively."
                     ),
                 }
+            } else if koda_core::mcp::is_mcp_tool_name(tool_name) {
+                // An MCP tool asks only when it may reach anything, and
+                // Codex's `exec` refuses what would ask.
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "MCP tool '{tool_name}' auto-rejected: its server doesn't mark it \
+                         read-only or closed-world, so it needs a person's yes, and headless \
+                         mode has none. Do without it, or tell the operator to run \
+                         interactively."
+                    ),
+                }
             } else if matches!(tool_name.as_str(), "Write" | "Edit") {
                 // An edit asks only for what nobody should change unwatched:
                 // Koda's settings, `.git`, agents and skills, or every edit
@@ -2964,6 +2975,14 @@ mod tests {
             matches!(&write, Some(ApprovalDecision::RejectAuto { reason })
                 if reason.contains("needs a person's yes")),
             "{write:?}"
+        );
+        let mut mcp = agent_request(None, ToolEffect::RemoteAction);
+        mcp.tool_name = "tracker__close".into();
+        let mcp = approver.approve(mcp).await;
+        assert!(
+            matches!(&mcp, Some(ApprovalDecision::RejectAuto { reason })
+                if reason.contains("MCP tool")),
+            "{mcp:?}"
         );
         assert!(matches!(
             approver

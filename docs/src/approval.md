@@ -10,7 +10,7 @@ the current one as a colour-coded badge.
 
 | Mode | Badge | What runs without asking |
 |------|-------|--------------------------|
-| **Auto** | ⚡ **AUTO** (bold green) | Everything inside the workspace-write sandbox: the project and scratch directories are writable, `.git` and credential files are read-only, and the network goes through Koda's proxy. A destructive command, a command that asks to leave the sandbox, and a path outside the project ask first. **The default.** |
+| **Auto** | ⚡ **AUTO** (bold green) | Everything inside the workspace-write sandbox: the project and scratch directories are writable, `.git` and credential files are read-only, and the network goes through Koda's proxy. A destructive command, a command that asks to leave the sandbox, an edit of `.git` or Koda's settings, and an MCP tool that may reach anything ask first. **The default.** |
 | **Plan** | 📋 PLAN (cyan) | Reads, searches and shell commands, in the read-only sandbox with no network, as Codex's read-only sandbox: a command can look at anything on the machine and change nothing, here or on a server. Edits are refused, and so is a destructive command or one asking to leave the sandbox. |
 
 `--mode` and `mode` in `config.toml` choose the mode a session starts in.
@@ -53,6 +53,7 @@ reopens in Plan, and one switched to Auto writes as an Auto session does.
 | Edit or Write in a temp directory (`/tmp`, `$TMPDIR`) | ✅ runs | ❌ refused |
 | Edit or Write of Koda's own settings (`~/.config/koda`) | ⏸ asks | ❌ refused |
 | Edit or Write in `.git`, `.koda/agents` or `.koda/skills` | ⏸ asks | ❌ refused |
+| An MCP tool its server doesn't mark read-only, or non-destructive and closed-world ([MCP](./mcp.md#which-tools-ask)) | ⏸ asks | ❌ refused |
 | Edit or Write anywhere else outside the project | ❌ refused | ❌ refused |
 
 **Leaving the sandbox.** A Bash call with `outside_sandbox: true` runs without

@@ -36,30 +36,27 @@ pub fn is_mcp_tool_name(name: &str) -> bool {
     parse_mcp_tool_name(name).is_some()
 }
 
-/// Classify an MCP tool's effect using its annotations.
-///
-/// MCP tools declare hints via `ToolAnnotations`:
-/// - `readOnlyHint: true` → `ToolEffect::ReadOnly`
-/// - `destructiveHint: true` → `ToolEffect::Destructive`
-/// - Otherwise → `ToolEffect::RemoteAction` (conservative default)
-///
-/// This maps directly to the TrustMode approval matrix, so MCP tools
-/// plug into the existing permission system with zero special-casing.
+/// Classify an MCP tool's effect using its annotations, as Codex decides
+/// whether one asks (`requires_mcp_tool_approval`, `core/src/mcp_tool_call.rs`):
+/// - `readOnlyHint: true` → `ReadOnly`: runs in both modes.
+/// - `destructiveHint: true` → `Destructive`.
+/// - `destructiveHint: false` and `openWorldHint: false` → `LocalMutation`:
+///   a change the server says stays inside it, which Auto runs.
+/// - Anything else, a missing hint included → `RemoteAction`, which asks
+///   in Auto: the tool may reach anything.
 pub fn classify_mcp_tool(annotations: Option<&McpToolAnnotations>) -> ToolEffect {
     let Some(ann) = annotations else {
-        // No annotations → conservative default.
         return ToolEffect::RemoteAction;
     };
-
     if ann.read_only_hint == Some(true) {
         return ToolEffect::ReadOnly;
     }
-
     if ann.destructive_hint == Some(true) {
         return ToolEffect::Destructive;
     }
-
-    // Has annotations but neither read-only nor destructive.
+    if ann.destructive_hint == Some(false) && ann.open_world_hint == Some(false) {
+        return ToolEffect::LocalMutation;
+    }
     ToolEffect::RemoteAction
 }
 
@@ -73,6 +70,9 @@ pub struct McpToolAnnotations {
     pub read_only_hint: Option<bool>,
     /// If true, the tool may perform destructive actions.
     pub destructive_hint: Option<bool>,
+    /// If true, the tool may reach outside its server (the web, other
+    /// systems); false, it stays inside it.
+    pub open_world_hint: Option<bool>,
 }
 
 /// Convert an rmcp Tool into a Koda ToolDefinition.
@@ -124,6 +124,7 @@ pub fn mcp_tool_to_definition(
         .map(|ann| McpToolAnnotations {
             read_only_hint: ann.read_only_hint,
             destructive_hint: ann.destructive_hint,
+            open_world_hint: ann.open_world_hint,
         })
         .unwrap_or_default();
 
@@ -180,6 +181,7 @@ mod tests {
         let ann = McpToolAnnotations {
             read_only_hint: Some(true),
             destructive_hint: None,
+            open_world_hint: None,
         };
         assert_eq!(classify_mcp_tool(Some(&ann)), ToolEffect::ReadOnly);
     }
@@ -189,6 +191,7 @@ mod tests {
         let ann = McpToolAnnotations {
             read_only_hint: None,
             destructive_hint: Some(true),
+            open_world_hint: None,
         };
         assert_eq!(classify_mcp_tool(Some(&ann)), ToolEffect::Destructive);
     }
@@ -199,8 +202,36 @@ mod tests {
         let ann = McpToolAnnotations {
             read_only_hint: Some(true),
             destructive_hint: Some(true),
+            open_world_hint: None,
         };
         assert_eq!(classify_mcp_tool(Some(&ann)), ToolEffect::ReadOnly);
+    }
+
+    /// Codex runs a tool its server calls non-destructive and closed-world
+    /// without asking; one that may reach anything asks.
+    #[test]
+    fn a_closed_world_change_runs_and_an_open_one_asks() {
+        let ann = |destructive, open_world| McpToolAnnotations {
+            read_only_hint: None,
+            destructive_hint: destructive,
+            open_world_hint: open_world,
+        };
+        assert_eq!(
+            classify_mcp_tool(Some(&ann(Some(false), Some(false)))),
+            ToolEffect::LocalMutation
+        );
+        assert_eq!(
+            classify_mcp_tool(Some(&ann(Some(false), Some(true)))),
+            ToolEffect::RemoteAction
+        );
+        assert_eq!(
+            classify_mcp_tool(Some(&ann(Some(false), None))),
+            ToolEffect::RemoteAction
+        );
+        assert_eq!(
+            classify_mcp_tool(Some(&ann(None, Some(false)))),
+            ToolEffect::RemoteAction
+        );
     }
 
     #[test]
@@ -208,6 +239,7 @@ mod tests {
         let ann = McpToolAnnotations {
             read_only_hint: Some(false),
             destructive_hint: Some(false),
+            open_world_hint: None,
         };
         assert_eq!(classify_mcp_tool(Some(&ann)), ToolEffect::RemoteAction);
     }

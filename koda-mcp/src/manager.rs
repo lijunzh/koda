@@ -1080,6 +1080,7 @@ mod tests {
             annotations: McpToolAnnotations {
                 read_only_hint: read_only,
                 destructive_hint: None,
+                open_world_hint: None,
             },
             original_name: original.into(),
         }
@@ -1217,6 +1218,7 @@ mod tests {
         let expected = super::super::tool_bridge::classify_mcp_tool(Some(&McpToolAnnotations {
             read_only_hint: Some(true),
             destructive_hint: None,
+            open_world_hint: None,
         }));
         assert_eq!(mgr.classify_tool("db__select"), expected);
     }
