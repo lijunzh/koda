@@ -478,9 +478,6 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<()>;
     /// Get the stored approval mode for a session.
     async fn get_session_mode(&self, session_id: &str) -> Result<Option<String>>;
-    /// Seconds elapsed since the session was last accessed (`last_accessed_at`).
-    /// Returns `None` if the column is NULL (session never had a context load).
-    async fn get_session_idle_secs(&self, session_id: &str) -> Result<Option<i64>>;
 
     // ── Messages ──
 
@@ -527,8 +524,6 @@ pub trait SessionStore: Send + Sync {
     async fn load_all_messages(&self, session_id: &str) -> Result<Vec<Message>>;
     /// The model's final text answer since the last user message, or empty.
     async fn last_assistant_message(&self, session_id: &str) -> Result<String>;
-    /// Last user message in a session.
-    async fn last_user_message(&self, session_id: &str) -> Result<String>;
     /// Check if the session has unresolved tool calls.
     async fn has_pending_tool_calls(&self, session_id: &str) -> Result<bool>;
 
