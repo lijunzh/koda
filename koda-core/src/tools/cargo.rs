@@ -1875,7 +1875,7 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_default();
         let ssh = format!("{home}/.ssh");
         if !crate::sandbox::is_available() || !Path::new(&ssh).exists() {
-            eprintln!("skip: needs a sandbox backend and ~/.ssh");
+            koda_sandbox::skip_test(format_args!("needs a sandbox backend and ~/.ssh"));
             return;
         }
         if std::process::Command::new("cargo")

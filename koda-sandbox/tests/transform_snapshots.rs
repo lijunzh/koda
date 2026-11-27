@@ -127,7 +127,7 @@ fn bwrap_runtime_command_snapshot() {
     // bwrap may not be installed — skip if unavailable. Snapshot tests
     // shouldn't fail just because the test host lacks the backend.
     if !koda_sandbox::bwrap::is_available() {
-        eprintln!("bwrap not available; skipping snapshot test");
+        koda_sandbox::skip_test(format_args!("bwrap not available; skipping snapshot test"));
         return;
     }
 
@@ -164,7 +164,9 @@ fn bwrap_command_starts_with_ro_bind_root() {
     use koda_sandbox::BwrapRuntime;
 
     if !koda_sandbox::bwrap::is_available() {
-        eprintln!("bwrap not available; skipping behavioral test");
+        koda_sandbox::skip_test(format_args!(
+            "bwrap not available; skipping behavioral test"
+        ));
         return;
     }
 

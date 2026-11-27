@@ -300,7 +300,7 @@ mod unix {
         let proxy = match proxy_spec.spawn().await {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("skipping: nc unavailable or failed to bind: {e:#}");
+                koda_sandbox::skip_test(format_args!("nc unavailable or failed to bind: {e:#}"));
                 return;
             }
         };
@@ -389,7 +389,7 @@ mod unix {
         let proxy = match proxy_spec.spawn().await {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("skipping: nc unavailable or failed to bind: {e:#}");
+                koda_sandbox::skip_test(format_args!("nc unavailable or failed to bind: {e:#}"));
                 return;
             }
         };

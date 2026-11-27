@@ -214,11 +214,21 @@ jobs:
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
         with:
           tool: cargo-nextest
+      - name: Give the sandbox tests the folders they check
+        # The credential-path tests use the runner's own home: they check
+        # the sandbox lets a command read ~/.ssh and ~/.aws but not write
+        # them, and keeps it out of ~/.config/koda/db.
+        run: mkdir -p ~/.ssh ~/.aws ~/.config/koda/db
       - name: Test
         # nextest runs every test in its own process and tests from all
         # binaries at once (.config/nextest.toml). The ci profile writes
         # target/nextest/ci/junit.xml, which the guards below read.
         run: cargo nextest run --workspace --profile ci
+        env:
+          # A sandbox test that can't run here fails instead of skipping
+          # (`koda_sandbox::skip_test`): a skipped test passes and checks
+          # nothing, which the guards below can't tell from a real pass.
+          KODA_REQUIRE_SANDBOX: "1"
       - name: Doc tests
         # nextest doesn't run doc tests.
         run: cargo test --workspace --doc

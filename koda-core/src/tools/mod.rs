@@ -1890,7 +1890,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_plan_turn_s_command_cant_write_to_the_project() {
         if !crate::sandbox::is_available() {
-            eprintln!("skip: needs the kernel sandbox");
+            koda_sandbox::skip_test(format_args!("needs the kernel sandbox"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();

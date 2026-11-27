@@ -235,6 +235,19 @@ async fn dropping_session_releases_proxy_port() {
 
 // ── Phase 3c: kernel-enforced egress (macOS only) ─────────────────────────
 
+/// A port on the host's loopback that accepts connections, for the probes
+/// below.
+fn listening_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            drop(stream);
+        }
+    });
+    port
+}
+
 /// **The Phase 3c headline contract.** Even an ill-behaved binary that
 /// completely ignores `HTTPS_PROXY` and tries to open a raw TCP
 /// connection to a non-proxy port must be denied by the seatbelt
@@ -261,11 +274,10 @@ async fn macos_kernel_blocks_direct_tcp_to_non_proxy_port() {
     let session = make_real_session(&env).await;
     let proxy_port = session.proxy.as_ref().expect("proxy spawned").port;
 
-    // Pick a target port that is definitely NOT the proxy port. We
-    // don't actually need anything listening there — we're testing the
-    // kernel's ability to refuse the syscall, which happens before
-    // userspace observes connection success or failure.
-    let target_port = if proxy_port == 1 { 2 } else { 1 };
+    // A port where something listens, so an unsandboxed probe would
+    // connect: "blocked" then means the sandbox refused it. A port with
+    // nothing on it reads "blocked" with no sandbox at all.
+    let target_port = listening_port();
 
     // bash's `/dev/tcp/host/port` performs a connect(2) at the libc
     // level with no proxy honoring. The redirect uses fd 3 to keep
@@ -340,7 +352,9 @@ async fn macos_kernel_allows_tcp_to_proxy_port() {
 #[tokio::test]
 async fn linux_kernel_blocks_direct_tcp_to_non_proxy_port() {
     if !koda_sandbox::bwrap::is_available() {
-        eprintln!("bwrap not available; skipping Linux kernel-enforcement test");
+        koda_sandbox::skip_test(format_args!(
+            "bwrap not available; skipping Linux kernel-enforcement test"
+        ));
         return;
     }
 
@@ -366,7 +380,10 @@ async fn linux_kernel_blocks_direct_tcp_to_non_proxy_port() {
         uds.display()
     );
 
-    let target_port = if proxy_port == 1 { 2 } else { 1 };
+    // A port where something listens, so an unsandboxed probe would
+    // connect: "blocked" then means the sandbox refused it. A port with
+    // nothing on it reads "blocked" with no sandbox at all.
+    let target_port = listening_port();
 
     // bash's /dev/tcp/host/port performs a connect(2) at libc level
     // with no proxy honoring — same probe used in the macOS test.
@@ -401,7 +418,9 @@ async fn linux_kernel_blocks_direct_tcp_to_non_proxy_port() {
 #[tokio::test]
 async fn linux_kernel_allows_tcp_to_proxy_port() {
     if !koda_sandbox::bwrap::is_available() {
-        eprintln!("bwrap not available; skipping Linux kernel-allow test");
+        koda_sandbox::skip_test(format_args!(
+            "bwrap not available; skipping Linux kernel-allow test"
+        ));
         return;
     }
 
@@ -414,10 +433,10 @@ async fn linux_kernel_allows_tcp_to_proxy_port() {
 
     let uds = koda_sandbox::bwrap_proxy::proxy_uds_path(std::process::id(), proxy_port);
     if !uds.exists() {
-        eprintln!(
+        koda_sandbox::skip_test(format_args!(
             "UDS bridge {} not present — kernel-enforced path inactive; skipping",
             uds.display()
-        );
+        ));
         return;
     }
 
@@ -460,7 +479,7 @@ async fn a_later_command_reaches_only_koda_s_own_background_server() {
             .is_ok_and(|o| o.status.success())
     };
     if !koda_core::sandbox::is_available() || !have("python3") || !have("curl") {
-        eprintln!("skip: needs the kernel sandbox, python3 and curl");
+        koda_sandbox::skip_test(format_args!("needs the kernel sandbox, python3 and curl"));
         return;
     }
     let env = Env::builder()

@@ -69,7 +69,7 @@ fn koda_runs_stage_2_when_given_its_marker() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_installed_koda_keeps_a_command_off_the_host_s_loopback() {
     if !bwrap_works() || !have("curl", "--version") {
-        eprintln!("skip: needs a working bwrap and curl");
+        koda_sandbox::skip_test(format_args!("needs a working bwrap and curl"));
         return;
     }
     // A host server Koda didn't start, answering 200 to anyone who reaches it.
