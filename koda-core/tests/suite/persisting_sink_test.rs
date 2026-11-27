@@ -25,7 +25,7 @@
 //!
 //! ## Why the real `Database`, not a mock
 //!
-//! `PersistingSink::persist` spawns a `tokio::task` and writes
+//! `PersistingSink::persist` queues rows for a writer task that writes
 //! through the `SessionStore` trait. Mocking the trait would prove
 //! the call shape but not the actual SQL — and the `parent_tool_call_id`
 //! column is the bug surface (it's a nullable text column, easy to
@@ -35,7 +35,7 @@
 //!
 //! ## Why the polling helper
 //!
-//! `PersistingSink::persist` is fire-and-forget on a spawned task.
+//! `PersistingSink::persist` is fire-and-forget on its writer task.
 //! `await`ing the inserts directly would change the production code
 //! path (it deliberately swallows errors so a DB hiccup can't crash
 //! the inference loop). The poll loop with a 2s budget is the
@@ -132,6 +132,32 @@ async fn child_event_persists_and_is_forwarded() {
     assert_eq!(events[0].kind, sek::SUB_AGENT_EVENT);
     assert_eq!(events[0].parent_tool_call_id.as_deref(), Some("call-1"));
     assert_eq!(inner.len(), 1);
+}
+
+/// A sub-agent's notices are stored in the order they were emitted, as
+/// Codex's rollout recorder writes a thread's items on one ordered writer:
+/// a resumed session replays them from the table in id order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn events_are_stored_in_the_order_emitted() {
+    let (_tmp, db, session_id) = fresh_db().await;
+    let inner = TestSink::new();
+    let sink = PersistingSink::new(&inner, db.clone(), session_id.clone(), None);
+    let sent: Vec<String> = (0..100).map(|i| format!("step {i}")).collect();
+    for message in &sent {
+        sink.emit_child(
+            "call-1",
+            EngineEvent::Info {
+                message: message.clone(),
+            },
+        );
+    }
+
+    let stored: Vec<String> = wait_for_events(&db, &session_id, sent.len())
+        .await
+        .into_iter()
+        .map(|event| event.payload)
+        .collect();
+    assert_eq!(stored, sent);
 }
 
 /// A typed event's text is persisted like the `Info` it replaced.
