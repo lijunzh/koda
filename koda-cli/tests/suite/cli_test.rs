@@ -151,10 +151,13 @@ fn test_cli_refuses_effort_a_claude_model_does_not_take() {
         "{stderr}"
     );
 
-    let budget = run(&["--thinking-budget", "8000"]);
+    let budget = run(&["-c", "model_thinking_budget=8000"]);
     assert!(!budget.status.success());
     let stderr = String::from_utf8_lossy(&budget.stderr);
-    assert!(stderr.contains("takes no --thinking-budget"), "{stderr}");
+    assert!(
+        stderr.contains("takes no model_thinking_budget"),
+        "{stderr}"
+    );
 }
 
 /// `--resume` with an id no session has stops at startup. It used to run a
