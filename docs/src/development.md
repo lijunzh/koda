@@ -265,27 +265,25 @@ file with `cargo nextest run -p koda-core -E 'test(/^suite::session_test::/)'`.
 **koda-core E2E tests** (mock provider, CI):
 
 - `tests/suite/e2e_test.rs` — core pipeline: text streaming, tool calls, errors, history, cancel
-- `tests/suite/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit, AST verification
+- `tests/suite/e2e_tools_test.rs` — tool coverage: Glob, Grep, Edit
 - `tests/suite/e2e_agent_test.rs` — sub-agent invocation + cache hit
 - `tests/suite/e2e_skills_test.rs` — skills, compaction
 - `tests/suite/cancel_test.rs` — Ctrl+C interruption during inference
 
 **koda-core integration tests**, no feature flag:
 
-- `tests/suite/file_tools_test.rs` — path safety, file CRUD
-- `tests/suite/new_tools_test.rs` — glob, tool naming
+- `tests/suite/file_tools_test.rs` — path safety, Edit
 - `tests/suite/guarantee_matrix_test.rs` — trust mode × tool effect matrix
 - `tests/suite/inference_recovery_test.rs` — rate-limit retry, context overflow
 - `tests/suite/inference_edge_test.rs` — loop detection, empty tool calls
 - `tests/suite/e2e_safety_test.rs` — approval gates, bash safety classification
 - `tests/suite/session_test.rs` — session lifecycle, TurnStart/TurnEnd events
-- `tests/suite/perf_test.rs` — DB, grep, markdown throughput
+- `tests/suite/perf_test.rs` — database and path-resolution time bounds
 - `tests/suite/tool_wiring_test.rs` — every tool routable + approval-handled
 - `tests/suite/tool_normalize_test.rs` — snake_case → PascalCase normalization
-- `tests/suite/golden_test.rs` — snapshot / golden file tests
+- `tests/suite/golden_test.rs` — a scripted conversation replayed from a JSON file
 - `tests/suite/snapshot_test.rs` — the Bash classifier's verdict on a fixed set of
   commands, and every provider's metadata. No test pins tool descriptions.
-- `tests/suite/token_audit.rs` — token estimation accuracy checks
 
 **koda-tui unit tests** are co-located in `src/`: markdown rendering, input
 parsing, highlighting.
@@ -295,12 +293,11 @@ files under `tests/suite/`; run one file with
 `cargo nextest run -p koda-cli -E 'test(/^suite::cli_test::/)'`. No feature flag:
 
 - `tests/suite/cli_test.rs` — binary subprocess invocation
-- `tests/suite/regression_test.rs` — REPL dispatch, input processing
+- `tests/suite/regression_test.rs` — source-level guards: the TUI's redraw loop, a sub-agent's trust
 - `tests/suite/skill_agent_e2e_test.rs` — skill activation + agent switching E2E
 
 **koda-cli smoke tests** (a scripted stub server, CI-safe): `tests/suite/smoke_test.rs` covers
-headless mode: text responses, tool use, session resume, `--resume` flag. The
-live variants are gated by `KODA_TEST_LMSTUDIO=1` and never run in CI.
+headless mode: the `--json` protocol, approvals by mode, session resume, `--resume`.
 
 **koda-cli stub-server tests** (`FakeLlmServer`, CI-safe):
 

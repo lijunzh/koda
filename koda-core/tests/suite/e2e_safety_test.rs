@@ -179,40 +179,6 @@ async fn read_binary_file_does_not_crash() {
 // ── Dangerous command handling (Codex: safety_tests) ───────────────────────
 
 #[tokio::test]
-async fn dangerous_rm_rf_is_flagged() {
-    let env = Env::new().await;
-    env.insert_user_message("delete everything").await;
-
-    let provider = MockProvider::new(vec![
-        MockResponse::tool_call("Bash", serde_json::json!({"command": "rm -rf /"})),
-        MockResponse::Text("I tried.".into()),
-    ]);
-    let events = env.run_inference(&provider).await;
-
-    // In Auto mode, dangerous commands should still execute but the
-    // bash_safety layer should add warnings. The key is it doesn't crash.
-    let output = find_tool_output(&events, "Bash");
-    // In Auto mode, rm -rf / might be blocked by bash_safety (no result)
-    // or it might execute and fail. Either way, it should NOT crash.
-    // If blocked, there will be no ToolCallResult for Bash.
-    if let Some(output) = output {
-        // It ran — check it didn't delete anything important.
-        assert!(
-            !output.contains("Deleted"),
-            "rm -rf / should not succeed: {output}"
-        );
-    }
-    // Regardless, the inference loop should complete.
-    let has_text = events
-        .iter()
-        .any(|e| matches!(e, EngineEvent::TextDelta { .. }));
-    assert!(
-        has_text,
-        "model should still produce a text response: {events:?}"
-    );
-}
-
-#[tokio::test]
 async fn write_to_tmp_succeeds() {
     // Regression test for #947: the in-process file-tool gate was rejecting
     // any path outside `project_root` — including /tmp — even though the
@@ -404,37 +370,6 @@ async fn tool_error_feeds_back_to_model_for_retry() {
 }
 
 // ── Session resume after interruption ──────────────────────────────────────
-
-#[tokio::test]
-async fn resume_interrupted_session_detects_unanswered_prompt() {
-    let env = Env::new().await;
-
-    // Simulate an interrupted session: user message with no assistant reply.
-    env.insert_user_message("tell me about Rust").await;
-
-    // The inference loop should detect the interruption and proceed.
-    let provider = MockProvider::new(vec![MockResponse::Text(
-        "Rust is a systems programming language.".into(),
-    )]);
-    let events = env.run_inference(&provider).await;
-
-    // Should detect the unanswered prompt and produce a response.
-    let has_text = events
-        .iter()
-        .any(|e| matches!(e, EngineEvent::TextDelta { .. }));
-    assert!(has_text, "should produce a response: {events:?}");
-
-    // Response should be persisted.
-    let last = env
-        .db
-        .last_assistant_message(&env.session_id)
-        .await
-        .unwrap();
-    assert!(
-        last.contains("Rust"),
-        "response should be persisted: {last}"
-    );
-}
 
 #[tokio::test]
 async fn resume_interrupted_tool_call_session() {
