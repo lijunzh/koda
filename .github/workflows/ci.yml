@@ -37,6 +37,11 @@ env:
 #   desktop → the desktop app: type check, unit tests, build, and a test
 #             against koda serve
 #
+# On a PR that changes only the desktop app and Markdown, clippy, check,
+# test and doc skip their steps (scripts/ci_rust_scope.sh) and report
+# success: nothing they build or test changed. main, the nightly run and a
+# release always run them.
+#
 #   required → "CI required": succeeds only if every job above did
 #
 # All jobs run in parallel; wall-clock is gated by the slowest (test ≈ 4min).
@@ -121,11 +126,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2  # the test-merge commit's two parents, as in `audit`
+      - name: Decide whether the Rust workspace needs checking
+        id: scope
+        run: scripts/ci_rust_scope.sh
+        env:
+          EVENT: ${{ github.event_name }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
           components: clippy
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2.8.1
+        if: steps.scope.outputs.run == 'true'
         with:
           shared-key: clippy-Linux
           # PRs restore main's cache but don't save their own: a PR's cache
@@ -133,6 +146,7 @@ jobs:
           # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: steps.scope.outputs.run == 'true'
 
   check:
     name: Check (no features)
@@ -142,10 +156,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2  # the test-merge commit's two parents, as in `audit`
+      - name: Decide whether the Rust workspace needs checking
+        id: scope
+        run: scripts/ci_rust_scope.sh
+        env:
+          EVENT: ${{ github.event_name }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2.8.1
+        if: steps.scope.outputs.run == 'true'
         with:
           shared-key: check-Linux
           # PRs restore main's cache but don't save their own: a PR's cache
@@ -155,6 +177,7 @@ jobs:
       # The crates.io consumer build. There are no test features to leave
       # out any more; this is the plain workspace build.
       - run: cargo check --workspace --all-targets
+        if: steps.scope.outputs.run == 'true'
 
   test:
     name: Test (${{ matrix.os }})
@@ -174,10 +197,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2  # the test-merge commit's two parents, as in `audit`
+      - name: Decide whether the Rust workspace needs checking
+        id: scope
+        run: scripts/ci_rust_scope.sh
+        env:
+          EVENT: ${{ github.event_name }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2.8.1
+        if: steps.scope.outputs.run == 'true'
         with:
           shared-key: ci-${{ runner.os }}
           # PRs restore main's cache but don't save their own: a PR's cache
@@ -185,7 +216,7 @@ jobs:
           # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Set up Linux sandbox (bubblewrap) and poppler (Read's PDF tests)
-        if: runner.os == 'Linux'
+        if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
         run: |
           # Hardened install: Azure Ubuntu mirrors (azure.archive.ubuntu.com)
           # periodically fail DNS resolution from GH Actions runners, blocking
@@ -214,14 +245,17 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2
+        if: steps.scope.outputs.run == 'true'
         with:
           tool: cargo-nextest
       - name: Give the sandbox tests the folders they check
+        if: steps.scope.outputs.run == 'true'
         # The credential-path tests use the runner's own home: they check
         # the sandbox lets a command read ~/.ssh and ~/.aws but not write
         # them, and keeps it out of ~/.config/koda/db.
         run: mkdir -p ~/.ssh ~/.aws ~/.config/koda/db
       - name: Test
+        if: steps.scope.outputs.run == 'true'
         # nextest runs every test in its own process and tests from all
         # binaries at once (.config/nextest.toml). The ci profile writes
         # target/nextest/ci/junit.xml, which the guards below read.
@@ -232,6 +266,7 @@ jobs:
           # nothing, which the guards below can't tell from a real pass.
           KODA_REQUIRE_SANDBOX: "1"
       - name: Doc tests
+        if: steps.scope.outputs.run == 'true'
         # nextest doesn't run doc tests.
         run: cargo test --workspace --doc
       # #1104: regression guard — fail CI if the bwrap SEC-002 / TOCTOU
@@ -240,7 +275,7 @@ jobs:
       # find out by getting hacked. Linux-only: bwrap is gated to
       # `target_os = "linux"`.
       - name: Assert bwrap SEC-002 regression tests ran (#1104)
-        if: runner.os == 'Linux'
+        if: steps.scope.outputs.run == 'true' && runner.os == 'Linux'
         run: |
           set -euo pipefail
           required_tests=(
@@ -276,6 +311,7 @@ jobs:
       # and macos-latest. Linux-only or macos-only tests stay out of
       # this list (the bwrap step above handles Linux-only).
       - name: Assert security-boundary tests ran (#1265 item 8b)
+        if: steps.scope.outputs.run == 'true'
         run: |
           set -euo pipefail
           # Each entry is a test's full path within its binary, as nextest's
@@ -345,10 +381,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2  # the test-merge commit's two parents, as in `audit`
+      - name: Decide whether the Rust workspace needs checking
+        id: scope
+        run: scripts/ci_rust_scope.sh
+        env:
+          EVENT: ${{ github.event_name }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: steps.scope.outputs.run == 'true'
         with:
           toolchain: 1.100.0 # = rust-toolchain.toml (pin guarded in ci.yml)
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2.8.1
+        if: steps.scope.outputs.run == 'true'
         with:
           shared-key: doc  # stable across branches & workflow edits
           # PRs restore main's cache but don't save their own: a PR's cache
@@ -356,6 +400,7 @@ jobs:
           # repo past GitHub's 10 GB limit, evicting main's (2026-11-15).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo doc --workspace --no-deps
+        if: steps.scope.outputs.run == 'true'
         env:
           RUSTDOCFLAGS: -Dwarnings
 

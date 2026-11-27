@@ -592,6 +592,14 @@ names what broke, and an eighth gathers them. Wall-clock is set by the slowest
 | `desktop` | `Desktop app` | The desktop app's type check, unit tests and build; then a debug `koda` build and the app's test against `koda serve`, on a PR only when it changes the app, the protocol, the client or server crates or `ci.yml` |
 | `required` | `CI required` | Succeeds only if every job above succeeded |
 
+**A PR that changes only the desktop app and Markdown** (`apps/desktop/`,
+the manual's `.md` pages, `CHANGELOG.md`, `README.md`) has nothing for
+`clippy`, `check`, `test` or `doc` to build or test, so they skip their steps
+and report success (`scripts/ci_rust_scope.sh`, the same test-merge diff as
+`audit`'s). `docs/src/protocol-schema.json` isn't in that list:
+koda-protocol's tests read it. `main`, the nightly run and a release always
+run every job.
+
 The pre-push hook (`.githooks/pre-push`) runs only `cargo fmt --check` and
 `cargo clippy`, the two cheap checks. CI is the source of truth for the rest.
 
