@@ -10,6 +10,7 @@ checklists, and how CI, the security audit and coverage work.
 ```
 koda/
 ├── Cargo.toml              # Workspace root
+├── apps/desktop/           # The desktop app: Electron and a React page, not a crate (see "The desktop app")
 ├── koda-core/              # Engine library (zero terminal deps)
 │   ├── agents/             # Built-in agent configs (default, explore, plan, verify, task)
 │   ├── src/
@@ -357,6 +358,40 @@ then fails with what it's missing.
 orb -m ubuntu bash -lc 'mkdir -p ~/.ssh ~/.aws ~/.config/koda/db && KODA_REQUIRE_SANDBOX=1 CARGO_TARGET_DIR=$HOME/target/koda cargo nextest run --workspace'
 ```
 
+## The desktop app
+
+`apps/desktop` is Koda's desktop app: a thin Electron shell around a React
+page, a client of the [background server](./background-server.md) like the
+TUI. It is not a Cargo crate, so it doesn't touch `cargo build` or crates.io;
+it needs Node (the version in `apps/desktop/.node-version`).
+
+```bash
+cd apps/desktop
+npm ci                    # pinned dependencies (exact versions, save-exact)
+npm test                  # unit tests: the socket client, the relay's checks
+KODA_BIN=../../target/debug/koda npm test   # also against a real koda serve
+npm run typecheck
+npm start                 # build into out/ and open the app
+```
+
+- **Shape:** the main process (`src/main/`) owns the connection to the
+  server's socket; the page (`src/renderer/`) runs sandboxed, without Node,
+  served from `app://koda/` under a strict content policy, and reaches the
+  main process only through `src/preload/preload.ts`.
+- **The relay** (`src/main/relay.ts`) decides what the page may ask the
+  server for. The server treats every client as the user, so a method the
+  page doesn't need stays closed, and one that could reach past the session
+  (a `baseUrl`, a config, an MCP server's command, an answer to an approval)
+  is checked in the main process. A change that opens a method adds its
+  check and a test.
+- **Types** come from `docs/src/protocol-schema.json`
+  (`scripts/gen-types.mjs`, run by `npm test`, `typecheck` and `build`), so
+  the page is typed against the protocol of its own commit. They aren't
+  committed.
+- **Tests that start a server** use `koda serve --start` on a scratch
+  `XDG_CONFIG_HOME`, never the user's own server.
+- **Version:** the workspace's (see the release checklist).
+
 ## Release checklist
 
 - **First, update the dependencies:** `cargo update`, then the full test suite,
@@ -386,6 +421,9 @@ orb -m ubuntu bash -lc 'mkdir -p ~/.ssh ~/.aws ~/.config/koda/db && KODA_REQUIRE
   `[workspace.dependencies]` (`version = "=0.7.0"`), so a koda-cli always builds
   against the crates it shipped with, whatever later 0.7.x versions exist.
   release.yml's version check reads that file and fails the tag on a mismatch.
+  The desktop app carries the same version: `npm version <x.y.z>
+  --no-git-tag-version` in `apps/desktop` sets its `package.json` and lock
+  file, and its `version.test.ts` fails CI when they differ.
 - A 0.7.x release stays additive for users: no config key removed or renamed,
   stored sessions only added to (an older shape still reads), no command or
   flag removed. A release that breaks one of those is the next minor.
@@ -458,8 +496,8 @@ number; it does not need to wait for Homebrew.
 
 ### CI jobs (`ci.yml`)
 
-Six independent jobs run in parallel, one responsibility each, so a red check
-names what broke, and a seventh gathers them. Wall-clock is set by the slowest
+Seven independent jobs run in parallel, one responsibility each, so a red check
+names what broke, and an eighth gathers them. Wall-clock is set by the slowest
 (Test).
 
 | Job | Check name(s) | Runs |
@@ -470,6 +508,7 @@ names what broke, and a seventh gathers them. Wall-clock is set by the slowest
 | `test` | `Test (ubuntu-latest)`; `Test (macos-latest)` on PRs and nightly | `cargo nextest run --workspace --profile ci`, the doc tests with `cargo test --doc`, then asserts from nextest's JUnit report that the security-boundary tests ran |
 | `doc` | `Docs` | `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS=-Dwarnings` |
 | `audit` | `Security Audit` | `cargo audit --deny unsound --deny yanked`, gated on dependency changes (below) |
+| `desktop` | `Desktop app` | The desktop app's type check, unit tests and build; then a debug `koda` build and the app's test against `koda serve`, on a PR only when it changes the app, the protocol, the client or server crates or `ci.yml` |
 | `required` | `CI required` | Succeeds only if every job above succeeded |
 
 The pre-push hook (`.githooks/pre-push`) runs only `cargo fmt --check` and

@@ -1,0 +1,33 @@
+{
+  "name": "koda-desktop",
+  "productName": "Koda",
+  "version": "0.8.0",
+  "private": true,
+  "description": "Koda's desktop app: a window onto the background server",
+  "license": "MIT",
+  "main": "out/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "gen-types": "node scripts/gen-types.mjs",
+    "typecheck": "npm run gen-types && tsc -p tsconfig.json",
+    "test": "npm run gen-types && vitest run",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs && electron ."
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.11",
+    "@types/react": "19.3.3",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "electron": "45.5.0",
+    "esbuild": "0.28.2",
+    "json-schema-to-typescript": "16.0.0",
+    "typescript": "7.0.2",
+    "vite": "8.4.0",
+    "vitest": "5.1.2"
+  }
+}

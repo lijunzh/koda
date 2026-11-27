@@ -94,7 +94,10 @@ notes, re-exported by `koda-core` as `skills` and `memory`), `koda-command`
 `koda-mcp` (the MCP client, re-exported as `mcp`),
 `koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
 `Database`, how its SQLite files are opened, and the diagnostic log database,
-as Codex keeps its storage outside `codex-core`), `koda-test-utils`.
+as Codex keeps its storage outside `codex-core`), `koda-test-utils`. Outside the
+workspace, `apps/desktop` is the desktop app (Electron and a React page, a
+client of `koda serve`; not a crate, see "The desktop app" in
+`docs/src/development.md`).
 
 **The client boundary:** `koda-tui` and `koda-cli` (with `koda exec`) reach
 the engine only through the client protocol, so other TUIs and GUIs can too, as
