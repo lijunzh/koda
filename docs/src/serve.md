@@ -428,6 +428,38 @@ a new version (60 seconds for running turns, then it stops them); its clients
 use a server of another version and warn. Koda waits for the user's choice
 and doesn't use a server of another version.
 
+### `koda serve --start`
+
+A client doesn't have to do all of the above itself: `koda serve --start`
+does it, as `koda` does at start-up, and as Codex's apps run
+`codex app-server daemon start`. Run the `koda` of your client's version,
+with the environment the server should have (it keeps the environment of
+whatever starts it). It makes sure a server of its version answers at Koda's
+socket (or the one `--listen` names), then prints one JSON object and exits:
+
+| `status` | Exit | Meaning |
+|---|---|---|
+| `alreadyRunning` | 0 | A server of this version was running |
+| `started` | 0 | None answered, so one was started; it stops after ten minutes with no client and no work |
+| `restarted` | 0 | An older one was replaced |
+| `busy` | 1 | An older one has turns running in `working` sessions, and nothing changed. Ask the user, then run it again with `--running-turns wait` or `--running-turns stop`. `draining: true` means it already waits for them, so only `wait` is left |
+| `newerServer` | 1 | Koda was updated since this `koda` was installed: start the updated one |
+| `predatesUpdate` | 1 | A server from before 0.7.13 with windows open: `koda serve --stop`, then start again |
+| `failed` | 1 | It couldn't be reached or started |
+
+Every answer has `socketPath` and `cliVersion`, `serverVersion` when a server
+answered, and `message` to show a person when it isn't ready. With
+`--running-turns wait` it returns once those turns have finished and the new
+server is up, which can take as long as they do.
+
+```console
+$ koda serve --start
+{"cliVersion":"0.8.1","serverVersion":"0.8.1","socketPath":"/Users/me/.config/koda/serve/koda.sock","status":"started"}
+```
+
+No client owns the server: closing one stops nothing, and the last one to go
+leaves it to its idle exit.
+
 **What stays the same across versions** is only what two versions need to
 speak to each other for this: `initialize` and the `serverInfo.version` in
 its answer, `serve/stop` with its fields and answer, and `serve/updating`.

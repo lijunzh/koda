@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`koda serve --start`,** for clients other than the TUI, such as the coming desktop app: it makes sure the background server runs this `koda`'s version (starting one, or replacing an older one when no turn runs in it), then prints one JSON object (`alreadyRunning`, `started`, `restarted`, or why it isn't ready) and exits, as Codex's apps run `codex app-server daemon start`. `--running-turns wait` or `stop` says what to do with turns running in an older server. `koda` follows the same code at start-up.
+
 ### Changed
 
 - **A `gh api` read no longer asks.** In Auto, `gh api` asked before every call, a GET included. Now it asks only when the call can change something: a method other than GET (`-X`, `--method`), or a field or `--input`, which make `gh` send a POST. A GraphQL call passes its query as a field, so it still asks. Reads run in the sandbox like any other command, as in Codex, which asks before no `gh` call.

@@ -615,3 +615,175 @@ async fn a_server_killed_mid_turn_leaves_the_session_to_go_on() {
         "{last}"
     );
 }
+
+/// `koda serve --start` and its JSON answer, on a scratch config folder.
+#[cfg(unix)]
+async fn serve_start(root: &std::path::Path, args: &[&str]) -> (Option<i32>, Value) {
+    let output = tokio::process::Command::new(koda_bin())
+        .args(["serve", "--start", "--project-root"])
+        .arg(root)
+        .args(args)
+        .env("XDG_CONFIG_HOME", root)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "one JSON object on stdout: {stdout}");
+    (
+        output.status.code(),
+        serde_json::from_str(lines[0]).unwrap(),
+    )
+}
+
+/// `koda serve --start` makes sure the shared server runs this koda's
+/// version, as Codex's `codex app-server daemon start` does, for clients
+/// other than the TUI: it starts one when none answers and says so in one
+/// JSON object; the next call finds it running.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_start_starts_the_server_once() {
+    let root = tempfile::tempdir().unwrap();
+    let ours = env!("CARGO_PKG_VERSION");
+    let socket = root.path().join("koda/serve/koda.sock");
+
+    let (code, started) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(0), "{started}");
+    assert_eq!(started["status"], "started", "{started}");
+    assert_eq!(started["serverVersion"], ours, "{started}");
+    assert_eq!(started["cliVersion"], ours, "{started}");
+    assert_eq!(started["socketPath"], socket.to_str().unwrap(), "{started}");
+    assert!(socket.exists());
+
+    let (code, again) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(0), "{again}");
+    assert_eq!(again["status"], "alreadyRunning", "{again}");
+
+    let stopped = tokio::process::Command::new(koda_bin())
+        .args(["serve", "--stop"])
+        .env("XDG_CONFIG_HOME", root.path())
+        .output()
+        .await
+        .unwrap();
+    assert!(stopped.status.success());
+    assert!(!socket.exists());
+}
+
+/// `koda serve --start` follows the version rule the TUI does: a newer
+/// server is left alone; an older one is replaced at once when no turn
+/// runs in it; with turns running it changes nothing and says how many,
+/// until told to wait for them or stop them.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_start_replaces_only_an_older_server() {
+    use super::old_server::{OldServer, old_server};
+    use std::sync::{Arc, Mutex};
+
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("koda/serve/koda.sock");
+    let asked = || Arc::new(Mutex::new(Vec::<Value>::new()));
+    let stop = || async {
+        let _ = tokio::process::Command::new(koda_bin())
+            .args(["serve", "--stop"])
+            .env("XDG_CONFIG_HOME", root.path())
+            .output()
+            .await;
+    };
+
+    // Newer: left alone.
+    let newer_asked = asked();
+    let newer = old_server(
+        &socket,
+        "99.0.0",
+        OldServer::Stops,
+        Arc::clone(&newer_asked),
+    );
+    let (code, answer) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(1), "{answer}");
+    assert_eq!(answer["status"], "newerServer", "{answer}");
+    assert_eq!(answer["serverVersion"], "99.0.0", "{answer}");
+    assert!(newer_asked.lock().unwrap().is_empty());
+    newer.abort();
+    let _ = std::fs::remove_file(&socket);
+
+    // From before 0.7.13 with windows open.
+    let refusing = old_server(&socket, "0.0.1", OldServer::Refuses, asked());
+    let (code, answer) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(1), "{answer}");
+    assert_eq!(answer["status"], "predatesUpdate", "{answer}");
+    refusing.abort();
+    let _ = std::fs::remove_file(&socket);
+
+    // A turn running and nothing said about it: busy, nothing changed.
+    let busy_asked = asked();
+    let busy = old_server(&socket, "0.0.1", OldServer::Busy, Arc::clone(&busy_asked));
+    let (code, answer) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(1), "{answer}");
+    assert_eq!(answer["status"], "busy", "{answer}");
+    assert_eq!(answer["working"], 1, "{answer}");
+    assert_eq!(answer["draining"], false, "{answer}");
+    assert_eq!(busy_asked.lock().unwrap().len(), 1);
+    assert!(socket.exists(), "a busy server was stopped");
+
+    // Told to stop them: replaced.
+    let (code, answer) = serve_start(root.path(), &["--running-turns", "stop"]).await;
+    assert_eq!(code, Some(0), "{answer}");
+    assert_eq!(answer["status"], "restarted", "{answer}");
+    let _ = busy.await;
+    let sent = busy_asked.lock().unwrap().clone();
+    assert_eq!(sent.last().unwrap()["ifIdle"], false, "{sent:?}");
+    assert_eq!(sent.last().unwrap()["afterTurns"], false, "{sent:?}");
+    stop().await;
+
+    // Told to wait for them: replaced once they finish.
+    let wait_asked = asked();
+    let busy = old_server(&socket, "0.0.1", OldServer::Busy, Arc::clone(&wait_asked));
+    let (code, answer) = serve_start(root.path(), &["--running-turns", "wait"]).await;
+    assert_eq!(code, Some(0), "{answer}");
+    assert_eq!(answer["status"], "restarted", "{answer}");
+    let _ = busy.await;
+    assert_eq!(
+        wait_asked.lock().unwrap().last().unwrap()["afterTurns"],
+        true
+    );
+    stop().await;
+
+    // Nothing running: replaced without being told.
+    let idle = old_server(&socket, "0.0.1", OldServer::Stops, asked());
+    let (code, answer) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(0), "{answer}");
+    assert_eq!(answer["status"], "restarted", "{answer}");
+    assert_eq!(
+        answer["serverVersion"],
+        env!("CARGO_PKG_VERSION"),
+        "{answer}"
+    );
+    let _ = idle.await;
+    stop().await;
+}
+
+/// `--start` is for the shared server: not with stdio, and not with `-c`,
+/// which wouldn't reach a server it starts; `--running-turns` goes with it.
+#[test]
+fn serve_start_refuses_what_wouldnt_reach_the_server() {
+    let root = tempfile::tempdir().unwrap();
+    let koda = |args: &[&str]| {
+        std::process::Command::new(koda_bin())
+            .arg("serve")
+            .args(args)
+            .env("XDG_CONFIG_HOME", root.path())
+            .output()
+            .unwrap()
+    };
+    let stdio = koda(&["--start", "--listen", "stdio://"]);
+    assert_eq!(stdio.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&stdio.stderr).contains("not stdio"));
+    let overrides = koda(&["--start", "-c", "model=x"]);
+    assert_eq!(overrides.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&overrides.stderr).contains("-c"));
+    let alone = koda(&["--running-turns", "wait"]);
+    assert_eq!(alone.status.code(), Some(2));
+    assert!(!root.path().join("koda/serve/koda.sock").exists());
+}

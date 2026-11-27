@@ -411,6 +411,20 @@ struct ServeArgs {
     #[arg(long, conflicts_with = "stdio")]
     stop: bool,
 
+    /// Make sure the background server is running at this koda's version, then exit.
+    ///
+    /// Starts one when none answers, and replaces an older one when no turn
+    /// runs in it. Prints one JSON object: `status` is `alreadyRunning`,
+    /// `started` or `restarted` (exit 0), or why it isn't ready (exit 1).
+    /// For other clients, such as the desktop app; `koda` does the same.
+    #[arg(long, conflicts_with_all = ["stdio", "stop"])]
+    start: bool,
+
+    /// With --start: what to do with turns running in an older server,
+    /// `wait` for them or `stop` them, before replacing it.
+    #[arg(long, value_name = "WAIT|STOP", requires = "start", value_parser = ["wait", "stop"])]
+    running_turns: Option<String>,
+
     /// Stop once idle (no client, no work) this many seconds. The TUI
     /// starts its server this way.
     #[arg(long, hide = true, value_name = "SECS", conflicts_with = "stdio")]
@@ -756,6 +770,13 @@ pub(crate) async fn run() -> Result<()> {
     // A run with `-c` values (or flags that are ones) keeps its host in this
     // process, as Codex's TUI does: the shared server's config is its own.
     let run_overrides = !overrides.is_empty();
+    if run_overrides && serving.as_ref().is_some_and(|serve| serve.start) {
+        eprintln!(
+            "error: koda serve --start starts the shared server with the config file, as koda \
+             does; -c and the config flags don't reach it"
+        );
+        std::process::exit(2);
+    }
     koda_tui::user_config::set_overrides(overrides);
 
     // Resolve project root
@@ -870,6 +891,12 @@ pub(crate) async fn run() -> Result<()> {
             .await
             .map_err(|e| e.to_string()),
             Listen::Unix(socket) if serve.stop => stop_server(&socket).await,
+            Listen::Unix(socket) if serve.start => {
+                let ready = start_server(&socket, &args.project_root, &serve).await;
+                crate::logging::flush().await;
+                drop(_logging);
+                std::process::exit(if ready { 0 } else { 1 });
+            }
             Listen::Unix(socket) => {
                 eprintln!("Koda is listening at {}", socket.display());
                 koda_client::socket::serve(
@@ -1116,8 +1143,14 @@ fn listen_at(args: &ServeArgs, home: &Path) -> Result<Listen, String> {
 /// that names a session's model or prompt, which the client sends in
 /// `session/start` and `turn/start`.
 fn serve_refusal(args: &ServeArgs, session: &SessionFlags, prompt: bool) -> Option<String> {
-    if let Err(error) = listen_at(args, Path::new("")) {
-        return Some(error);
+    match listen_at(args, Path::new("")) {
+        Err(error) => return Some(error),
+        Ok(Listen::Stdio) if args.start => {
+            return Some(
+                "koda serve --start is for the shared server on a socket, not stdio".into(),
+            );
+        }
+        Ok(_) => {}
     }
     let mut given = session.given();
     if prompt {
@@ -1220,6 +1253,80 @@ async fn stop_server(socket: &Path) -> Result<(), String> {
     }
     eprintln!("Stopped koda serve at {}", socket.display());
     Ok(())
+}
+
+/// `koda serve --start`: make sure the server at `socket` runs this koda's
+/// version, as Codex's `codex app-server daemon start` does, and print one
+/// JSON object saying how it stands. Whether it is ready.
+async fn start_server(socket: &Path, project_root: &Path, serve: &ServeArgs) -> bool {
+    use koda_client::ensure::{self, Ensure, RunningTurns};
+    let ours = env!("CARGO_PKG_VERSION");
+    let koda = match std::env::current_exe() {
+        Ok(koda) => koda,
+        Err(e) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "failed",
+                    "socketPath": socket,
+                    "cliVersion": ours,
+                    "message": format!("couldn't find koda to start koda serve: {e}"),
+                })
+            );
+            return false;
+        }
+    };
+    let how = Ensure {
+        socket,
+        project_root,
+        koda,
+        manage: true,
+        running_turns: serve.running_turns.as_deref().map(|turns| match turns {
+            "stop" => RunningTurns::Stop,
+            _ => RunningTurns::Wait,
+        }),
+        client_info: koda_client::protocol::initialize::ClientInfo {
+            name: "koda-serve-start".to_string(),
+            version: ours.to_string(),
+            title: None,
+        },
+    };
+    let (answer, ready) = match ensure::ensure(&how).await {
+        Ok((client, status)) => {
+            let version = client.server().server_info.version.clone();
+            client.shutdown().await;
+            (
+                serde_json::json!({
+                    "status": status.as_str(),
+                    "socketPath": socket,
+                    "cliVersion": ours,
+                    "serverVersion": version,
+                }),
+                true,
+            )
+        }
+        Err(not_ready) => {
+            let mut answer = serde_json::json!({
+                "status": not_ready.status(),
+                "socketPath": socket,
+                "cliVersion": ours,
+                "message": not_ready.message(ours, socket),
+            });
+            if let Some(version) = not_ready.server_version() {
+                answer["serverVersion"] = version.into();
+            }
+            if let koda_client::ensure::NotReady::Busy {
+                working, draining, ..
+            } = not_ready
+            {
+                answer["working"] = working.into();
+                answer["draining"] = draining.into();
+            }
+            (answer, false)
+        }
+    };
+    println!("{answer}");
+    ready
 }
 
 /// Ctrl-C or, on Unix, SIGTERM: what stops `koda serve`.
