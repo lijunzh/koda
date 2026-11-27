@@ -121,9 +121,13 @@ fn activity_of(tool: &str, arguments: &serde_json::Value) -> String {
 impl TuiContext {
     /// Open the session a command switched to, if one did, and close the
     /// one it left.
-    async fn sync_host_session(&mut self) -> anyhow::Result<()> {
+    /// Open the session `/resume` chose on the host, and say which of its
+    /// turns is running there (on the shared server, another window's),
+    /// so the prompt joins it rather than waiting for a start that came
+    /// before this client was there.
+    async fn sync_host_session(&mut self) -> anyhow::Result<Option<String>> {
         if self.session.id == self.host_session {
-            return Ok(());
+            return Ok(None);
         }
         let left = std::mem::take(&mut self.host_session);
         let _ = self
@@ -133,7 +137,7 @@ impl TuiContext {
             )
             .await;
         // Its earlier turns were drawn when `/resume` chose it.
-        let (opened, _, settings) = crate::tui_context::open_host_session(
+        let (opened, turns, settings) = crate::tui_context::open_host_session(
             &self.client,
             Some(self.session.id.clone()),
             &crate::tui_context::settings::Named::default(),
@@ -144,7 +148,10 @@ impl TuiContext {
         self.mcp_stale = true;
         // The resumed session's own model, and the TUI's mode for it.
         self.opened(settings).await;
-        Ok(())
+        Ok(turns
+            .last()
+            .filter(|turn| turn.status == koda_client::protocol::turn::TurnStatus::InProgress)
+            .map(|turn| turn.id.clone()))
     }
 
     /// Start a turn on the host and follow it until `turn/completed`:
@@ -193,14 +200,17 @@ impl TuiContext {
             if let Some(turn_id) = watched {
                 return anyhow::Ok(turn_id);
             }
-            self.sync_host_session().await?;
+            let already_running = self.sync_host_session().await?;
             // Messages from before this turn are the idle loop's: they
             // are handled as it would (a background agent's request, a
             // notice, a main session's while in a side conversation). A
             // turn Koda has just started on the session's goal is kept,
             // its `turn/started` first, with what it sent: the prompt
             // joins it.
-            let mut running: Option<(String, Vec<Outgoing>)> = None;
+            // `sent` holds the turn's `turn/started` first when this client
+            // saw it; a turn running when the session was opened has none.
+            let mut running: Option<(String, Vec<Outgoing>)> =
+                already_running.map(|turn_id| (turn_id, Vec::new()));
             while let Some(message) = self.try_next_host_event() {
                 if let Some((turn_id, sent)) = &mut running {
                     let ended = matches!(
@@ -212,8 +222,8 @@ impl TuiContext {
                     if ended {
                         // It ended unseen: what it sent is the idle
                         // loop's too.
-                        let sent = running.take().map(|(_, sent)| sent).unwrap_or_default();
-                        for message in sent.into_iter().skip(1) {
+                        let (turn_id, sent) = running.take().unwrap_or_default();
+                        for message in without_start(sent, &turn_id, &self.session.id) {
                             self.absorb_idle_message(message);
                         }
                     }
@@ -267,7 +277,7 @@ impl TuiContext {
                         return Err(e);
                     }
                     // Its `turn/started` was taken.
-                    sent.remove(0);
+                    sent = without_start(sent, &turn_id, &self.session.id);
                     joined = sent;
                     return anyhow::Ok(turn_id);
                 }
@@ -301,9 +311,16 @@ impl TuiContext {
                 Err(koda_client::RequestError::Server { error, .. })
                     if joinable && error.message.contains("a turn is already running") =>
                 {
+                    // `sent` starts with the turn's `turn/started`: a steer
+                    // refused (the turn ended, or it's a compaction) puts it
+                    // all back for the idle loop, which follows that turn
+                    // and any after it.
                     let (turn_id, sent) = self.next_turn_started().await?;
-                    self.steer_goal_turn(&turn_id, input).await?;
-                    joined = sent;
+                    if let Err(e) = self.steer_goal_turn(&turn_id, input).await {
+                        self.hold_first(sent);
+                        return Err(e);
+                    }
+                    joined = without_start(sent, &turn_id, &self.session.id);
                     anyhow::Ok(turn_id)
                 }
                 Err(e) => Err(host_error(e)),
@@ -693,15 +710,17 @@ impl TuiContext {
                 };
                 if let Some(turn_id) = crate::tui_context::turn_started(&message, &self.session.id)
                 {
-                    return Ok(turn_id.to_string());
+                    return Ok((turn_id.to_string(), message));
                 }
                 self.absorb_idle_message(message);
             }
         };
-        let turn_id = tokio::time::timeout(std::time::Duration::from_secs(5), wait)
+        let (turn_id, started) = tokio::time::timeout(std::time::Duration::from_secs(5), wait)
             .await
             .map_err(|_| anyhow::anyhow!("a turn is already running"))??;
-        let mut sent = Vec::new();
+        // Its `turn/started` first, so a caller that can't join the turn
+        // can hand it all back.
+        let mut sent = vec![started];
         while let Some(message) = self.try_next_host_event() {
             sent.push(message);
         }
@@ -851,6 +870,19 @@ impl TuiContext {
             tracing::debug!("turn/steer: {e}");
         }
     }
+}
+
+/// `sent` without the `turn/started` of `turn_id` at its head, when it's
+/// there: once the turn is joined, the rest is the turn's to follow.
+fn without_start(mut sent: Vec<Outgoing>, turn_id: &str, session_id: &str) -> Vec<Outgoing> {
+    if sent
+        .first()
+        .and_then(|first| crate::tui_context::turn_started(first, session_id))
+        .is_some_and(|started| started == turn_id)
+    {
+        sent.remove(0);
+    }
+    sent
 }
 
 #[cfg(test)]

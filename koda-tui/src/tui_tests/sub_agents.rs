@@ -241,7 +241,15 @@ async fn a_background_agents_request_while_joining_a_turn_is_shown() {
     let started = read_until(&mut tui.ctx, is_turn_started).await;
     tui.ctx.held.push_back(request);
     tui.ctx.held.push_back(started.last().cloned().unwrap());
-    tui.ctx.next_turn_started().await.unwrap();
+    let (turn_id, sent) = tui.ctx.next_turn_started().await.unwrap();
+    // The turn's start comes back first with what followed it, so a prompt
+    // that can't join (its steer refused) hands it all back to the idle loop.
+    assert_eq!(
+        sent.first()
+            .and_then(|first| crate::tui_context::turn_started(first, &tui.ctx.session.id)),
+        Some(turn_id.as_str())
+    );
+    tui.ctx.hold_first(sent);
 
     tui.run(async |driver: Driver| {
         driver.wait_for_screen("asks").await;
@@ -261,4 +269,35 @@ fn is_turn_completed(message: &Outgoing) -> bool {
         message,
         Outgoing::Notification(koda_client::protocol::ServerNotification::TurnCompleted(_))
     )
+}
+
+/// A background agent's request kept for the return from `/side` survives
+/// the main turn ending: the host withdraws a turn's own requests with
+/// `serverRequest/resolved`, never an agent's, which outlives the turn. The
+/// end of the turn cleared it, and the agent waited for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_background_agents_request_kept_in_a_side_conversation_outlives_the_turn() {
+    let mut tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
+    start_turn(&tui.ctx, "first prompt").await;
+    let mut read = read_until(&mut tui.ctx, is_request).await;
+    if !read.iter().any(is_turn_completed) {
+        read.extend(read_until(&mut tui.ctx, is_turn_completed).await);
+    }
+    let request = read.iter().find(|m| is_request(m)).cloned().unwrap();
+    let completed = read.iter().find(|m| is_turn_completed(m)).cloned().unwrap();
+
+    let main = tui.ctx.session.clone();
+    let settings = tui.ctx.settings.clone();
+    tui.ctx.side = Some(crate::tui_context::side::SideState::new(
+        main,
+        settings,
+        Some("main-turn".to_string()),
+        None,
+    ));
+    assert!(tui.ctx.note_main_session(&request));
+    assert!(tui.ctx.note_main_session(&completed));
+    let side = tui.ctx.side.as_ref().unwrap();
+    assert_eq!(side.main_turn, None);
+    assert_eq!(side.waiting.len(), 1, "the agent's request was dropped");
 }
