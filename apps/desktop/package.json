@@ -12,7 +12,8 @@
     "typecheck": "npm run gen-types && tsc -p tsconfig.json",
     "test": "npm run gen-types && vitest run",
     "build": "node scripts/build.mjs",
-    "start": "node scripts/build.mjs && electron ."
+    "start": "node scripts/build.mjs && electron .",
+    "test:e2e": "node scripts/build.mjs && node scripts/ensure-electron.mjs && vitest run --config vitest.e2e.config.mts"
   },
   "dependencies": {
     "react": "19.3.1",
@@ -26,6 +27,7 @@
     "electron": "45.5.0",
     "esbuild": "0.28.2",
     "json-schema-to-typescript": "16.0.0",
+    "playwright-core": "1.65.1",
     "typescript": "7.0.2",
     "vite": "8.4.0",
     "vitest": "5.1.2"

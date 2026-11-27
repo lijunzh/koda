@@ -1,44 +1,8 @@
 // The socket client against a scripted server on a scratch socket.
-import { mkdtempSync, rmSync } from 'node:fs';
-import net from 'node:net';
-import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { KodaClient, RpcError, type RpcMessage } from '../src/main/koda-client';
-
-const servers: net.Server[] = [];
-const folders: string[] = [];
-
-afterEach(() => {
-  for (const server of servers.splice(0)) server.close();
-  for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
-});
-
-/** A server on a scratch socket that answers each line with `reply`. */
-async function scripted(
-  reply: (message: RpcMessage, write: (m: object | string) => void, hangUp: () => void) => void,
-) {
-  const folder = mkdtempSync(path.join(os.tmpdir(), 'kd-'));
-  folders.push(folder);
-  const socket = path.join(folder, 's.sock');
-  const server = net.createServer((connection) => {
-    let buffer = '';
-    const write = (m: object | string) => connection.write((typeof m === 'string' ? m : JSON.stringify(m)) + '\n');
-    connection.setEncoding('utf8');
-    connection.on('data', (chunk: string) => {
-      buffer += chunk;
-      let end;
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, end);
-        buffer = buffer.slice(end + 1);
-        reply(JSON.parse(line) as RpcMessage, write, () => connection.destroy());
-      }
-    });
-  });
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(socket, resolve));
-  return { socket };
-}
+import { scratch, scripted } from './helpers';
 
 describe('KodaClient', () => {
   it('matches each answer to its request, whatever the order', async () => {
@@ -125,8 +89,6 @@ describe('KodaClient', () => {
   });
 
   it('rejects connecting where nothing listens', async () => {
-    const folder = mkdtempSync(path.join(os.tmpdir(), 'kd-'));
-    folders.push(folder);
-    await expect(new KodaClient().connect(path.join(folder, 'none.sock'))).rejects.toThrow();
+    await expect(new KodaClient().connect(path.join(scratch(), 'none.sock'))).rejects.toThrow();
   });
 });
