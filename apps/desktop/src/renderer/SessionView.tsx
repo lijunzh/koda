@@ -2,6 +2,8 @@ import type { Selected } from './App';
 import { useState } from 'react';
 import { call } from './bridge';
 import { Composer } from './Composer';
+import type { TurnDiffs } from './diffs';
+import { ReviewPanel } from './ReviewPanel';
 import type { ControlsState } from './controls';
 import { PlanPanel, SessionBar } from './SessionBar';
 import type { Pending } from './requests';
@@ -23,14 +25,17 @@ interface Props {
   requests: Pending[];
   onAnswer(id: number | string, result: unknown): Promise<void>;
   controls: ControlsState | null;
+  /** The turns' diffs the server sent while they ran. */
+  diffs: TurnDiffs;
   planShown: boolean;
   /** Open a session the server just made (a fork). */
   onOpen(session: import('../protocol/types.gen').Session): void;
 }
 
 /** The open session: its conversation, and the prompt box. */
-export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, planShown, onOpen }: Props) {
+export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, diffs, planShown, onOpen }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [reviewing, setReviewing] = useState(false);
   if (!selected) {
     return (
       <main className="session-view empty-view">
@@ -89,6 +94,9 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
             </button>
           ))}
         </div>
+        <button aria-pressed={reviewing} onClick={() => setReviewing((r) => !r)} disabled={!transcript}>
+          Changes
+        </button>
         <button className="delete" onClick={() => void window.koda.deleteSession(selected.id)}>
           Delete
         </button>
@@ -96,11 +104,18 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
       {controls && <SessionBar sessionId={selected.id} controls={controls} onForked={onOpen} />}
       {selected.error && <p className="problem">{selected.error}</p>}
       {!session && !selected.error && <p className="detail">Opening…</p>}
-      {transcript && <Conversation transcript={transcript} view={view} />}
-      <div className="bottom">
-        {controls && <PlanPanel controls={controls} shown={planShown} />}
-        <Requests requests={requests} onAnswer={onAnswer} />
-        <Composer sessionId={selected.id} running={running} ready={Boolean(session)} waiting={requests[0]?.method ?? null} />
+      <div className="session-split">
+        <div className="conversation-column">
+          {transcript && <Conversation transcript={transcript} view={view} />}
+          <div className="bottom">
+            {controls && <PlanPanel controls={controls} shown={planShown} />}
+            <Requests requests={requests} onAnswer={onAnswer} />
+            <Composer sessionId={selected.id} running={running} ready={Boolean(session)} waiting={requests[0]?.method ?? null} />
+          </div>
+        </div>
+        {reviewing && transcript && (
+          <ReviewPanel key={selected.id} sessionId={selected.id} cwd={folder} transcript={transcript} diffs={diffs} onClose={() => setReviewing(false)} />
+        )}
       </div>
     </main>
   );

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call, type RpcMessage, type ServerStatus } from './bridge';
 import { type ControlsState, controlsFor, withControls } from './controls';
+import { type TurnDiffs, withDiffs } from './diffs';
 import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
 import { SessionView } from './SessionView';
@@ -29,6 +30,8 @@ export function App() {
   const [pending, setPending] = useState<readonly Pending[]>([]);
   const [controls, setControls] = useState<ControlsState | null>(null);
   const [planShown, setPlanShown] = useState(true);
+  /** The open session's turns' diffs, as the server sends them while they run. */
+  const [diffs, setDiffs] = useState<TurnDiffs>(new Map());
   const selectedId = useRef<string | null>(null);
   /** Events from before the open session's snapshot came, kept to apply after it. */
   const early = useRef<RpcMessage[]>([]);
@@ -66,6 +69,8 @@ export function App() {
       setSessions((state) => withMessages(state, batch));
       setPending((state) => withRequests(state, batch));
       setControls((state) => (state ? withControls(state, batch) : state));
+      const open = selectedId.current;
+      if (open) setDiffs((state) => withDiffs(state, open, batch));
       setTranscript((state) => {
         if (state) return withEvents(state, batch);
         // The open session's snapshot hasn't come yet: keep its events for it.
@@ -119,6 +124,7 @@ export function App() {
     early.current = [];
     setTranscript(null);
     setControls(null);
+    setDiffs(new Map());
     const opened = (session: Session) => {
       if (selectedId.current !== id) return;
       setSelected({ id, session });
@@ -177,6 +183,7 @@ export function App() {
           onView={setView}
           requests={selected ? forSession([...pending], selected.id) : []}
           controls={controls}
+          diffs={diffs}
           planShown={planShown}
           onOpen={(session) => open(session.id, session)}
           onAnswer={async (id, result) => {
