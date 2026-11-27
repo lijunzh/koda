@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call, type RpcMessage, type ServerStatus } from './bridge';
-import { type ControlsState, controlsFor, withControls } from './controls';
-import { type TurnDiffs, withDiffs } from './diffs';
+import { type Listener, Pane } from './Pane';
 import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
 import { SessionView } from './SessionView';
 import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
 import { Sidebar } from './Sidebar';
-import { fromSession, type TranscriptState, type View, VIEWS, withEvents } from './transcript';
+import { type View, VIEWS } from './transcript';
 
 /** The open session: its id at once, the session once the server has opened it. */
 export interface Selected {
@@ -17,24 +16,39 @@ export interface Selected {
   error?: string;
 }
 
+/** A pane of the window: the session it shows, if any. */
+interface PaneState {
+  /** Stays the pane's while it shows other sessions. */
+  key: number;
+  id: string | null;
+  /** The session as the server just made it, for a new one or a fork. */
+  initial?: Session;
+}
+
 const PAGE = 50;
 /** Live events are applied at most this often, so a fast stream doesn't redraw for every word. */
 const FLUSH_MS = 50;
+/** Sessions side by side, at most. */
+export const MAX_PANES = 4;
+
+let nextKey = 1;
 
 export function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [sessions, setSessions] = useState<SessionsState>(EMPTY);
-  const [selected, setSelected] = useState<Selected | null>(null);
-  const [transcript, setTranscript] = useState<TranscriptState | null>(null);
+  const [panes, setPanes] = useState<PaneState[]>([{ key: 0, id: null }]);
+  const [focused, setFocused] = useState(0);
   const [view, setView] = useState<View>('normal');
   const [pending, setPending] = useState<readonly Pending[]>([]);
-  const [controls, setControls] = useState<ControlsState | null>(null);
   const [planShown, setPlanShown] = useState(true);
-  /** The open session's turns' diffs, as the server sends them while they run. */
-  const [diffs, setDiffs] = useState<TurnDiffs>(new Map());
-  const selectedId = useRef<string | null>(null);
-  /** Events from before the open session's snapshot came, kept to apply after it. */
-  const early = useRef<RpcMessage[]>([]);
+  // `open` runs after awaits (a new session's dialog): it reads these, not a render's.
+  const current = useRef({ panes, focused });
+  current.current = { panes, focused };
+  const listeners = useRef(new Set<Listener>());
+  const subscribe = useCallback((listener: Listener) => {
+    listeners.current.add(listener);
+    return () => void listeners.current.delete(listener);
+  }, []);
 
   // Ctrl+O cycles Normal, Thinking and Verbose, as in Claude Code's desktop app.
   useEffect(() => {
@@ -68,22 +82,10 @@ export function App() {
       queued = [];
       setSessions((state) => withMessages(state, batch));
       setPending((state) => withRequests(state, batch));
-      setControls((state) => (state ? withControls(state, batch) : state));
-      const open = selectedId.current;
-      if (open) setDiffs((state) => withDiffs(state, open, batch));
-      setTranscript((state) => {
-        if (state) return withEvents(state, batch);
-        // The open session's snapshot hasn't come yet: keep its events for it.
-        early.current.push(...batch);
-        return state;
-      });
+      for (const listener of listeners.current) listener(batch);
       for (const message of batch) {
         const params = message.params as { sessionId?: string } | undefined;
-        if (message.method === 'session/deleted' && params?.sessionId === selectedId.current) {
-          selectedId.current = null;
-          setSelected(null);
-          setTranscript(null);
-        }
+        if (message.method === 'session/deleted' && params?.sessionId) closeSession(params.sessionId);
       }
     };
     const stop = window.koda.onMessages((batch) => {
@@ -114,44 +116,56 @@ export function App() {
     );
   }, [sessions.nextCursor]);
 
-  // Opening a session joins it on the server; the one left stops being
-  // followed (a turn running in it goes on, as when a window closes).
-  const open = useCallback((id: string, session?: Session) => {
-    const before = selectedId.current;
-    if (before === id) return;
-    if (before) void call('session/unsubscribe', { sessionId: before }).catch(() => {});
-    selectedId.current = id;
-    early.current = [];
-    setTranscript(null);
-    setControls(null);
-    setDiffs(new Map());
-    const opened = (session: Session) => {
-      if (selectedId.current !== id) return;
-      setSelected({ id, session });
-      setControls(controlsFor(id, session.settings));
-      void call('session/goal/get', { sessionId: id }).then((answer) => {
-        if (selectedId.current === id && answer.goal) setControls((c) => (c && c.sessionId === id ? { ...c, goal: answer.goal ?? null } : c));
-      }, () => {});
-      // The snapshot, then what came while it was on its way: the server
-      // answers at one point in the session's stream, so nothing repeats.
-      setTranscript(withEvents(fromSession(session), early.current));
-      early.current = [];
-    };
-    if (session) {
-      opened(session);
-      return;
-    }
-    setSelected({ id });
-    call('session/resume', { sessionId: id }).then(
-      (answer) => opened(answer.session),
-      (error: Error) => selectedId.current === id && setSelected({ id, error: error.message }),
-    );
-  }, []);
+  /** A deleted session's panes close; the last one is left empty. */
+  const closeSession = (id: string) => {
+    setPanes((all) => {
+      const left = all.filter((p) => p.id !== id);
+      if (left.length === all.length) return all;
+      return left.length ? left : [{ key: nextKey++, id: null }];
+    });
+    setFocused(0);
+  };
+
+  /**
+   * Open session `id`: in the pane that has it already, else in the focused
+   * pane, or, `beside`, in a new pane next to it (Claude Code's split view).
+   */
+  const open = useCallback(
+    (id: string, options: { session?: Session; beside?: boolean; pane?: number } = {}) => {
+      const { panes, focused } = current.current;
+      const at = panes.findIndex((p) => p.id === id);
+      if (at >= 0) {
+        setFocused(at);
+        return;
+      }
+      const next: PaneState = { key: nextKey++, id, initial: options.session };
+      if (options.beside && panes.length < MAX_PANES) {
+        const where = (options.pane ?? focused) + 1;
+        setPanes([...panes.slice(0, where), next, ...panes.slice(where)]);
+        setFocused(where);
+        return;
+      }
+      const where = Math.min(options.pane ?? focused, panes.length - 1);
+      setPanes(panes.map((p, i) => (i === where ? { ...next, key: p.key } : p)));
+      setFocused(where);
+    },
+    [],
+  );
+
+  const closePane = (index: number) => {
+    setPanes((all) => all.filter((_, i) => i !== index));
+    setFocused((f) => Math.max(0, f >= index ? f - 1 : f));
+  };
 
   const start = useCallback(async () => {
     const session = await window.koda.newSession();
-    if (session) open(session.id, session);
+    if (session) open(session.id, { session });
   }, [open]);
+
+  const answer = async (id: number | string, result: unknown) => {
+    await window.koda.respond(id, result);
+    setPending((state) => without(state, id));
+  };
 
   // Once there's a list, it stays while the app gets back to the server.
   const reconnecting = status?.state === 'reconnecting' && sessions.loaded;
@@ -163,34 +177,75 @@ export function App() {
       </main>
     );
   }
+  const openIds = panes.flatMap((p) => (p.id ? [p.id] : []));
   return (
     <div className="layout">
       <Sidebar
         sessions={sessions}
-        selectedId={selected?.id ?? null}
-        onOpen={(id) => open(id)}
+        openIds={openIds}
+        selectedId={panes[focused]?.id ?? null}
+        canSplit={panes.length < MAX_PANES}
+        onOpen={(id, beside) => open(id, { beside })}
         onNew={() => void start()}
         onMore={more}
         connectedTo={connected ? status.serverVersion : null}
       />
       <div className="main-column">
         {reconnecting && <ServerLine status={status} />}
-        <SessionView
-          selected={selected}
-          listed={selected ? sessions.byId.get(selected.id) : undefined}
-          transcript={transcript}
-          view={view}
-          onView={setView}
-          requests={selected ? forSession([...pending], selected.id) : []}
-          controls={controls}
-          diffs={diffs}
-          planShown={planShown}
-          onOpen={(session) => open(session.id, session)}
-          onAnswer={async (id, result) => {
-            await window.koda.respond(id, result);
-            setPending((state) => without(state, id));
+        <div
+          className="panes"
+          // A session dragged from the list opens beside the pane it's dropped on.
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes('application/x-koda-session')) e.preventDefault();
           }}
-        />
+          onDrop={(e) => {
+            const id = e.dataTransfer.getData('application/x-koda-session');
+            const pane = Number((e.target as HTMLElement).closest('[data-pane]')?.getAttribute('data-pane') ?? focused);
+            if (id) open(id, { beside: true, pane });
+          }}
+        >
+          {panes.map((pane, i) => (
+            <div
+              key={pane.key}
+              data-pane={i}
+              data-testid="pane"
+              className={panes.length > 1 && i === focused ? 'pane focused' : 'pane'}
+              onMouseDownCapture={() => setFocused(i)}
+              onFocusCapture={() => setFocused(i)}
+            >
+              {pane.id ? (
+                <Pane
+                  key={pane.id}
+                  id={pane.id}
+                  initial={pane.initial}
+                  subscribe={subscribe}
+                  listed={sessions.byId.get(pane.id)}
+                  requests={forSession([...pending], pane.id)}
+                  onAnswer={answer}
+                  view={view}
+                  onView={setView}
+                  planShown={planShown}
+                  onOpen={(session) => open(session.id, { session, pane: i })}
+                  onClose={panes.length > 1 ? () => closePane(i) : undefined}
+                />
+              ) : (
+                <SessionView
+                  selected={null}
+                  transcript={null}
+                  view={view}
+                  onView={setView}
+                  requests={[]}
+                  onAnswer={answer}
+                  controls={null}
+                  diffs={new Map()}
+                  planShown={planShown}
+                  onOpen={() => {}}
+                  onClose={panes.length > 1 ? () => closePane(i) : undefined}
+                />
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

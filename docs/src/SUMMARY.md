@@ -18,6 +18,7 @@
 # Using Koda
 
 - [Interactive TUI](./tui.md)
+- [The desktop app](./desktop-app.md)
 - [File & image attachments](./attachments.md)
 - [Slash commands](./commands.md)
 - [Keybindings](./keybindings.md)
