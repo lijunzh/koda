@@ -130,8 +130,3 @@ pub const PROTECTED_PROJECT_SUBDIRS: &[&str] = &[
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const DEFAULT_WRITE_LITERALS: &[&str] =
     &["/dev/null", "/dev/stderr", "/dev/stdout", "/dev/urandom"];
-
-/// Subpaths under `$HOME` that are writable by default — common package
-/// caches that would otherwise force re-downloads on every invocation.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub const DEFAULT_WRITE_HOME_SUBDIRS: &[&str] = &[".cargo", ".npm", ".cache"];

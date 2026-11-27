@@ -24,7 +24,7 @@ while IFS= read -r line; do
     *'"method":"initialize"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"echo","version":"0.1.0"}}}\n' "$id" ;;
     *'"method":"tools/list"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo the message back","inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}}]}}\n' "$id" ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo the message back","annotations":{"readOnlyHint":true},"inputSchema":{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}}]}}\n' "$id" ;;
     *'"method":"tools/call"'*)
       message=$(printf '%s\n' "$line" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')
       printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"echoed %s"}]}}\n' "$id" "$message" ;;

@@ -89,6 +89,10 @@ pub fn build_command(
     }
     apply_policy_overlay(&mut cmd, policy)?;
     apply_server_socket_masks(&mut cmd, &home);
+    // A network namespace of its own with no bridge out: loopback only.
+    if policy.net.offline {
+        cmd.args(["--unshare-net"]);
+    }
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
     // #1228: scrub the LLM-bound shell's env down to the allowlist.
@@ -510,6 +514,21 @@ pub fn is_available() -> bool {
     })
 }
 
+/// `$TMPDIR` when it names a directory of its own: absolute, existing, and
+/// not `$HOME` or a folder holding it (`TMPDIR=/` mustn't make everything
+/// writable).
+fn tmpdir(home: &str) -> Option<PathBuf> {
+    let raw = PathBuf::from(std::env::var_os("TMPDIR")?);
+    if !raw.is_absolute() {
+        return None;
+    }
+    let dir = raw.canonicalize().ok().filter(|p| p.is_dir())?;
+    let home = Path::new(home)
+        .canonicalize()
+        .unwrap_or_else(|_| home.into());
+    (!home.starts_with(&dir)).then_some(dir)
+}
+
 /// Build a bwrap `Command` with the base project-mode filesystem view.
 ///
 /// Returns `(cmd, home)` with everything set up *except* the final
@@ -563,24 +582,20 @@ fn base_cmd(project_root: &Path) -> (Command, String) {
     let root = project_root.to_string_lossy().into_owned();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
 
-    // Strategy: bind the whole root filesystem read-only, then selectively
-    // add read-write binds for project + temp + common caches.
+    // Strategy: bind the whole root filesystem read-only, then add
+    // read-write binds for Codex's writable roots: the project, `/tmp` and
+    // `$TMPDIR`. Package caches in the home folder (`~/.cargo`, `~/.npm`,
+    // `~/.cache`) stay read-only, as in Codex: a command could otherwise
+    // plant a binary in `~/.cargo/bin` or change `~/.cargo/config.toml`.
     let mut cmd = Command::new("bwrap");
     cmd.args(["--ro-bind", "/", "/"]);
     cmd.args(["--bind", &root, &root]);
     cmd.args(["--bind", "/tmp", "/tmp"]);
-    if Path::new("/var/tmp").exists() {
-        cmd.args(["--bind", "/var/tmp", "/var/tmp"]);
+    let mut writable = vec![project_root.to_path_buf(), "/tmp".into()];
+    if let Some(tmpdir) = tmpdir(&home) {
+        cmd.arg("--bind").arg(&tmpdir).arg(&tmpdir);
+        writable.push(tmpdir);
     }
-    // Common package caches — avoids re-downloading on every invocation.
-    for subdir in &[".cargo", ".npm", ".cache"] {
-        let p = format!("{home}/{subdir}");
-        if Path::new(&p).exists() {
-            cmd.args(["--bind", p.as_str(), p.as_str()]);
-        }
-    }
-    let mut writable = vec![project_root.to_path_buf(), "/tmp".into(), "/var/tmp".into()];
-    writable.extend([".cargo", ".npm", ".cache"].map(|subdir| Path::new(&home).join(subdir)));
     for pin in server_folder_pins(&writable, &home) {
         cmd.arg("--bind").arg(&pin).arg(&pin);
     }

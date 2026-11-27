@@ -198,6 +198,34 @@ pub(crate) struct Parent<'a> {
     pub caller_spawner: Option<u32>,
     /// Where its approvals go: the session's client.
     pub approver: Option<std::sync::Arc<dyn crate::approval_flow::Approver>>,
+    /// The session's proxies and what they ask, which a sub-agent's
+    /// commands go through as the parent's do.
+    pub network: Network,
+}
+
+/// The session's egress proxies and the questions they ask.
+#[derive(Clone)]
+pub(crate) struct Network {
+    pub proxy_port: Option<u16>,
+    pub socks5_port: Option<u16>,
+    pub approvals: std::sync::Arc<crate::network_approval::NetworkApprovals>,
+}
+
+impl Network {
+    pub(crate) fn of(tools: &ToolRegistry) -> Self {
+        Self {
+            proxy_port: tools.proxy_port(),
+            socks5_port: tools.socks5_port(),
+            approvals: tools.network_approvals(),
+        }
+    }
+
+    /// Route `tools`' commands through these proxies.
+    fn attach(self, tools: ToolRegistry) -> ToolRegistry {
+        tools.set_proxy_port(self.proxy_port);
+        tools.set_socks5_port(self.socks5_port);
+        tools.with_network_approvals(self.approvals)
+    }
 }
 
 impl<'a> Parent<'a> {
@@ -218,6 +246,7 @@ impl<'a> Parent<'a> {
             web_search_budget: turn.tools.web_search_budget(),
             caller_spawner: tx.caller_spawner,
             approver: turn.tools.approver(),
+            network: Network::of(turn.tools),
         }
     }
 }
@@ -325,6 +354,7 @@ fn run_sub_agent<'a>(
             web_search_budget,
             caller_spawner: parent_spawner,
             approver,
+            network,
         } = parent;
         // A background agent being continued works in its own session again.
         let resume_session = background.and_then(|b| b.session.lock().clone());
@@ -735,6 +765,10 @@ fn run_sub_agent<'a>(
             let registry = registry
                 .with_sandbox_policy(composed_policy)
                 .with_web_search_budget(web_search_budget);
+            // Through the session's proxies, as the parent's commands go:
+            // no unfiltered network, and an unlisted host asks in the main
+            // session.
+            let registry = network.attach(registry);
             let registry = match parent_cache {
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,
@@ -1862,6 +1896,7 @@ fn spawn_run(
     let policy = turn.tools.sandbox_policy().clone();
     let table = std::sync::Arc::downgrade(agents);
     let approver = turn.tools.approver();
+    let network = Network::of(turn.tools);
     let session_sink = turn.tools.session_sink();
     // The session's "allow for session" set, shared.
     let allows = turn.session_allows.clone();
@@ -1896,6 +1931,7 @@ fn spawn_run(
             web_search_budget,
             caller_spawner,
             approver,
+            network,
         };
         let result = execute_sub_agent(
             parent,
@@ -2487,5 +2523,30 @@ mod error_chain_format_tests {
             "LLM API returned 400 Bad Request: {{\"error\":\"Context size has been exceeded.\"}}"
         );
         assert_eq!(format!("{e}"), format!("{e:#}"));
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::Network;
+    use crate::tools::ToolRegistry;
+
+    /// A sub-agent's commands go through the session's proxies, and its
+    /// network questions go where the parent's do: with no proxy its Bash
+    /// had the network unfiltered.
+    #[test]
+    fn a_sub_agent_uses_the_sessions_proxies() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = ToolRegistry::new(dir.path().to_path_buf(), 100_000);
+        parent.set_proxy_port(Some(4001));
+        parent.set_socks5_port(Some(4002));
+        let child =
+            Network::of(&parent).attach(ToolRegistry::new(dir.path().to_path_buf(), 100_000));
+        assert_eq!(child.proxy_port(), Some(4001));
+        assert_eq!(child.socks5_port(), Some(4002));
+        assert!(std::sync::Arc::ptr_eq(
+            &child.network_approvals(),
+            &parent.network_approvals()
+        ));
     }
 }

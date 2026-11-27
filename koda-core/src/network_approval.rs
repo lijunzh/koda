@@ -19,7 +19,8 @@
 //!   the connection is refused without asking, since stopping one of them
 //!   would be a guess.
 //!
-//! With nobody to ask (a headless run), the host is refused.
+//! With nobody to ask (a headless run), the host is refused and the
+//! command goes on without it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -210,6 +211,9 @@ impl NetworkApprovals {
                 true
             }
             Some(ApprovalDecision::Approve) => true,
+            // Refused by policy (nobody to ask): the connection fails and
+            // the command goes on, as Codex blocks it with no approval flow.
+            Some(ApprovalDecision::RejectAuto { .. }) => false,
             Some(_) => {
                 // The user said no: the command that reached for the host
                 // stops, as Codex cancels its execution.
@@ -426,6 +430,20 @@ mod tests {
             .expect("the question ended with the command")
             .unwrap();
         assert!(!allowed);
+    }
+
+    /// A refusal by policy (a headless run) isn't a person's no: the
+    /// connection fails and the command goes on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_policy_refusal_leaves_the_command_running() {
+        let (approvals, _) = approvals(ApprovalDecision::RejectAuto {
+            reason: "headless".into(),
+        });
+        let call = approvals.register("call_1", "curl https://example.com");
+        assert!(!approvals.allow("example.com", 443, HTTPS).await);
+        let stopped =
+            tokio::time::timeout(std::time::Duration::from_millis(100), call.refused()).await;
+        assert!(stopped.is_err(), "the command was stopped: {stopped:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -10,8 +10,8 @@ the current one as a colour-coded badge.
 
 | Mode | Badge | What runs without asking |
 |------|-------|--------------------------|
-| **Auto** | ⚡ **AUTO** (bold green) | Everything inside the workspace-write sandbox: the project and scratch directories are writable, `.git` and credential files are read-only, and the network goes through Koda's proxy. A destructive command, a command that asks to leave the sandbox, and a path outside the project ask first. **The default.** |
-| **Plan** | 📋 PLAN (cyan) | Reads, searches and shell commands, in the read-only sandbox: a command can look at anything and change nothing. Edits are refused, and so is a destructive command or one asking to leave the sandbox. |
+| **Auto** | ⚡ **AUTO** (bold green) | Everything inside the workspace-write sandbox: the project and scratch directories are writable, `.git` and credential files are read-only, and the network goes through Koda's proxy. A destructive command, a command that asks to leave the sandbox, an edit of `.git` or Koda's settings, and an MCP tool that may reach anything ask first. **The default.** |
+| **Plan** | 📋 PLAN (cyan) | Reads, searches and shell commands, in the read-only sandbox with no network, as Codex's read-only sandbox: a command can look at anything on the machine and change nothing, here or on a server. Edits are refused, and so is a destructive command or one asking to leave the sandbox. |
 
 `--mode` and `mode` in `config.toml` choose the mode a session starts in.
 Headless runs that should only look use `koda exec --mode plan "..."` (see
@@ -37,8 +37,10 @@ which the TUI draws as a framed **Proposed plan**. Koda then asks
 - **No, keep planning**: stays in Plan. Typing a reply does the same.
 
 Plan stays read-only throughout: the host refuses any edit, and every `Bash`
-command runs with the project read-only in the kernel sandbox. A session left
-in Plan reopens in Plan.
+command runs with the project read-only and no network in the kernel sandbox,
+so `gh pr create` or `git push` can't change anything on a server either.
+`WebFetch` still reads the web (it asks first). A session left in Plan
+reopens in Plan, and one switched to Auto writes as an Auto session does.
 
 ## What asks in Auto
 
@@ -50,6 +52,8 @@ in Plan reopens in Plan.
 | A command asking to leave the sandbox (`outside_sandbox`) | ⏸ asks | ❌ refused |
 | Edit or Write in a temp directory (`/tmp`, `$TMPDIR`) | ✅ runs | ❌ refused |
 | Edit or Write of Koda's own settings (`~/.config/koda`) | ⏸ asks | ❌ refused |
+| Edit or Write in `.git`, `.koda/agents` or `.koda/skills` | ⏸ asks | ❌ refused |
+| An MCP tool its server doesn't mark read-only, or non-destructive and closed-world ([MCP](./mcp.md#which-tools-ask)) | ⏸ asks | ❌ refused |
 | Edit or Write anywhere else outside the project | ❌ refused | ❌ refused |
 
 **Leaving the sandbox.** A Bash call with `outside_sandbox: true` runs without
@@ -114,17 +118,19 @@ Clients see a sub-agent's request as `item/toolCall/requestApproval` with an
 These apply in both modes:
 
 1. **Kernel sandbox** (macOS seatbelt / Linux bwrap) restricts file
-   writes to the project directory and scratch zones (`/tmp`, `~/.cache`,
-   `~/.cargo`, etc.), keeps `.git` read-only, and protects credential
+   writes to the project directory, `/tmp` and `$TMPDIR`, as Codex's does
+   (package caches such as `~/.cargo` are read-only), keeps `.git` read-only, and protects credential
    directories and files. See [Sandbox](./sandbox.md).
 2. **Outside-project floor:** Edit and Write work only in the project and
-   temp directories, and ask before changing Koda's own settings, which
-   decide what the next session runs. A command's paths aren't checked,
+   temp directories, and ask before changing Koda's own settings, `.git`,
+   `.koda/agents` or `.koda/skills`, which decide what git and the next
+   session run (Codex's patches ask for `.git` and `.codex` the same way). A command's paths aren't checked,
    as in Codex: `cd ~ && ls` and `cat ../notes.md` run, a write outside the
    project fails at the kernel, and a forced `rm` asks wherever it points.
 3. **Agent-file protection:** `.koda/agents/` and `.koda/skills/` are
-   write-protected in every mode, so a prompt injection can't rewrite an
-   agent's tools or system prompt mid-session.
+   read-only to commands in every mode, and an edit of them asks, so a
+   prompt injection can't rewrite an agent's tools or system prompt
+   mid-session.
 4. **Credential scrub:** sandboxed shell calls run with a fixed environment
    allowlist; secrets like `OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY` and
    `GITHUB_TOKEN` never reach the child process.

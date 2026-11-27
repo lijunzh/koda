@@ -175,17 +175,20 @@ fn build_command_inner(
         // `(allow file-read*)`. Same last-match-wins approach as
         // Gemini CLI's seatbeltArgsBuilder.ts.
         let mut profile = match k.proxy {
+            _ if k.policy.net.offline => build_profile_string_with_network(
+                &root,
+                &network_offline_rules(k.policy.net.allow_local_binding),
+            ),
             Some((port, allow_local_binding, weaker_macos_isolation)) => {
                 build_proxied_profile_string_with_loopback(
                     &root,
-                    home,
                     port,
                     allow_local_binding,
                     weaker_macos_isolation,
                     &k.loopback_ports,
                 )
             }
-            None => build_profile_string(&root, home),
+            None => build_profile_string(&root),
         };
         // Before the denies below, so project-subdir and credential denies
         // still win over it (last-match-wins).
@@ -319,11 +322,7 @@ pub(crate) fn home_path(home: &str, rel: &str) -> String {
 ///
 /// Use [`network_open_rules`] for the legacy behavior or
 /// [`network_proxied_rules`] for deny-by-default + single-port hole.
-pub(crate) fn build_profile_string_with_network(
-    root: &str,
-    home: &str,
-    network_rules: &str,
-) -> String {
+pub(crate) fn build_profile_string_with_network(root: &str, network_rules: &str) -> String {
     format!(
         "(version 1)\n\
          (deny default)\n\
@@ -332,9 +331,6 @@ pub(crate) fn build_profile_string_with_network(
            (subpath \"{root}\")\n\
            (subpath \"/private/tmp\")\n\
            (subpath \"/tmp\")\n\
-           (subpath \"{home}/.cargo\")\n\
-           (subpath \"{home}/.npm\")\n\
-           (subpath \"{home}/.cache\")\n\
            (literal \"/dev/null\")\n\
            (literal \"/dev/stderr\")\n\
            (literal \"/dev/stdout\")\n\
@@ -354,8 +350,8 @@ pub(crate) fn build_profile_string_with_network(
 /// restrict writes to project + temp + cache dirs.  Network left
 /// unrestricted so `curl` / `cargo fetch` / `npm install` work without
 /// modification (Phase 3 adds the proxy-based egress filter).
-pub(crate) fn build_profile_string(root: &str, home: &str) -> String {
-    build_profile_string_with_network(root, home, &network_open_rules())
+pub(crate) fn build_profile_string(root: &str) -> String {
+    build_profile_string_with_network(root, &network_open_rules())
 }
 
 /// Network rules for the legacy unrestricted mode.
@@ -364,6 +360,21 @@ pub(crate) fn build_profile_string(root: &str, home: &str) -> String {
 /// allowed.
 pub(crate) fn network_open_rules() -> String {
     "(allow network*)\n".to_string()
+}
+
+/// Network rules for a policy that's [offline](crate::NetPolicy::offline):
+/// the proxied rules with no proxy to reach, so no TCP leaves the machine.
+pub fn network_offline_rules(allow_local_binding: bool) -> String {
+    let mut rules = String::new();
+    rules.push_str("(allow network-outbound (remote unix-socket))\n");
+    rules.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+    rules.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
+    if allow_local_binding {
+        rules.push_str("(allow network-bind (local ip \"*:*\"))\n");
+        rules.push_str("(allow network-inbound (local ip \"*:*\"))\n");
+        rules.push_str("(allow network-outbound (remote ip \"localhost:*\"))\n");
+    }
+    rules
 }
 
 /// Network rules for the Phase 3a proxied mode.
@@ -458,14 +469,12 @@ fn trustd_mach_lookup_rules() -> String {
 /// in place of the open-network allow.
 pub fn build_proxied_profile_string(
     root: &str,
-    home: &str,
     proxy_port: u16,
     allow_local_binding: bool,
     weaker_macos_isolation: bool,
 ) -> String {
     build_proxied_profile_string_with_loopback(
         root,
-        home,
         proxy_port,
         allow_local_binding,
         weaker_macos_isolation,
@@ -476,7 +485,6 @@ pub fn build_proxied_profile_string(
 /// [`build_proxied_profile_string`] with [`loopback_port_rules`] added.
 pub fn build_proxied_profile_string_with_loopback(
     root: &str,
-    home: &str,
     proxy_port: u16,
     allow_local_binding: bool,
     weaker_macos_isolation: bool,
@@ -484,7 +492,7 @@ pub fn build_proxied_profile_string_with_loopback(
 ) -> String {
     let mut net = network_proxied_rules(proxy_port, allow_local_binding, weaker_macos_isolation);
     net.push_str(&loopback_port_rules(loopback_ports));
-    build_profile_string_with_network(root, home, &net)
+    build_profile_string_with_network(root, &net)
 }
 
 /// Outbound TCP to each of `ports` on localhost (127.0.0.1 and ::1). The
@@ -903,7 +911,7 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let project = Path::new("/tmp/test-project");
         let root = project.to_string_lossy().into_owned();
-        let profile = build_profile_string(&root, &home);
+        let profile = build_profile_string(&root);
         let deny_rules = credential_deny_rules(&home);
         // Simulate what build_command does: project profile then deny rules.
         let full = format!("{profile}{deny_rules}");
@@ -1212,7 +1220,7 @@ mod tests {
 
     #[test]
     fn proxied_profile_omits_open_network_allow() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         assert!(
             !p.contains("(allow network*)\n"),
             "proxied profile must not include the open-network allow\nprofile:\n{p}"
@@ -1221,24 +1229,18 @@ mod tests {
 
     #[test]
     fn loopback_ports_open_just_those_ports() {
-        let p = build_proxied_profile_string_with_loopback(
-            "/work",
-            "/Users/x",
-            8877,
-            false,
-            false,
-            &[3000, 5173],
-        );
+        let p =
+            build_proxied_profile_string_with_loopback("/work", 8877, false, false, &[3000, 5173]);
         assert!(p.contains(r#"(allow network-outbound (remote tcp "localhost:3000"))"#));
         assert!(p.contains(r#"(allow network-outbound (remote tcp "localhost:5173"))"#));
         assert!(!p.contains(r#"(remote tcp "localhost:*")"#), "{p}");
-        let none = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let none = build_proxied_profile_string("/work", 8877, false, false);
         assert!(!none.contains("localhost:3000"));
     }
 
     #[test]
     fn proxied_profile_allows_only_proxy_port_outbound_tcp() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         // Phase 3c fix: SBPL only accepts `*` or `localhost` as the
         // host in `(remote tcp ...)`. A literal `127.0.0.1` causes
         // sandbox-exec to reject the entire profile. `localhost`
@@ -1265,19 +1267,19 @@ mod tests {
         // git-over-ssh, ssh-agent, language servers, Docker.sock when
         // bind-mounted — all need this. Codex's seatbelt has the same
         // carve-out.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         assert!(p.contains("(allow network-outbound (remote unix-socket))"));
     }
 
     #[test]
     fn proxied_profile_allows_localhost_inbound_for_debuggers() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         assert!(p.contains("(allow network-inbound (local ip \"localhost:*\"))"));
     }
 
     #[test]
     fn proxied_profile_omits_wildcard_bind_when_local_binding_disabled() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         // Localhost bind is always allowed; wildcard *:* must not be.
         assert!(p.contains("(allow network-bind (local ip \"localhost:*\"))"));
         assert!(
@@ -1288,7 +1290,7 @@ mod tests {
 
     #[test]
     fn proxied_profile_opens_local_ports_when_local_binding_enabled() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, true, false);
+        let p = build_proxied_profile_string("/work", 8877, true, false);
         assert!(p.contains("(allow network-bind (local ip \"*:*\"))"));
         assert!(p.contains("(allow network-inbound (local ip \"*:*\"))"));
         assert!(p.contains("(allow network-outbound (remote ip \"localhost:*\"))"));
@@ -1299,29 +1301,32 @@ mod tests {
 
     #[test]
     fn proxied_profile_keeps_other_local_ports_closed_by_default() {
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         assert!(!p.contains("(remote ip \"localhost:*\")"));
     }
 
     #[test]
     fn proxied_profile_keeps_baseline_file_writes_unchanged() {
         // Regression guard: the proxied variant must only differ from the
-        // open variant in the network section. Same temp/cargo/npm/cache
-        // writes should still be present.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        // open variant in the network section. Codex's writable roots, and
+        // no package cache in the home folder.
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         assert!(p.contains("(subpath \"/work\")"));
         assert!(p.contains("(subpath \"/private/tmp\")"));
-        assert!(p.contains("(subpath \"/Users/x/.cargo\")"));
-        assert!(p.contains("(subpath \"/Users/x/.npm\")"));
-        assert!(p.contains("(subpath \"/Users/x/.cache\")"));
+        for cache in [".cargo", ".npm", ".cache"] {
+            assert!(
+                !p.contains(&format!("(subpath \"/Users/x/{cache}\")")),
+                "{cache}"
+            );
+        }
     }
 
     #[test]
     fn proxied_and_open_differ_only_in_network_section() {
         // DRY guard: confirm that build_profile_string and
         // build_proxied_profile_string share the same baseline.
-        let open = build_profile_string("/work", "/Users/x");
-        let proxied = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let open = build_profile_string("/work");
+        let proxied = build_proxied_profile_string("/work", 8877, false, false);
 
         // Both must end the same way (process-exec onward is identical).
         let tail = "(allow process-exec*)\n(allow process-fork)\n(allow sysctl-read)\n(allow ipc-posix*)\n(allow mach*)\n";
@@ -1404,7 +1409,7 @@ mod tests {
         // Strict default: no mach-lookup carve-outs. The trustd daemons
         // are deliberately UNREACHABLE without the explicit opt-in,
         // mirroring the deny-by-default network posture.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, false);
+        let p = build_proxied_profile_string("/work", 8877, false, false);
         assert!(
             !p.contains("com.apple.trustd"),
             "strict default must not permit trustd lookups; got:\n{p}"
@@ -1419,7 +1424,7 @@ mod tests {
     fn proxied_profile_permits_trustd_when_weaker_isolation_set() {
         // Opt-in: both trustd names must appear so per-user agent and
         // system daemon lookups both succeed regardless of binary.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, true);
+        let p = build_proxied_profile_string("/work", 8877, false, true);
         assert!(
             p.contains("(allow mach-lookup (global-name \"com.apple.trustd\"))"),
             "weaker isolation must permit com.apple.trustd; got:\n{p}"
@@ -1436,7 +1441,7 @@ mod tests {
         // The kernel-enforced TCP egress remains pinned to the loopback
         // proxy port. Regression guard against a future maintainer
         // sneaking a `(allow network*)` in alongside the trustd rules.
-        let p = build_proxied_profile_string("/work", "/Users/x", 8877, false, true);
+        let p = build_proxied_profile_string("/work", 8877, false, true);
         assert!(
             !p.contains("(allow network*)\n"),
             "weaker isolation must not include the open-network blanket allow; got:\n{p}"

@@ -241,7 +241,8 @@ pub enum ToolApproval {
 ///
 /// Additional hardcoded floors:
 /// - Writes outside project root → NeedsConfirmation (even in Auto) (#218)
-/// - Bash path escapes → NeedsConfirmation
+/// - Writes to Koda's settings, `.git`, `.koda/agents` or `.koda/skills`
+///   → NeedsConfirmation
 /// - Sandbox backend unavailable → Auto downgrades mutating/destructive
 ///   ops to NeedsConfirmation (#860)
 pub fn check_tool(
@@ -325,6 +326,13 @@ fn check_tool_inner(
                 // for `rm -rf /`. For sub-agents this becomes Blocked below.
                 ToolApproval::NeedsConfirmation
             }
+            // An MCP tool runs outside the sandbox, so one that may reach
+            // anything asks, as Codex asks unless its server marks it
+            // read-only, or non-destructive and closed-world
+            // (`requires_mcp_tool_approval`).
+            ToolEffect::RemoteAction if crate::mcp::is_mcp_tool_name(tool_name) => {
+                ToolApproval::NeedsConfirmation
+            }
             ToolEffect::RemoteAction | ToolEffect::LocalMutation => {
                 // Safety net: if the kernel sandbox is unavailable, Auto mode
                 // loses its perimeter. Downgrade mutating ops to
@@ -401,7 +409,22 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
             if koda_sandbox::is_koda_config(&resolved) {
                 return true;
             }
-            let outside = !resolved.starts_with(resolve_through_links(project_root));
+            let root = resolve_through_links(project_root);
+            // What the kernel sandbox keeps read-only inside the project
+            // asks too, as Codex's patches do for `.git` and `.codex`: git
+            // runs hooks and `config` programs outside the sandbox, and
+            // agents and skills decide what the next session runs.
+            let protected = std::iter::once(".git")
+                .chain(
+                    koda_sandbox::defaults::PROTECTED_PROJECT_SUBDIRS
+                        .iter()
+                        .copied(),
+                )
+                .any(|rel| resolved.starts_with(root.join(rel)));
+            if protected {
+                return true;
+            }
+            let outside = !resolved.starts_with(&root);
             // Allow temp directories (#560)
             if outside && crate::scratch_path::is_safe_external_path(&resolved) {
                 return false;
@@ -534,7 +557,9 @@ const PREFIX_KEY: &str = "Bash-prefix\0";
 
 /// Prefixes too broad to allow, as Codex refuses to suggest them
 /// (`BANNED_PREFIX_SUGGESTIONS`, `codex-rs/core/src/exec_policy.rs`): each
-/// would run any program or script.
+/// would run any program or script, or (`rm`) remove anything. Codex's
+/// whole list, its Windows shells included (`pwsh` runs on macOS and
+/// Linux too), plus `xargs`.
 const BANNED_PREFIXES: &[&[&str]] = &[
     &["bash"],
     &["bash", "-c"],
@@ -575,13 +600,17 @@ const BANNED_PREFIXES: &[&[&str]] = &[
     &["bun", "run"],
     &["npm", "run"],
     &["pnpm", "run"],
+    &["yarn", "run"],
     &["python"],
     &["python", "-"],
     &["python", "-c"],
     &["python3"],
     &["python3", "-"],
     &["python3", "-c"],
+    &["pythonw"],
     &["py"],
+    &["py", "-3"],
+    &["pyw"],
     &["pypy"],
     &["pypy3"],
     &["perl"],
@@ -596,6 +625,31 @@ const BANNED_PREFIXES: &[&[&str]] = &[
     &["julia", "-e"],
     &["Rscript"],
     &["osascript"],
+    &["rm"],
+    &["cmd"],
+    &["cmd", "/c"],
+    &["cmd", "/k"],
+    &["cmd.exe"],
+    &["cmd.exe", "/c"],
+    &["cmd.exe", "/k"],
+    &["powershell"],
+    &["powershell", "-Command"],
+    &["powershell", "-EncodedCommand"],
+    &["powershell", "-File"],
+    &["powershell", "-c"],
+    &["powershell.exe"],
+    &["powershell.exe", "-Command"],
+    &["powershell.exe", "-EncodedCommand"],
+    &["powershell.exe", "-File"],
+    &["powershell.exe", "-c"],
+    &["pwsh"],
+    &["pwsh", "-Command"],
+    &["pwsh", "-EncodedCommand"],
+    &["pwsh", "-File"],
+    &["pwsh", "-c"],
+    &["pwsh", "-e"],
+    &["pwsh", "-ec"],
+    &["pwsh", "-f"],
 ];
 
 /// A command's words, when it is one plain command: no `&&`, `|`, `;`,
@@ -1063,6 +1117,64 @@ mod tests {
         );
     }
 
+    /// An MCP tool with no hints may reach anything: Auto asks, as Codex
+    /// does, and Plan refuses it.
+    #[test]
+    fn an_mcp_tool_that_may_reach_anything_asks() {
+        let root = Path::new("/home/user/project");
+        let args = serde_json::json!({});
+        assert_eq!(
+            check_tool("tracker__close", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::NeedsConfirmation,
+        );
+        assert_eq!(
+            check_tool("tracker__close", &args, TrustMode::Plan, Some(root)),
+            ToolApproval::Blocked,
+        );
+        // A page off the documentation list is a remote action too, and
+        // still runs in Auto.
+        let fetch = serde_json::json!({ "url": "https://example.com/" });
+        assert_eq!(
+            check_tool("WebFetch", &fetch, TrustMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+        );
+    }
+
+    /// What the kernel keeps read-only in the project asks for a file tool
+    /// too: a hook or `core.fsmonitor` written by Edit would run outside the
+    /// sandbox at the next `git commit`.
+    #[test]
+    fn an_edit_of_git_or_agent_files_asks() {
+        let root = Path::new("/home/user/project");
+        for path in [
+            ".git/hooks/pre-commit",
+            ".git/config",
+            ".git",
+            ".koda/agents/reviewer.json",
+            ".koda/skills/x/SKILL.md",
+        ] {
+            for tool in ["Write", "Edit"] {
+                let args = serde_json::json!({ "path": path });
+                assert_eq!(
+                    check_tool(tool, &args, TrustMode::Auto, Some(root)),
+                    ToolApproval::NeedsConfirmation,
+                    "{tool} {path}"
+                );
+                assert_eq!(
+                    check_tool(tool, &args, TrustMode::Plan, Some(root)),
+                    ToolApproval::Blocked,
+                    "{tool} {path}"
+                );
+            }
+        }
+        // A name that only starts the same way is ordinary.
+        let args = serde_json::json!({ "path": ".github/workflows/ci.yml" });
+        assert_eq!(
+            check_tool("Write", &args, TrustMode::Auto, Some(root)),
+            ToolApproval::AutoApprove,
+        );
+    }
+
     #[test]
     fn test_edit_with_dotdot_escape_needs_confirmation() {
         let root = Path::new("/home/user/project");
@@ -1240,6 +1352,35 @@ mod tests {
             session_allow_key("Bash", &bare, resolve_tool_effect("Bash", &bare), root),
             None
         );
+    }
+
+    /// Codex's banned prefixes Koda lacked until 2026-11-27 aren't offered
+    /// either.
+    #[test]
+    fn codexs_whole_banned_list_is_refused() {
+        for (command, rule) in [
+            ("rm build.log", serde_json::json!(["rm"])),
+            ("yarn run build", serde_json::json!(["yarn", "run"])),
+            ("py -3 x.py", serde_json::json!(["py", "-3"])),
+            ("pythonw x.py", serde_json::json!(["pythonw"])),
+            ("pyw x.py", serde_json::json!(["pyw"])),
+            ("pwsh -c ls", serde_json::json!(["pwsh", "-c"])),
+            (
+                "powershell -File x.ps1",
+                serde_json::json!(["powershell", "-File"]),
+            ),
+            ("cmd /c dir", serde_json::json!(["cmd", "/c"])),
+        ] {
+            let args = serde_json::json!({
+                "command": command, "outside_sandbox": true, "reason": "r", "prefix_rule": rule,
+            });
+            assert_eq!(session_prefix(&args), None, "{command} {rule}");
+        }
+        let args = serde_json::json!({
+            "command": "yarn run build", "outside_sandbox": true, "reason": "r",
+            "prefix_rule": ["yarn", "run", "build"],
+        });
+        assert!(session_prefix(&args).is_some(), "a narrower prefix is fine");
     }
 
     /// An allowed prefix covers later commands that start with it and ask

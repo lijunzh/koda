@@ -32,7 +32,12 @@ including `rm`, `sed -i` or `chmod` on project files. These ask first:
   deleting a remote branch, `npm publish` and `cargo publish`, `gh` merges and
   deletes, `sudo`, disk tools.
 - **A command that asks to leave the sandbox** (`outside_sandbox`).
-- **An edit of Koda's own settings** (`~/.config/koda`).
+- **An edit of Koda's own settings** (`~/.config/koda`), of `.git`, or of
+  `.koda/agents` or `.koda/skills`.
+- **An MCP tool its server doesn't mark read-only, or non-destructive and
+  closed-world** (`readOnlyHint`, `destructiveHint`, `openWorldHint`), as in
+  Codex. In 0.7 only a tool marked destructive asked; `koda exec` now
+  refuses one that would ask. See [MCP](./mcp.md#which-tools-ask).
 - **A host that isn't on the proxy's allow-list** (below).
 
 Two things that asked in 0.7 don't any more:
@@ -41,6 +46,15 @@ Two things that asked in 0.7 don't any more:
   `cat ../notes.md`). The sandbox already keeps a command's writes in the
   project and temp directories, as in Codex.
 - **Any change, in Safe**, since Safe is gone.
+
+## Package caches are read-only
+
+A command writes only the project, `/tmp` and `$TMPDIR`, Codex's writable
+roots. In 0.7 `~/.cargo`, `~/.npm` and `~/.cache` were writable too. A build
+that has to download dependencies (`cargo build` with a new crate, a first
+`npm install`) or keeps its cache in the home folder (`go build`) now fails
+inside the sandbox, and Koda asks to run it outside; `s` on its prefix
+(`["cargo", "build"]`) covers the rest of the session.
 
 ## Git commits leave the sandbox
 
@@ -62,14 +76,17 @@ asks, on the command that reached for it:
 ```
 
 `y` lets that one connection through, `s` allows the host for the session, and
-`n` stops the command. A headless run refuses the host, as before. See
+`n` stops the command. A headless run refuses the host, as before, and the
+command goes on without it. Sub-agents' commands now go through the proxy
+too; in 0.7 they reached the network unfiltered. See
 [Sandbox](./sandbox.md#a-host-that-isnt-on-the-list).
 
 ## Plan runs commands
 
 Plan used to run only commands on a read-only list. It now runs every command
-in a read-only sandbox: a command can look at anything and change nothing.
-Edits are still refused.
+in a read-only sandbox with no network, as Codex's: a command can look at
+anything on the machine and change nothing, here or on a server. Edits are
+still refused.
 
 ## A machine with no sandbox
 

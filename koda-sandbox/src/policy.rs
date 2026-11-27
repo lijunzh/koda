@@ -166,6 +166,10 @@ pub struct NetPolicy {
     /// macOS-only: relax network sandboxing to permit Apple `trustd`
     /// callbacks and Go-binary TLS verification. Off by default.
     pub weaker_macos_isolation: bool,
+
+    /// No network at all, not even through the proxy, as Codex's read-only
+    /// policy has (`network_access: false`). Local sockets still work.
+    pub offline: bool,
 }
 
 /// Corporate MITM proxy configuration.
@@ -338,6 +342,7 @@ impl SandboxPolicy {
                 mitm: parent.net.mitm.clone(),
                 weaker_macos_isolation: parent.net.weaker_macos_isolation
                     && child.net.weaker_macos_isolation,
+                offline: parent.net.offline || child.net.offline,
             },
             limits: ResourceLimits {
                 cpu_time_secs: min_opt(parent.limits.cpu_time_secs, child.limits.cpu_time_secs),

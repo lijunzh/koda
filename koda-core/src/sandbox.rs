@@ -195,6 +195,12 @@ pub fn build_with_loopback(
     // possible. Today every caller still passes `strict_default()` so
     // behavior is byte-for-byte unchanged — PR-2 introduces real
     // construction logic; PR-3 adds resource-limit + compose() callers.
+    // An offline command has no proxy to reach.
+    let (proxy_port, socks5_port) = if policy.net.offline {
+        (None, None)
+    } else {
+        (proxy_port, socks5_port)
+    };
     let req = SandboxTransformRequest {
         command,
         project_root,
@@ -384,14 +390,18 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // allow list (seatbelt last-match-wins, bwrap a later `--ro-bind`), so
     // a Bash command `BashTool::classify` wrongly judged read-only still
     // can't change the project. Codex's `exec` gets the same guarantee
-    // from its read-only sandbox. Temp and cache directories stay
-    // writable: read-only commands such as `git log` or `rg` may use them,
-    // and they hold none of the user's work.
+    // from its read-only sandbox. Temp directories stay writable:
+    // read-only commands such as `git log` or `rg` may use them, and they
+    // hold none of the user's work.
     if trust == crate::trust::TrustMode::Plan {
         policy
             .fs
             .deny_write_within_allow
             .push(canonical_root.into());
+        // No network either, as Codex's read-only policy: allowed hosts
+        // include GitHub, and a `gh` or `git push` there changes things
+        // as surely as a write does.
+        policy.net.offline = true;
     }
 
     policy.net.allow_local_binding =
@@ -1593,6 +1603,102 @@ print(\"connected\")'";
         let out = run(crate::trust::TrustMode::Auto, "safe.txt").await;
         assert!(out.status.success(), "touch failed under Safe: {out:?}");
         assert!(dir.path().join("safe.txt").exists());
+    }
+
+    /// A command writes only the project, `/tmp` and `$TMPDIR`, Codex's
+    /// writable roots: package caches in the home folder are read-only, so
+    /// nothing can be planted in `~/.cargo/bin` or `~/.cargo/config.toml`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_cant_write_the_home_folders_caches() {
+        if !is_available() {
+            koda_sandbox::skip_test(format_args!("kernel sandbox not available on this host"));
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
+        let name = format!("koda-sandbox-probe-{}", std::process::id());
+        for cache in [".cargo", ".cache"] {
+            let target = home.join(cache);
+            if !target.is_dir() {
+                continue;
+            }
+            let probe = target.join(&name);
+            let cmd = build(
+                &format!("touch '{}'", probe.display()),
+                dir.path(),
+                &crate::trust::TrustMode::Auto,
+                &policy,
+                None,
+                None,
+            );
+            let out = cmd.unwrap().output().await.unwrap();
+            let wrote = probe.exists();
+            let _ = std::fs::remove_file(&probe);
+            assert!(
+                !wrote && !out.status.success(),
+                "wrote {}: {out:?}",
+                probe.display()
+            );
+        }
+        // `/tmp` still is writable.
+        let tmp = std::path::Path::new("/tmp").join(&name);
+        let cmd = build(
+            &format!("touch '{}'", tmp.display()),
+            dir.path(),
+            &crate::trust::TrustMode::Auto,
+            &policy,
+            None,
+            None,
+        );
+        let out = cmd.unwrap().output().await.unwrap();
+        let wrote = tmp.exists();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(wrote, "couldn't write /tmp: {out:?}");
+    }
+
+    /// A Plan command has no network, not even the proxy: GitHub is on the
+    /// proxy's list, and `gh pr create` or `git push` would change things
+    /// there. An Auto command reaches the proxy.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_plan_command_has_no_network() {
+        if !is_available() {
+            koda_sandbox::skip_test(format_args!("kernel sandbox not available on this host"));
+            return;
+        }
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        let dir = tempfile::tempdir().unwrap();
+        let script = format!(
+            "echo \"proxy=$HTTPS_PROXY\"; python3 -c 'import socket\n\
+socket.create_connection((\"127.0.0.1\", {port}), timeout=5)\n\
+print(\"connected\")'"
+        );
+        let run = |mode: crate::trust::TrustMode| {
+            let policy = policy_for_agent(mode, dir.path());
+            let cmd = build(&script, dir.path(), &mode, &policy, Some(port), None);
+            async move { cmd.unwrap().output().await.unwrap() }
+        };
+        let plan = run(crate::trust::TrustMode::Plan).await;
+        let stdout = String::from_utf8_lossy(&plan.stdout);
+        assert!(
+            !stdout.contains("connected"),
+            "Plan reached the proxy: {plan:?}"
+        );
+        assert!(
+            stdout.contains("proxy=\n"),
+            "Plan was given the proxy: {stdout}"
+        );
+
+        let auto = run(crate::trust::TrustMode::Auto).await;
+        assert!(
+            String::from_utf8_lossy(&auto.stdout).contains("connected"),
+            "Auto couldn't reach the proxy: {auto:?}"
+        );
     }
 
     // ── Phase 5 PR-5 of #934: trust-derived deny-rule traversal depth ──

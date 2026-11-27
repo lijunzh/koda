@@ -1076,8 +1076,8 @@ pub async fn run_cargo(
 /// Whether a sandbox denial may point at a run outside the sandbox: only
 /// where someone can approve one. A headless run or background child can't
 /// ask ([`ToolExecCtx::can_ask`]), and a sub-agent (`caller_spawner`) is always refused, as in
-/// Bash. Cargo has no sink from the dispatcher, which streams only Bash, so
-/// before `can_ask` it offered the way out in every run.
+/// Bash. Cargo had no sink from the dispatcher, so before `can_ask` it
+/// offered the way out in every run.
 fn approvable(can_ask: bool, caller_spawner: Option<u32>) -> bool {
     can_ask && caller_spawner.is_none()
 }

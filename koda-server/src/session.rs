@@ -2312,7 +2312,9 @@ impl HostSink {
         request: koda_core::network_approval::NetworkApproval,
     ) -> Result<ApprovalDecision, (RequestId, oneshot::Receiver<Answer>)> {
         if self.answers.is_some() {
-            return Ok(ApprovalDecision::Reject);
+            return Ok(ApprovalDecision::RejectAuto {
+                reason: "no one to ask about the host".into(),
+            });
         }
         let mut state = self.lock();
         // A connection no command can own is asked about only during a
@@ -2565,8 +2567,31 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
                          interactively."
                     ),
                 }
+            } else if koda_core::mcp::is_mcp_tool_name(tool_name) {
+                // An MCP tool asks only when it may reach anything, and
+                // Codex's `exec` refuses what would ask.
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "MCP tool '{tool_name}' auto-rejected: its server doesn't mark it \
+                         read-only or closed-world, so it needs a person's yes, and headless \
+                         mode has none. Do without it, or tell the operator to run \
+                         interactively."
+                    ),
+                }
+            } else if matches!(tool_name.as_str(), "Write" | "Edit") {
+                // An edit asks only for what nobody should change unwatched:
+                // Koda's settings, `.git`, agents and skills, or every edit
+                // with no sandbox. Codex's `exec` rejects what would ask.
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "'{tool_name}' auto-rejected: this edit needs a person's yes (Koda's \
+                         settings, .git, agents or skills, or a machine with no kernel \
+                         sandbox), and headless mode has none. Leave that file alone, or \
+                         tell the operator what to change."
+                    ),
+                }
             } else if !koda_core::sandbox::is_available()
-                && matches!(tool_name.as_str(), "Bash" | "Monitor" | "Write" | "Edit")
+                && matches!(tool_name.as_str(), "Bash" | "Monitor")
             {
                 // With no kernel sandbox, every command and edit asks, and
                 // nobody here can answer: running them unsandboxed and
@@ -2920,8 +2945,9 @@ mod tests {
     }
 
     /// With nobody to ask (`koda exec`), Koda answers a sub-agent as it does
-    /// the main agent: changes go ahead where the sandbox holds them, and are
-    /// refused on a machine with none; destructive actions are refused.
+    /// the main agent: commands go ahead where the sandbox holds them, and
+    /// are refused on a machine with none; an edit that asks (Koda's
+    /// settings, `.git`) and destructive actions are refused.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_nobody_to_ask_a_sub_agent_gets_the_policy_answer() {
         use koda_core::approval_flow::Approver;
@@ -2930,18 +2956,34 @@ mod tests {
         let approver = HostApprover {
             sink: Arc::downgrade(&sink),
         };
+        let mut command = agent_request(None, ToolEffect::LocalMutation);
+        command.tool_name = "Bash".into();
+        let command = approver.approve(command).await;
+        if koda_core::sandbox::is_available() {
+            assert_eq!(command, Some(ApprovalDecision::Approve));
+        } else {
+            assert!(
+                matches!(&command, Some(ApprovalDecision::RejectAuto { reason })
+                    if reason.contains("no kernel sandbox")),
+                "{command:?}"
+            );
+        }
         let write = approver
             .approve(agent_request(None, ToolEffect::LocalMutation))
             .await;
-        if koda_core::sandbox::is_available() {
-            assert_eq!(write, Some(ApprovalDecision::Approve));
-        } else {
-            assert!(
-                matches!(&write, Some(ApprovalDecision::RejectAuto { reason })
-                    if reason.contains("no kernel sandbox")),
-                "{write:?}"
-            );
-        }
+        assert!(
+            matches!(&write, Some(ApprovalDecision::RejectAuto { reason })
+                if reason.contains("needs a person's yes")),
+            "{write:?}"
+        );
+        let mut mcp = agent_request(None, ToolEffect::RemoteAction);
+        mcp.tool_name = "tracker__close".into();
+        let mcp = approver.approve(mcp).await;
+        assert!(
+            matches!(&mcp, Some(ApprovalDecision::RejectAuto { reason })
+                if reason.contains("MCP tool")),
+            "{mcp:?}"
+        );
         assert!(matches!(
             approver
                 .approve(agent_request(None, ToolEffect::Destructive))

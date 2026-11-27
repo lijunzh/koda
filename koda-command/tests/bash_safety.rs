@@ -656,3 +656,203 @@ fn test_dangerous_commands_in_every_spelling() {
         );
     }
 }
+
+// What the review on 2026-11-27 found running unasked in Auto.
+
+/// git takes any unambiguous prefix of a long option, and `=value`.
+#[test]
+fn test_git_push_deletes_prunes_and_forces_in_every_spelling() {
+    for cmd in [
+        "git push -d origin x",
+        "git push --delete origin x",
+        "git push --del origin x",
+        "git push --prune",
+        "git push --pru origin",
+        "git push --force-with-lease=main",
+        "git push --force-with-lease=main:abc123 origin main",
+        "git push --force-w",
+        "git push --forc origin main",
+        "git push --mirr backup",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+}
+
+/// `--force` and its prefixes are `-f`.
+#[test]
+fn test_git_clean_long_force() {
+    for cmd in [
+        "git clean --force -dx",
+        "git clean --forc -d",
+        "git clean -d --force",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+}
+
+#[test]
+fn test_git_reset_hard_prefix() {
+    for cmd in ["git reset --har", "git reset --ha HEAD~1"] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+}
+
+/// `$'…'` is decoded before the command is matched.
+#[test]
+fn test_ansi_c_quoted_command_word() {
+    for cmd in [
+        "$'rm' -rf build",
+        r"$'\x72m' -rf build",
+        r"$'\162m' -rf build",
+        "rm $'-rf' build",
+        "$\"rm\" -rf build",
+        "$'git' push $'--force'",
+        "bash -c $'rm -rf build'",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+    for cmd in ["$'ls' -la", "echo $'rm -rf build'", r"printf $'a\tb\n'"] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "{cmd}"
+        );
+    }
+}
+
+/// The script after `-c` is the first word after the options.
+#[test]
+fn test_shell_c_skips_options_and_double_dash() {
+    for cmd in [
+        "bash -c -- 'rm -rf build'",
+        "sh -c -- 'rm -rf build'",
+        "zsh -c -- 'rm -rf build'",
+        "bash -c -e 'rm -rf build'",
+        "bash -c -o pipefail 'rm -rf build'",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+}
+
+#[test]
+fn test_case_arms_are_classified() {
+    for cmd in [
+        "case 1 in *) rm -rf build;; esac",
+        "case $x in a) ls;; b) rm -rf build;; esac",
+        "case $x in\n  a|b) rm -rf build\n  ;;\nesac",
+        "case \"$x\" in (a) git push --force;; esac",
+        // A subshell closing on a lone command keeps that command.
+        "(cd a; reboot)",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+    for cmd in [
+        "case $x in a) ls;; *) echo no;; esac",
+        "(cd a && ls) | grep b",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "{cmd}"
+        );
+    }
+}
+
+/// `env -S` splits one string into the command it runs.
+#[test]
+fn test_env_split_string() {
+    for cmd in [
+        "env -S 'rm -rf build'",
+        "env -S'rm -rf build'",
+        "env --split-string='rm -rf build'",
+        "env --split-string 'rm -rf build'",
+        "env -i -S 'rm -rf' build",
+        "/usr/bin/env -S 'git push --force'",
+        "nohup env -S 'rm -rf build'",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+    assert_eq!(
+        classify_bash_command("env -S 'cargo test'"),
+        ToolEffect::LocalMutation
+    );
+}
+
+/// These run the command after their options, as `nohup` and `timeout`
+/// do; `doas` asks as `sudo` does.
+#[test]
+fn test_more_wrappers_are_looked_through() {
+    for cmd in [
+        "setsid rm -rf build",
+        "setsid -f rm -rf build",
+        "stdbuf -o0 rm -rf build",
+        "stdbuf -o 0 -e L rm -rf build",
+        "caffeinate rm -rf build",
+        "caffeinate -i -t 60 rm -rf build",
+        "watch rm -rf build",
+        "watch -n 1 'rm -rf build'",
+        "script -q /dev/null rm -rf x",
+        "script -c 'rm -rf x'",
+        "script -qc 'rm -rf x' out.log",
+        "busybox rm -rf x",
+        "busybox sh -c 'rm -rf x'",
+        "doas rm -rf build",
+        "doas ls",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+}
+
+/// gh's `-R/--repo` doesn't hide the subcommand.
+#[test]
+fn test_gh_repo_option_before_the_subcommand() {
+    for cmd in [
+        "gh pr -R o/r merge 12",
+        "gh pr --repo o/r merge 12",
+        "gh pr --repo=o/r merge 12",
+        "gh pr -Ro/r merge 12",
+        "gh issue -R o/r delete 3",
+        "gh -R o/r pr merge 12",
+    ] {
+        assert_eq!(classify_bash_command(cmd), ToolEffect::Destructive, "{cmd}");
+    }
+}
+
+/// What closing those gaps must leave alone.
+#[test]
+fn test_ordinary_commands_near_the_gaps_still_run() {
+    for cmd in [
+        "git push",
+        "git push origin main",
+        "git push -u origin feature",
+        "git push --dry-run origin main",
+        "git push --porcelain",
+        "git push --progress",
+        "git push --force-if-includes origin main",
+        "git push --no-force-with-lease",
+        "git clean -n",
+        "git clean --dry-run -d",
+        "git reset --soft HEAD~1",
+        "git reset --mixed",
+        "bash -c 'ls'",
+        "bash -c -- 'ls'",
+        "env FOO=1 ls",
+        "env -i PATH=/bin ls",
+        "watch ls",
+        "watch -n 2 'git status'",
+        "setsid ls",
+        "stdbuf -oL tail -f log",
+        "caffeinate -i cargo test",
+        "script -q /dev/null ls",
+        "busybox ls",
+        "gh pr view 12",
+        "gh pr -R o/r view 12",
+        "gh pr create --title merge",
+    ] {
+        assert_eq!(
+            classify_bash_command(cmd),
+            ToolEffect::LocalMutation,
+            "{cmd}"
+        );
+    }
+}

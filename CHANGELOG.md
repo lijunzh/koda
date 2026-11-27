@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - **A SOCKS5 connection (git over SSH through the proxy) was cut after 10 seconds:** the handshake deadline covered the whole tunnel.
+- **The main session's commands could write `.git`:** only sub-agents and Plan got the sandbox policy that keeps it read-only, so `git commit` ran in the sandbox and `rm -r .git` ran without asking. A session started in Plan also stayed read-only after switching to Auto, and `[sandbox] allow_local_binding` reached only sub-agents.
+- **A sub-agent's commands had the network unfiltered:** they ran without the session's proxy. They now go through it, and an unlisted host asks in the main session.
+- **A network question could name the wrong command:** only a foreground `Bash` counted as running, so a `Cargo` build's or `Monitor`'s connection was put to whatever `Bash` ran beside it, and a no stopped that one.
+- **A headless run's refused host stopped the command,** with the model told the user had denied it. The connection now just fails, as in Codex's `exec`.
 
 ### Removed
 
@@ -24,11 +28,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Changed
 
 - **Auto asks only when the sandbox can't hold a call,** as Codex's `OnRequest`: a destructive command, a command asking to leave the sandbox (`outside_sandbox`) and a file outside the project. Everything else runs in the sandbox without asking. On a machine with no sandbox, Auto asks before every command and edit, as Claude Code does with its sandbox off, where it used to refuse to start.
-- **Plan runs every command in its read-only sandbox,** as Codex's read-only mode, not only those the list called read-only. Edits, destructive commands and leaving the sandbox are still refused.
+- **Plan runs every command in its read-only sandbox, with no network,** as Codex's read-only mode, not only those the list called read-only. With the proxy's GitHub hosts open, `gh pr create` or `git push` could change a server from Plan. Edits, destructive commands and leaving the sandbox are still refused.
+- **A command writes only the project, `/tmp` and `$TMPDIR`,** Codex's writable roots. `~/.cargo`, `~/.npm`, `~/.cache` and `/var/tmp` were writable, so a command could put a program in `~/.cargo/bin` or change `~/.cargo/config.toml`. A build that has to download dependencies, or keeps its cache in the home folder (`go build`), now asks to run outside the sandbox.
+- **An MCP tool asks in Auto unless its server marks it read-only, or non-destructive and closed-world,** as Codex's `requires_mcp_tool_approval`: Koda ran every tool not marked destructive. The tool runs in its server, outside the sandbox, so the sandbox can't hold it. `koda exec` refuses one that would ask.
+- **Edit and Write ask before changing `.git`, `.koda/agents` or `.koda/skills`,** as Codex's patches ask for `.git` and `.codex`: a hook or `core.fsmonitor` written by an edit ran outside the sandbox at the next `git commit`. Headless runs refuse any edit that would ask, Koda's settings included.
 - **`.git` is read-only in the sandbox,** as in Codex's workspace-write sandbox: `git status`, `log` and `diff` run, while `git add`, `commit` and `checkout` ask to leave the sandbox. That also keeps hooks and `config`, which git runs outside the sandbox, out of a command's reach.
 - **"This session" on a request to leave the sandbox covers its prefix,** as Codex's `prefix_rule`: the model proposes one (`["git", "commit"]`), and a yes for the session covers every later `git commit` that leaves the sandbox. A prefix that would cover any program (`bash`, `python -c`, `sudo`, `git` alone; Codex's banned list) isn't offered, and a later command that would be destructive still asks.
 - **A command's paths no longer decide whether it asks,** as in Codex. Auto used to ask before any command that named a path outside the project, `cd ~ && ls` and `cat ../notes.md` included. The sandbox already keeps a command's writes in the project and temp directories, and a forced `rm` asks wherever it points, so `cd ~/other && ls` runs and `cd /tmp && rm -rf x` asks. Edit and Write outside the project are unchanged.
-- **The dangerous-command check sees through more spellings:** `/bin/rm -rf`, `git -C dir push --force`, `git -c k=v reset --hard`, `trap 'rm -rf x' EXIT` and a shell reading a script from stdin, and it adds `git push --force-with-lease`, `+refspec`, `--delete`, `:branch` and `--mirror`.
+- **The dangerous-command check sees through more spellings:** `/bin/rm -rf`, `git -C dir push --force`, `git -c k=v reset --hard`, `trap 'rm -rf x' EXIT` and a shell reading a script from stdin, and it adds `git push --force-with-lease`, `+refspec`, `--delete`, `:branch` and `--mirror`. It reads git's long options as git does, by any unambiguous prefix or with `=value` (`git push --force-w`, `git reset --har`, `git clean --force`), decodes `$'…'` quoting, and looks inside `case` arms, `bash -c --`, `env -S`, `setsid`, `stdbuf`, `caffeinate`, `busybox`, `watch` and `script`; `doas` asks as `sudo` does, and `gh -R repo` no longer hides a merge. A session prefix can't be `rm`, `yarn run`, `pythonw`, `pwsh` or the rest of Codex's banned list.
 
 ### Added
 

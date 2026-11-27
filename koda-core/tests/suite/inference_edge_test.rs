@@ -93,8 +93,11 @@ async fn esc_during_a_request_retry_wait_stops_at_once() {
     let env = Env::new().await;
     env.insert_user_message("hello").await;
 
+    // A wait the server names, so Esc lands in it: with the mock's usual
+    // `retry-after: 0` the retry raced the cancel, and on a slow runner the
+    // second request went out first.
     let provider = MockProvider::new(vec![
-        MockResponse::RateLimit,
+        MockResponse::RateLimitAfter(30),
         MockResponse::Text("never reached".into()),
     ]);
     let (_, events) = env
