@@ -13,6 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A turn Koda started on its own could hang unseen:** a goal or wake turn that started while the TUI waited for something else (Shift+Tab or `/model` at that moment, `/compact`, a prompt joining a goal turn, the return from `/review`) lost its start and its approvals. The TUI now keeps the host's messages in order and follows that turn. A background agent's request that came during those waits is shown, not dropped.
+- **Back from `/side` while the main session's turn ran, the TUI stalled 15 seconds** and warned that the host didn't report the session's settings. A change the host applies once a turn ends (Shift+Tab during the turn, `/model` as one starts) now reaches the status bar when it does.
 - **A SOCKS5 connection (git over SSH through the proxy) was cut after 10 seconds:** the handshake deadline covered the whole tunnel.
 - **The main session's commands could write `.git`:** only sub-agents and Plan got the sandbox policy that keeps it read-only, so `git commit` ran in the sandbox and `rm -r .git` ran without asking. A session started in Plan also stayed read-only after switching to Auto, and `[sandbox] allow_local_binding` reached only sub-agents.
 - **A sub-agent's commands had the network unfiltered:** they ran without the session's proxy. They now go through it, and an unlisted host asks in the main session.
