@@ -356,6 +356,12 @@ fn apply_git_config_deny(cmd: &mut Command, root: &str) {
     // both `hooks` and `config` may be absent and bwrap will fail at
     // launch with a clear "source doesn't exist" error — better than
     // silently leaving the TOCTOU window open by skipping the binds.
+    // `.git` bound onto itself first, so it can't be moved aside and
+    // replaced by one without these binds: the kernel refuses to rename a
+    // mount point (EBUSY). Its read-only children go on top.
+    if Path::new(&git_dir).is_dir() {
+        cmd.args(["--bind", &git_dir, &git_dir]);
+    }
     cmd.args(["--ro-bind", &hooks, &hooks]);
     cmd.args(["--ro-bind", &config, &config]);
 }
@@ -592,6 +598,15 @@ fn base_cmd(project_root: &Path) -> (Command, String) {
         if !shared_temp {
             let _ = std::fs::create_dir_all(&p);
         }
+    }
+    // `.koda` bound onto itself, so it can't be moved aside and replaced:
+    // the kernel refuses to rename a mount point (EBUSY).
+    let koda = format!("{root}/.koda");
+    if Path::new(&koda).is_dir() {
+        cmd.args(["--bind", &koda, &koda]);
+    }
+    for rel in PROTECTED_PROJECT_SUBDIRS {
+        let p = format!("{root}/{rel}");
         if Path::new(&p).exists() {
             cmd.args(["--ro-bind", &p, &p]);
         }

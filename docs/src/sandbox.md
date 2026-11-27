@@ -145,11 +145,20 @@ command can still connect to other Unix sockets (`ssh-agent`, Docker).
 > legitimate use inside the sandbox (the koda process runs *outside*
 > the sandbox), so full read+write deny is justified.
 
-### Agent-file protection
+### Agent-file and git protection
 
 In all modes, writes to `.koda/agents/` and `.koda/skills/` within the
 project are blocked. This prevents a sandboxed command from modifying
-agent definitions that could alter system prompts or tool access.
+agent definitions that could alter system prompts or tool access. Writes
+to `.git/hooks/` and `.git/config` are blocked too: both can name programs
+git runs outside the sandbox at the next commit.
+
+The folders above them can't be moved or replaced either, so a command
+can't rename `.git` and make a new one without the protection. On macOS the
+profile refuses to rename or remove `.git`, `.koda` and the project folder,
+as Codex's does for the folders above its read-only paths. On Linux `.git`
+and `.koda` are mounted onto themselves, and the kernel won't rename a mount
+point.
 
 ## Sub-agent inheritance
 
