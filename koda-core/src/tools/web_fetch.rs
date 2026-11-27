@@ -1478,10 +1478,13 @@ mod tests {
         .await;
 
         ct.cancel();
-        assert!(
-            result.is_err(),
-            "redirect to 169.254.169.254 must be rejected"
+        // Refused by the SSRF check, not merely unreachable: with the check
+        // gone, the request would fail to connect and still be an error.
+        let error = format!(
+            "{:#}",
+            result.expect_err("redirect to 169.254.169.254 must be rejected")
         );
+        assert!(error.contains("blocked by SSRF policy"), "{error}");
     }
 
     /// Exceeding the hop limit must be a hard error, not silently truncated.
@@ -1551,10 +1554,11 @@ mod tests {
         .await;
 
         ct.cancel();
-        assert!(
-            result.is_err(),
-            "scheme-relative redirect to loopback must be rejected"
+        let error = format!(
+            "{:#}",
+            result.expect_err("scheme-relative redirect to loopback must be rejected")
         );
+        assert!(error.contains("blocked by SSRF policy"), "{error}");
     }
 
     /// Happy path: a normal 302 chain that ends at 200 with permissive
