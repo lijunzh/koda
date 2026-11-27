@@ -792,7 +792,7 @@ pub(crate) fn init_terminal() -> Result<Term> {
     install_atexit_hook();
 
     let stdout = std::io::stdout();
-    let backend = CrosstermBackend::new(stdout);
+    let backend = crate::tui_types::Screen::Stdout(CrosstermBackend::new(stdout));
     let terminal = Terminal::with_options(
         backend,
         TerminalOptions {
@@ -822,8 +822,10 @@ pub(crate) fn restore_terminal_modes() {
 ///
 /// Convenience wrapper for the normal-shutdown path that already owns a
 /// `Terminal`. Equivalent to [`restore_terminal_modes`].
-pub(crate) fn restore_terminal(_terminal: &mut Term) {
-    restore_terminal_modes();
+pub(crate) fn restore_terminal(terminal: &mut Term) {
+    if terminal.backend().is_stdout() {
+        restore_terminal_modes();
+    }
 }
 
 /// Install a panic hook that restores the terminal before the original hook

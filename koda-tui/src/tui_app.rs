@@ -73,6 +73,7 @@ pub async fn run(
         version_check,
         first_run,
         backend,
+        crate::tui_types::TuiIo::Terminal,
     )
     .await?;
     if let Some(on_session) = on_session {
