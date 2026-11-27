@@ -443,7 +443,11 @@ npm start                 # build into out/ and open the app
   page change the model and effort and lower the mode to Plan; Auto is a
   main-process action (`setMode` in `src/main/sessions.ts`) after a system
   confirmation. A model picked here is the session's; it isn't saved to
-  `config.toml`.
+  `config.toml`. The bar also forks the session (`session/fork` with its id
+  alone: same folder and settings), sets, pauses, resumes and clears its
+  goal (`session/goal/*`), and lists what runs in the background
+  (`session/backgroundTerminals/list`, read again as items and turns end)
+  with Stop for each.
 - **Packaging** (`npm run package`, Apple Silicon only): `Koda.app` with
   the matching `koda` in `Contents/Resources/bin` (the app uses it first,
   so the app and the server it starts are one version), Electron's fuses

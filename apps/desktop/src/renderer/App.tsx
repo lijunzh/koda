@@ -123,6 +123,9 @@ export function App() {
       if (selectedId.current !== id) return;
       setSelected({ id, session });
       setControls(controlsFor(id, session.settings));
+      void call('session/goal/get', { sessionId: id }).then((answer) => {
+        if (selectedId.current === id && answer.goal) setControls((c) => (c && c.sessionId === id ? { ...c, goal: answer.goal ?? null } : c));
+      }, () => {});
       // The snapshot, then what came while it was on its way: the server
       // answers at one point in the session's stream, so nothing repeats.
       setTranscript(withEvents(fromSession(session), early.current));
@@ -175,6 +178,7 @@ export function App() {
           requests={selected ? forSession([...pending], selected.id) : []}
           controls={controls}
           planShown={planShown}
+          onOpen={(session) => open(session.id, session)}
           onAnswer={async (id, result) => {
             await window.koda.respond(id, result);
             setPending((state) => without(state, id));

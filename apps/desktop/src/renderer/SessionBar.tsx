@@ -5,8 +5,18 @@ import { useEffect, useState } from 'react';
 import type { Model } from '../protocol/types.gen';
 import { call } from './bridge';
 import type { ControlsState } from './controls';
+import { Background, GoalLine } from './SessionExtras';
 
-export function SessionBar({ sessionId, controls }: { sessionId: string; controls: ControlsState }) {
+export function SessionBar({
+  sessionId,
+  controls,
+  onForked,
+}: {
+  sessionId: string;
+  controls: ControlsState;
+  /** Open the fork once the server has made it. */
+  onForked(session: import('../protocol/types.gen').Session): void;
+}) {
   const settings = controls.settings;
   const [models, setModels] = useState<Model[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +100,22 @@ export function SessionBar({ sessionId, controls }: { sessionId: string; control
       >
         Compact
       </button>
+      <button
+        title="A copy of this conversation to go on in, leaving this one as it is"
+        onClick={() =>
+          void call('session/fork', { sessionId }).then(
+            (answer) => onForked(answer.session),
+            (e: Error) => setError(e.message),
+          )
+        }
+      >
+        Fork
+      </button>
+      <Background sessionId={sessionId} />
       {error && <span className="problem">{error}</span>}
+      <div className="goal-row">
+        <GoalLine sessionId={sessionId} goal={controls.goal} />
+      </div>
     </div>
   );
 }

@@ -34,7 +34,7 @@ describe('relay', () => {
 
   it('refuses what later steps add with their checks', () => {
     // Each needs a check of its parameters first (a folder, a mode, a config).
-    for (const method of ['session/start', 'session/fork']) {
+    for (const method of ['session/start']) {
       expect(refusal(method, {}), method).not.toBeNull();
     }
   });

@@ -1,7 +1,7 @@
 // What the header and the plan panel show for the open session: its
 // settings (model, effort, mode), how full its context is, and the model's
 // plan, kept current from the server's notifications.
-import type { PlanStep, SessionSettings, TokenUsage } from '../protocol/types.gen';
+import type { Goal, PlanStep, SessionSettings, TokenUsage } from '../protocol/types.gen';
 import type { RpcMessage } from './bridge';
 
 export interface ControlsState {
@@ -11,10 +11,12 @@ export interface ControlsState {
   contextLeft: number | null;
   /** The plan of the running turn; gone when the turn ends, as the TUI's panel. */
   plan: PlanStep[];
+  /** The session's goal, if it has one. */
+  goal: Goal | null;
 }
 
 export function controlsFor(sessionId: string, settings: SessionSettings | null | undefined): ControlsState {
-  return { sessionId, settings: settings ?? null, contextLeft: null, plan: [] };
+  return { sessionId, settings: settings ?? null, contextLeft: null, plan: [], goal: null };
 }
 
 /** Tokens always in the context (system prompt, tools), which Codex leaves out of both sides. */
@@ -50,6 +52,12 @@ export function withControls(state: ControlsState, batch: readonly RpcMessage[])
         break;
       case 'turn/completed':
         if ((next ?? state).plan.length) edit().plan = [];
+        break;
+      case 'session/goal/updated':
+        edit().goal = p.goal as Goal;
+        break;
+      case 'session/goal/cleared':
+        edit().goal = null;
         break;
     }
   }

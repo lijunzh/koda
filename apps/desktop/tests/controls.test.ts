@@ -33,6 +33,21 @@ describe('controls', () => {
     expect(withControls(state, [other])).toBe(state);
   });
 
+  it('follows the goal as it is set, changed and cleared', () => {
+    let state = controlsFor('s1', null);
+    const goal = { sessionId: 's1', objective: 'Ship it', status: 'active', tokensUsed: 10, timeUsedSeconds: 3, createdAt: 1, updatedAt: 2 };
+    state = withControls(state, [note('session/goal/updated', { goal })]);
+    expect(state.goal).toEqual(goal);
+    state = withControls(state, [note('session/goal/cleared', {})]);
+    expect(state.goal).toBeNull();
+  });
+
+  it('forks a session by its id alone: the copy keeps its folder and settings', () => {
+    expect(refusal('session/fork', { sessionId: 's' })).toBeNull();
+    expect(refusal('session/fork', { sessionId: 's', cwd: '/' })).toMatch(/cwd/);
+    expect(refusal('session/fork', { sessionId: 's', config: {} })).toMatch(/config/);
+  });
+
   it("lets the page change model and effort, and lower the mode, but not raise it", () => {
     expect(refusal('session/settings/update', { sessionId: 's', model: 'claude-opus', effort: 'high' })).toBeNull();
     expect(refusal('session/settings/update', { sessionId: 's', mode: 'plan' })).toBeNull();

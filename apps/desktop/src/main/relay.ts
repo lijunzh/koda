@@ -77,6 +77,14 @@ CHECKED['session/settings/update'] = (params) => {
   return null;
 };
 
+// A fork is a copy in the same folder with the same settings: the page names
+// the session, and nothing else.
+CHECKED['session/fork'] = (params) => {
+  const extra = Object.keys(params).filter((key) => key !== 'sessionId');
+  if (extra.length) return `session/fork takes only sessionId from the page, not ${extra.join(', ')}`;
+  return typeof params.sessionId === 'string' ? null : 'session/fork needs a sessionId';
+};
+
 CHECKED['turn/start'] = (params) =>
   // No `mode`: a turn can't raise its own trust; nor an `outputSchema`.
   promptRefusal('turn/start', params, ['sessionId', 'input', 'clientUserMessageId']);

@@ -24,10 +24,12 @@ interface Props {
   onAnswer(id: number | string, result: unknown): Promise<void>;
   controls: ControlsState | null;
   planShown: boolean;
+  /** Open a session the server just made (a fork). */
+  onOpen(session: import('../protocol/types.gen').Session): void;
 }
 
 /** The open session: its conversation, and the prompt box. */
-export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, planShown }: Props) {
+export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, planShown, onOpen }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   if (!selected) {
     return (
@@ -91,7 +93,7 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
           Delete
         </button>
       </header>
-      {controls && <SessionBar sessionId={selected.id} controls={controls} />}
+      {controls && <SessionBar sessionId={selected.id} controls={controls} onForked={onOpen} />}
       {selected.error && <p className="problem">{selected.error}</p>}
       {!session && !selected.error && <p className="detail">Opening…</p>}
       {transcript && <Conversation transcript={transcript} view={view} />}
