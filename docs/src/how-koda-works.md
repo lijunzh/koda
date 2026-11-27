@@ -96,6 +96,10 @@ MCP servers, applies the rules for each trust mode, and drives the engine
 that runs the loop above. So a run behaves the same however you start it, and
 another program can drive Koda through [`koda serve --stdio`](./serve.md).
 
+The TUI's host is usually not in its own window: it is the
+[background server](./background-server.md), one `koda serve` per user that
+every `koda` window joins, so a session goes on when its window closes.
+
 ## Where things are
 
 | What | Where |

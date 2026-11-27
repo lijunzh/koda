@@ -4512,7 +4512,7 @@
     },
     "SessionUnsubscribeParams": {
       "additionalProperties": false,
-      "description": "`session/unsubscribe`: the client is done with a session. Its running\nturn, if any, stops, and the session is closed; `session/resume` with its\nid opens it again. Codex's `thread/unsubscribe`.",
+      "description": "`session/unsubscribe`: the client is done with a session, as Codex's\n`thread/unsubscribe`. On the shared server (`koda serve`) only this\nclient stops hearing it: a running turn goes on, and the session closes\nafter a minute with no client and no turn. On a host of one client\n(`koda serve --stdio`, in-process) it is the last client, so the session\ncloses now and its running turn stops. `session/resume` with its id opens\nit again.",
       "properties": {
         "sessionId": {
           "description": "The session.",

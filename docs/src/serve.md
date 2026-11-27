@@ -468,6 +468,9 @@ and server changing together.
 
 ## The TUI on the shared server
 
+How to think about the server, and the commands to manage it, are in
+[The background server](./background-server.md); this section is the detail.
+
 `koda` works on the shared server, as Codex's TUI works on its daemon: it
 connects to `~/.config/koda/serve/koda.sock`, and when nothing answers it
 starts `koda serve` in the background, which stops once it has had no client

@@ -27,6 +27,7 @@
 # Managing sessions
 
 - [Session management](./sessions.md)
+- [The background server](./background-server.md)
 - [Context management](./context.md)
 - [Memory](./memory.md)
 
