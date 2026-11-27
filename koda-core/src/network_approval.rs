@@ -312,7 +312,7 @@ mod tests {
 
     const HTTPS: NetworkProtocol = NetworkProtocol::Https;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_yes_lets_one_connection_through_and_the_next_asks_again() {
         let (approvals, answers) = approvals(ApprovalDecision::Approve);
         let _call = approvals.register("call_1", "curl https://example.com");
@@ -327,7 +327,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connections_waiting_on_a_question_share_its_answer() {
         let approvals = Arc::new(NetworkApprovals::default());
         let answers = Arc::new(Answers {
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(answers.asked.lock().unwrap().len(), 1, "one question");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_yes_for_the_session_covers_that_host_protocol_and_port() {
         let (approvals, answers) = approvals(ApprovalDecision::ApproveForSession);
         {
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(answers.asked.lock().unwrap().len(), 3, "and another port");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_no_refuses_and_stops_the_command() {
         let (approvals, _) = approvals(ApprovalDecision::Reject);
         let call = approvals.register("call_1", "curl https://example.com");
@@ -379,7 +379,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_no_command_running_the_question_names_none() {
         let (approvals, answers) = approvals(ApprovalDecision::Approve);
         assert!(approvals.allow("example.com", 443, HTTPS).await);
@@ -388,7 +388,7 @@ mod tests {
         assert!(asked[0].tool_call_id.is_none() && asked[0].command.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_two_commands_running_nothing_is_asked() {
         let (approvals, answers) = approvals(ApprovalDecision::Approve);
         let _a = approvals.register("call_1", "curl a");
@@ -410,7 +410,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_question_ends_with_its_command() {
         let approvals = Arc::new(NetworkApprovals::default());
         approvals.set_approver(Arc::new(Silent));
@@ -428,7 +428,7 @@ mod tests {
         assert!(!allowed);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_nobody_to_ask_a_host_is_refused() {
         let approvals = Arc::new(NetworkApprovals::default());
         let _call = approvals.register("call_1", "curl https://example.com");
