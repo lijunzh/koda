@@ -414,8 +414,12 @@ pub(crate) async fn execute_one_tool(
             sub_agent_cache.invalidate();
         }
         // `Bash` streams its output; `WebSearch` and `WebFetch` report what
-        // their model requests used.
-        let streaming = if matches!(tc.function_name.as_str(), "Bash" | "WebSearch" | "WebFetch") {
+        // their model requests used; `TodoWrite` sends the plan. A call run
+        // early, while the reply streams (Anthropic's), always gets the sink.
+        let streaming = if matches!(
+            tc.function_name.as_str(),
+            "Bash" | "WebSearch" | "WebFetch" | "TodoWrite"
+        ) {
             Some((sink, tc.id.as_str()))
         } else {
             None

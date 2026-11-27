@@ -4558,7 +4558,6 @@ async fn an_approval_answered_twice_counts_once() {
 /// a dropped event, a lost step, a wrong status mapping or a missing turn
 /// id each fail here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "bug: a TodoWrite run after the stream (not eagerly) gets no sink, so no turn/plan/updated"]
 async fn a_todo_write_is_sent_as_the_turns_plan() {
     let todos = |read: &str, write: &str| {
         json!({"todos": [
