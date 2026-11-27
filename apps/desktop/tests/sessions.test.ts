@@ -63,6 +63,19 @@ describe('session list', () => {
     expect([...state.byId.keys()]).toEqual(['a']);
   });
 
+  it("names a session by its first prompt until the server names it", () => {
+    let state = withPage(EMPTY, { data: [session('a')] }, true);
+    const turn = { id: 't', status: 'inProgress', items: [{ type: 'userMessage', id: 'u', content: [{ type: 'text', text: 'Fix the parser' }] }] };
+    state = withMessages(state, [note('turn/started', { sessionId: 'a', turn })]);
+    expect(title(state.byId.get('a')!)).toBe('Fix the parser');
+    // Or from the prompt's own item, when the turn's start doesn't carry it.
+    let other = withPage(EMPTY, { data: [session('b')] }, true);
+    other = withMessages(other, [note('item/started', { sessionId: 'b', turnId: 't', item: turn.items[0] })]);
+    expect(title(other.byId.get('b')!)).toBe('Fix the parser');
+    state = withMessages(state, [note('session/name/updated', { sessionId: 'a', sessionName: 'Parser fix' })]);
+    expect(title(state.byId.get('a')!)).toBe('Parser fix');
+  });
+
   it('leaves the state alone for other messages', () => {
     const state = withPage(EMPTY, { data: [session('a')] }, true);
     expect(withMessages(state, [note('turn/started', {}), note('session/deleted', { sessionId: 'zz' })])).toBe(state);

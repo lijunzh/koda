@@ -74,6 +74,15 @@ export function withMessages(state: SessionsState, batch: readonly RpcMessage[],
       case 'session/deleted':
         if ((byId ?? state.byId).has(params?.sessionId as string)) edit().delete(params?.sessionId as string);
         break;
+      case 'turn/started':
+      case 'item/started': {
+        // A session's first prompt is its name in the list until it has one.
+        const current = (byId ?? state.byId).get(params?.sessionId as string);
+        const turn = message.method === 'turn/started' ? params?.turn : { items: [params?.item] };
+        const prompt = current && !current.preview ? firstPrompt(turn) : '';
+        if (current && prompt) edit().set(current.id, { ...current, preview: prompt });
+        break;
+      }
       case 'session/status/changed': {
         const current = (byId ?? state.byId).get(params?.sessionId as string);
         // A change of status is activity: it moves the session up.
@@ -120,4 +129,11 @@ export function title(session: { name?: string | null; preview?: string }): stri
 export function folderName(folder: string | null): string {
   if (!folder) return 'No folder';
   return folder.split('/').filter(Boolean).pop() ?? folder;
+}
+
+/** The text of a turn's first user message, if it has one. */
+function firstPrompt(turn: unknown): string {
+  const items = (turn as { items?: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> } | undefined)?.items;
+  const message = items?.find((item) => item.type === 'userMessage');
+  return message?.content?.find((part) => part.type === 'text')?.text?.trim() ?? '';
 }
