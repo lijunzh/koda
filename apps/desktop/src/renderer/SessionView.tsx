@@ -30,15 +30,22 @@ interface Props {
   planShown: boolean;
   /** Open a session the server just made (a fork). */
   onOpen(session: import('../protocol/types.gen').Session): void;
+  /** Close the pane, when there are others. */
+  onClose?(): void;
 }
 
 /** The open session: its conversation, and the prompt box. */
-export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, diffs, planShown, onOpen }: Props) {
+export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, diffs, planShown, onOpen, onClose }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   if (!selected) {
     return (
       <main className="session-view empty-view">
+        {onClose && (
+          <button className="close-pane" aria-label="Close pane" onClick={onClose}>
+            ✕
+          </button>
+        )}
         <p>Open a session from the list, or start a new one.</p>
       </main>
     );
@@ -100,6 +107,11 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
         <button className="delete" onClick={() => void window.koda.deleteSession(selected.id)}>
           Delete
         </button>
+        {onClose && (
+          <button className="close-pane" aria-label="Close pane" onClick={onClose}>
+            ✕
+          </button>
+        )}
       </header>
       {controls && <SessionBar sessionId={selected.id} controls={controls} onForked={onOpen} />}
       {selected.error && <p className="problem">{selected.error}</p>}

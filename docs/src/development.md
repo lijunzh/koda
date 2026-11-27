@@ -448,6 +448,21 @@ npm start                 # build into out/ and open the app
   goal (`session/goal/*`), and lists what runs in the background
   (`session/backgroundTerminals/list`, read again as items and turns end)
   with Stop for each.
+- **Changes** (`src/renderer/diffs.ts`, `ReviewPanel.tsx`): a panel beside
+  the conversation with a turn's edits, file by file and numbered: the
+  latest `turn/diff/updated` of a turn while the window had the session
+  open, else the turn's finished Edit and Write calls' `changes` (which
+  have no file lines; the app adds them). A comment on a line is sent with
+  the others as one text message (`turn/steer` while a turn runs, else
+  `turn/start`), quoting each line with its path and number. Commands' and
+  sub-agents' changes aren't there, as the protocol says of the turn diff.
+- **Panes** (`src/renderer/Pane.tsx`): each open session is a pane with its
+  own transcript, controls and diffs, joined with `session/resume` when the
+  pane opens and left with `session/unsubscribe` when it closes or shows
+  another session. `App.tsx` holds the panes (up to four), the session
+  list and the waiting requests, and hands each batch of events to every
+  pane; each state function keeps only its session's events. A session
+  is in one pane at most.
 - **Packaging** (`npm run package`, Apple Silicon only): `Koda.app` with
   the matching `koda` in `Contents/Resources/bin` (the app uses it first,
   so the app and the server it starts are one version), Electron's fuses
