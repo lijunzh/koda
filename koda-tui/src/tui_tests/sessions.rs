@@ -307,8 +307,8 @@ async fn review_lists_findings_and_the_next_prompt_carries_them() {
 }
 
 /// Ctrl+C back from a side conversation while the main session's turn runs:
-/// the TUI follows that turn at once. It waited out the settings report,
-/// which the host sends only once the turn has ended, then warned.
+/// the TUI follows that turn at once, without waiting for a settings
+/// report, which the host sends only once the turn has ended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn ctrl_c_back_to_a_running_turn_follows_it_at_once() {
@@ -339,11 +339,6 @@ async fn ctrl_c_back_to_a_running_turn_follows_it_at_once() {
 
         driver.key(ctrl('c'));
         driver.wait_for_screen("Back in the main session").await;
-        let screen = driver.screen();
-        assert!(
-            !screen.contains("didn't report the session's settings"),
-            "{screen}"
-        );
         driver.wait_for_screen(BUSY_PROMPT).await;
         go(&driver);
         driver.wait_for_screen("Main done.").await;

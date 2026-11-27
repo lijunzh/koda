@@ -2231,6 +2231,48 @@ async fn the_tui_works_on_the_shared_server() {
     assert!(tui.exits());
 }
 
+/// `koda resume` of a session whose turn runs on the shared server, in
+/// another window, as a goal's does: the TUI opens it at once, from what
+/// the resume answer says the session runs with, and follows that turn. It
+/// waited for a settings report the host sends only once the turn has
+/// ended, and gave up after 15 s without starting. Only the shared server
+/// can have a session's turn running when a TUI opens it.
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_session_with_a_running_turn_follows_it() {
+    // A turn that runs until the test lets it end.
+    let wait = (
+        "Bash",
+        json!({"command": "while [ ! -e go ]; do sleep 0.05; done"}),
+    );
+    let server = scripted_model(vec![tool_calls(&[wait])]).await;
+    let home = home();
+    let _stop = StopServer(home.path());
+
+    let mut first = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
+    first.submit("keep going");
+    wait_for_model_call(&server, 1).await;
+    first.wait_for_screen(BUSY_PROMPT);
+
+    let second = Tui::start_shared(
+        home.path(),
+        &server.url(),
+        &["resume", "--last"],
+        "session resumed",
+    );
+    second.wait_for_screen(BUSY_PROMPT);
+    std::fs::write(home.path().join("go"), "").unwrap();
+    for tui in [&first, &second] {
+        tui.wait_for_screen_that(
+            |screen| screen.contains("All done.") && !screen.contains(BUSY_PROMPT),
+            "finish the turn",
+        );
+    }
+    for mut tui in [first, second] {
+        tui.type_text("/exit\r");
+        assert!(tui.exits());
+    }
+}
+
 /// How a fake server of another version answers `serve/stop`.
 #[derive(Clone, Copy, PartialEq)]
 enum OldServer {

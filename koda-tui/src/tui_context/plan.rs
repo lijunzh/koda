@@ -14,10 +14,7 @@ impl TuiContext {
     /// Codex's `/plan` takes one.
     pub(crate) async fn enter_plan(&mut self, prompt: &str) -> CommandOutcome {
         if self.mode != TrustMode::Plan {
-            let was = self.mode;
-            self.mode = TrustMode::Plan;
-            if let Err(e) = self.sync_settings(true).await {
-                self.mode = was;
+            if let Err(e) = self.set_mode(TrustMode::Plan).await {
                 crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}"));
                 return CommandOutcome::Handled;
             }
@@ -50,10 +47,7 @@ impl TuiContext {
     /// Leave Plan for `mode` and tell the model to implement the plan, as
     /// Codex's "Yes, implement this plan" does.
     pub(crate) async fn implement_plan(&mut self, mode: TrustMode) {
-        let was = self.mode;
-        self.mode = mode;
-        if let Err(e) = self.sync_settings(true).await {
-            self.mode = was;
+        if let Err(e) = self.set_mode(mode).await {
             crate::tui_output::err_msg(&mut self.scroll_buffer, format!("{e:#}"));
             return;
         }

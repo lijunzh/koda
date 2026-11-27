@@ -347,9 +347,7 @@ impl TuiContext {
             ),
             Line::default(),
         ]);
-        if let Err(e) = self.sync_settings(true).await {
-            tui_output::warn_msg(&mut self.scroll_buffer, format!("{e:#}"));
-        }
+        self.opened(started.settings.clone()).await;
         self.prepare_inference_start(&target.prompt()).await
     }
 

@@ -143,11 +143,9 @@ pub(crate) struct TuiContext {
     /// The host's messages a wait set aside, oldest first: every reader
     /// takes these before the client's next ([`host_messages`]).
     pub(crate) held: std::collections::VecDeque<koda_client::events::Outgoing>,
-    /// Sessions with a `session/settings/updated` still to come for a
-    /// change nothing waited on: one sent during a turn, which the host
-    /// applies once it ends. The next report is that one, not the answer
-    /// to a later change.
-    pub(crate) settings_due: std::collections::HashSet<String>,
+    /// A turn running in the session when the TUI opened it, on the
+    /// shared server: followed before anything else.
+    pub(crate) follow_first: Option<String>,
     /// The completer's model names are for settings since replaced.
     pub(crate) model_names_stale: bool,
     /// The session open on the host. When a command has switched
@@ -236,7 +234,7 @@ pub(crate) async fn open_host_session(
 ) -> Result<(
     TuiSession,
     Vec<koda_client::protocol::turn::Turn>,
-    Option<koda_client::protocol::state::TrustMode>,
+    Option<Box<koda_client::protocol::session::SessionSettings>>,
 )> {
     use koda_client::protocol::methods;
     use koda_client::protocol::session::{SessionResumeParams, SessionStartParams};
@@ -274,7 +272,7 @@ pub(crate) async fn open_host_session(
             instruction_sources,
         },
         session.turns,
-        session.mode,
+        session.settings,
     ))
 }
 
@@ -308,7 +306,7 @@ pub(crate) async fn fork_host_session(
 ) -> Result<(
     TuiSession,
     Vec<koda_client::protocol::turn::Turn>,
-    Option<koda_client::protocol::state::TrustMode>,
+    Option<Box<koda_client::protocol::session::SessionSettings>>,
 )> {
     use koda_client::protocol::{methods, session::SessionForkParams};
     let forked = client
@@ -332,7 +330,7 @@ pub(crate) async fn fork_host_session(
             instruction_sources,
         },
         forked.session.turns,
-        forked.session.mode,
+        forked.session.settings,
     ))
 }
 
@@ -495,16 +493,24 @@ impl TuiContext {
             None => None,
         };
         // `koda fork` opens a copy of it instead.
-        let (session, earlier_turns, opened_mode) = match resume {
+        let (session, earlier_turns, session_settings) = match resume {
             Some(source) if fork => fork_host_session(&client, &source, &named).await?,
             resume => open_host_session(&client, resume, &named).await?,
         };
+        // What the session runs with, which the host decided: the saved
+        // choice, a resumed session's own, or the flags, with the mode after
+        // the host's rule (Auto needs the sandbox). The TUI mirrors it; a
+        // turn running there changes nothing about it.
+        let session_settings = *session_settings
+            .ok_or_else(|| anyhow::anyhow!("Koda's host didn't say what the session runs with"))?;
+        // On the shared server, a turn may be running in it: followed first.
+        let follow_first = earlier_turns
+            .last()
+            .filter(|turn| turn.status == koda_client::protocol::turn::TurnStatus::InProgress)
+            .map(|turn| turn.id.clone());
         let skills = skills::user_skills(&client.request_handle(), &project_root).await;
 
-        // The mode the host opened it in: a resumed session's own, or the
-        // flags' or the config's, after the host's rule: Auto needs the
-        // sandbox.
-        let initial_mode = opened_mode.unwrap_or(TrustMode::Auto);
+        let initial_mode = session_settings.mode;
         let sandbox = client
             .request::<koda_client::protocol::methods::StateRead>(
                 koda_client::protocol::state::StateReadParams {},
@@ -513,12 +519,23 @@ impl TuiContext {
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .sandbox;
 
-        // What the session runs with, which the host decided: the saved
-        // choice, a resumed session's own, or the flags. The TUI mirrors it.
-        // What the host sends meanwhile is kept for the idle loop.
+        // The host's warnings so far (an assumed context window, the
+        // config's) go in the banner; the rest of what it has sent is the
+        // idle loop's, and so is what comes later.
         let mut held = std::collections::VecDeque::new();
-        let (session_settings, host_warnings) =
-            settings::fetch_settings(&mut client, &mut held, &session.id, initial_mode).await?;
+        let mut host_warnings = Vec::new();
+        while let Some(message) = client.try_next_event() {
+            use koda_client::protocol::ServerNotification;
+            match message {
+                koda_client::events::Outgoing::Notification(ServerNotification::Warning(w)) => {
+                    host_warnings.push(w.message);
+                }
+                koda_client::events::Outgoing::Notification(ServerNotification::ConfigWarning(
+                    w,
+                )) => host_warnings.push(w.summary),
+                other => held.push_back(other),
+            }
+        }
         // Flags are for this run only, as Codex's are: only `/model` and
         // `/provider` save a choice into config.toml.
 
@@ -662,7 +679,7 @@ impl TuiContext {
             session,
             client,
             held,
-            settings_due: Default::default(),
+            follow_first,
             model_names_stale: false,
             mode: initial_mode,
             sandbox,
@@ -825,6 +842,20 @@ impl TuiContext {
                 self.refresh_model_names().await;
             }
             self.refresh_background(false).await;
+
+            // ── A turn running in the session when the TUI opened it ──
+            if let Some(turn_id) = self.follow_first.take() {
+                self.run_inference_turn(
+                    TurnRequest::Watch {
+                        turn_id,
+                        waiting: Vec::new(),
+                    },
+                    cmd_tx,
+                    cmd_rx,
+                )
+                .await?;
+                continue;
+            }
 
             // ── The side conversation: back from it, or into it ──
             if std::mem::take(&mut self.leave_side_requested)
