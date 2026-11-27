@@ -89,11 +89,16 @@ mod db_perf {
 
 mod path_perf {
     use super::*;
-    use std::path::PathBuf;
 
+    /// Each resolution follows links to check Koda's denied folder, so it
+    /// costs a few file system calls: about 18 µs on a Mac Studio. A real
+    /// folder, since a made-up one under `/home` goes through macOS's autofs.
     #[test]
-    fn test_path_resolution_10k_calls_under_1s() {
-        let root = PathBuf::from("/home/user/project");
+    fn test_path_resolution_8k_calls_under_1s() {
+        let project = TempDir::new().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src/tools")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "").unwrap();
         let paths = [
             "src/main.rs",
             "src/tools/mod.rs",
@@ -106,7 +111,7 @@ mod path_perf {
         ];
 
         let start = Instant::now();
-        for _ in 0..10_000 {
+        for _ in 0..1_000 {
             for path in &paths {
                 let _ = koda_core::tools::safe_resolve_path(&root, path);
             }
@@ -115,7 +120,7 @@ mod path_perf {
 
         assert!(
             elapsed.as_millis() < 1000,
-            "80K path resolutions took {}ms (should be <1000ms)",
+            "8K path resolutions took {}ms (should be <1000ms)",
             elapsed.as_millis()
         );
     }

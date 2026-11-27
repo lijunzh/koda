@@ -28,9 +28,55 @@ use std::path::Path;
 /// `USERPROFILE` (Windows), and finally falls back to a path-component
 /// pattern match so any path containing `.config/koda/db` consecutively
 /// still gets denied even with no home directory at all.
+///
+/// **Links are followed.** The path is checked as given and with its links
+/// resolved, and each config folder as given and resolved, so neither a link
+/// into the folder (`ln -s ~/.config/koda/db secrets`, then `secrets/koda.db`)
+/// nor a `~/.config` that is itself a link gets past it.
 pub fn is_fully_denied(path: &Path) -> bool {
-    is_fully_denied_with_home(path, resolve_home_dir().as_deref())
-        || crate::defaults::xdg_config_home().is_some_and(|xdg| denied_in(path, &xdg))
+    let home = resolve_home_dir();
+    let xdg = crate::defaults::xdg_config_home();
+    is_fully_denied_in(path, home.as_deref(), xdg.as_deref())
+}
+
+/// [`is_fully_denied`] with the home and `XDG_CONFIG_HOME` given.
+fn is_fully_denied_in(path: &Path, home: Option<&str>, xdg: Option<&Path>) -> bool {
+    let resolved = resolve_links(path);
+    let configs: Vec<std::path::PathBuf> = home
+        .map(|home| Path::new(home).join(".config"))
+        .into_iter()
+        .chain(xdg.map(Path::to_path_buf))
+        .collect();
+    std::iter::once(path)
+        .chain(resolved.as_deref())
+        .any(|path| {
+            is_fully_denied_with_home(path, home)
+                || configs.iter().any(|config| {
+                    denied_in(path, config)
+                        || config
+                            .canonicalize()
+                            .is_ok_and(|real| denied_in(path, &real))
+                })
+        })
+}
+
+/// `path` with its links resolved: the whole path when it exists, else its
+/// nearest existing folder resolved with the rest added. `None` when nothing
+/// of it exists or it resolves to itself.
+fn resolve_links(path: &Path) -> Option<std::path::PathBuf> {
+    let mut rest = Vec::new();
+    let mut existing = path;
+    let resolved = loop {
+        match existing.canonicalize() {
+            Ok(real) => break real,
+            Err(_) => {
+                rest.push(existing.file_name()?);
+                existing = existing.parent()?;
+            }
+        }
+    };
+    let resolved = rest.iter().rev().fold(resolved, |p, part| p.join(part));
+    (resolved != path).then_some(resolved)
 }
 
 /// Whether `path` is in Koda's own folder ([`crate::defaults::KODA_CONFIG_SUBDIR`]),
@@ -268,6 +314,58 @@ mod tests {
         assert!(!is_fully_denied_with_home(
             Path::new("/srv/koda-runner/notes.md"),
             Some(custom_home),
+        ));
+    }
+
+    /// A link into Koda's folder, from the project or anywhere, is followed:
+    /// the database behind it is denied, for a file and for the folder.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_into_the_denied_folder_is_denied() {
+        let home = tempfile::tempdir().unwrap();
+        let db = home.path().join(".config/koda/db");
+        std::fs::create_dir_all(&db).unwrap();
+        std::fs::write(db.join("koda.db"), "keys").unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(&db, project.path().join("secrets")).unwrap();
+        std::os::unix::fs::symlink(db.join("koda.db"), project.path().join("data.db")).unwrap();
+        let home = home.path().to_str();
+
+        for linked in [
+            "secrets/koda.db",
+            "secrets",
+            "data.db",
+            "secrets/not-yet-made",
+        ] {
+            assert!(
+                is_fully_denied_in(&project.path().join(linked), home, None),
+                "{linked} reaches the database"
+            );
+        }
+        std::fs::write(project.path().join("notes.md"), "").unwrap();
+        assert!(!is_fully_denied_in(
+            &project.path().join("notes.md"),
+            home,
+            None
+        ));
+    }
+
+    /// A `~/.config` that is itself a link, as dotfile setups make it: the
+    /// database is denied by its real path too.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_folder_is_followed() {
+        let dotfiles = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dotfiles.path().join("config/koda/db")).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dotfiles.path().join("config"), home.path().join(".config"))
+            .unwrap();
+        let real = dotfiles.path().join("config/koda/db/koda.db");
+        assert!(is_fully_denied_in(&real, home.path().to_str(), None));
+        assert!(!is_fully_denied_in(
+            &dotfiles.path().join("config/other.toml"),
+            home.path().to_str(),
+            None
         ));
     }
 
