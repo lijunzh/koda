@@ -256,3 +256,28 @@ can't select a mock provider.
   `history_edit_log_test.rs`, `context_count_test.rs`,
   `headless_interrupt_test.rs`, `stop_reason_log_test.rs`, and
   `exec_protocol_test.rs` for what `koda exec --json` prints.
+
+### What a test is for
+
+A test checks something Koda does, at the lowest layer that can show it.
+These rules come from Codex's and Hermes's, and from the 2026-11 suite review,
+which removed about 80 tests that broke them.
+
+- **Not other code:** no tests of `std`, a crate, the mock, or a function
+  written inside the test. No tests of static values (a list checked against
+  itself, a constant's length), and none that removed logic stays removed.
+- **One table per rule,** not one test per literal: a loop over
+  `(input, expected)` pairs with the input in the message.
+- **Assert the reason, not only the outcome.** An SSRF test that asserts only
+  `is_err()` also passes when nothing listens there; check the error says why.
+- **A fix's test fails without the fix.** Run it on the old code before you
+  commit it.
+- **The lowest layer that shows it.** Engine behaviour in `koda-core`, protocol
+  in `koda-server`/`koda-client`, rendering and keys in `koda-tui`. A PTY test
+  is for what only the running TUI shows (a key or slash command reaching the
+  host, terminal modes, signals); its doc comment says which.
+- **No fixed sleeps:** wait for the condition (a readiness signal, polling with
+  a deadline). No process-wide environment changes: run the test binary again
+  with its own environment, as `koda-sandbox/tests/env_scrub.rs` does.
+- **A sandbox test that can't run** calls `koda_sandbox::skip_test(why)`, never
+  a bare `return`: it fails on CI, where `KODA_REQUIRE_SANDBOX` is set.
