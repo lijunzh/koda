@@ -197,18 +197,11 @@ fn only_those_names_dispatch() {
 
 // ── Search through the shell, end to end ─────────────────────────────
 
-use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::network::FakeLlmServer;
+use koda_test_utils::openai::sse;
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
-}
 
 /// One headless turn in `project` whose model runs `command` through Bash
 /// once. `config` is written to config.toml first. Returns the chat

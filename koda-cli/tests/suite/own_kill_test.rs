@@ -18,6 +18,7 @@
 #![cfg(target_os = "macos")]
 
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::openai::sse;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,14 +26,6 @@ use std::time::Duration;
 
 fn koda_bin() -> String {
     env!("CARGO_BIN_EXE_koda").to_string()
-}
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
 }
 
 fn bash(id: &str, command: &str) -> ResponseTemplate {

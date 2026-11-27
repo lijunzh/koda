@@ -10,6 +10,7 @@
 #![cfg(target_os = "linux")]
 
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::openai::sse;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,14 +35,6 @@ fn bwrap_works() -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
-}
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
 }
 
 /// `koda <marker> <command>` is stage 2, not an unknown flag: without the

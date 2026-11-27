@@ -3,6 +3,7 @@
 //! the way a client would. No API key, no model.
 
 use koda_test_utils::network::{FakeLlmServer, Request, ResponseTemplate};
+use koda_test_utils::openai::{sse, text, tool_call, tool_calls, usage};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::path::Path;
@@ -12,53 +13,6 @@ use std::time::Duration;
 
 fn koda_bin() -> String {
     env!("CARGO_BIN_EXE_koda").to_string()
-}
-
-fn sse(chunks: &[Value]) -> ResponseTemplate {
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
-}
-
-fn usage(prompt: u32, completion: u32) -> Value {
-    json!({"choices": [], "usage": {"prompt_tokens": prompt, "completion_tokens": completion}})
-}
-
-/// A streamed reply that calls one tool.
-fn tool_call(id: &str, name: &str, args: Value) -> ResponseTemplate {
-    tool_calls(&[(id, name, args)])
-}
-
-/// A streamed reply that calls several tools at once.
-fn tool_calls(calls: &[(&str, &str, Value)]) -> ResponseTemplate {
-    let calls: Vec<Value> = calls
-        .iter()
-        .enumerate()
-        .map(|(index, (id, name, args))| {
-            json!({
-                "index": index,
-                "id": id,
-                "type": "function",
-                "function": {"name": name, "arguments": args.to_string()},
-            })
-        })
-        .collect();
-    sse(&[
-        json!({"choices": [{"delta": {"tool_calls": calls}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-        usage(100, 10),
-    ])
-}
-
-/// A streamed reply of plain text.
-fn text(reply: &str) -> ResponseTemplate {
-    sse(&[
-        json!({"choices": [{"delta": {"content": reply}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-        usage(200, 20),
-    ])
 }
 
 /// A non-streaming reply, which is how sub-agents and summaries call.
