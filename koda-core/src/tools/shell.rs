@@ -127,15 +127,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
             can't change ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
             registries over HTTP(S){own_ports}; when a command reaches for another host, \
-            the user is asked whether to allow it, so just run the command. ssh, git over \
-            SSH, the local network and {other_localhost} are unreachable.{find_processes} \
-            When a command the user \
-            needs fails because of \
-            the sandbox (\"Operation not permitted\", or no connection to a host the \
-            proxy doesn't allow, such as a git push over SSH), run it again at once \
-            with outside_sandbox=true and a reason; the user is asked to approve that \
-            one command. Don't ask in a message first, and don't use it for anything \
-            the sandbox allows.",
+            the user is asked whether to allow it where someone can answer, so just run \
+            the command. ssh, git over SSH, the local network and {other_localhost} are \
+            unreachable.{find_processes} The instructions say what to do when a command \
+            fails because of the sandbox.",
             bg_localhost = LOCALHOST.0,
             own_ports = LOCALHOST.1,
             other_localhost = LOCALHOST.2,
@@ -440,11 +435,11 @@ pub async fn run_shell_command(
             // run where no sandbox backend exists (every command asks, and
             // runs unsandboxed).
             if !outside_sandbox && crate::sandbox::is_available() {
-                // A sub-agent, or a run whose client answers approvals itself
-                // (headless), is refused anything outside the sandbox. With
-                // no sink to ask (tests), keep the usual hint.
-                let approvable =
-                    caller_spawner.is_none() && sink.is_none_or(|(sink, _)| sink.can_ask());
+                // Whoever can approve: a sub-agent asks in the main session,
+                // as Codex's child inherits its approval policy; a run whose
+                // client answers approvals itself (headless) can't. With no
+                // sink to ask (tests), keep the usual hint.
+                let approvable = sink.is_none_or(|(sink, _)| sink.can_ask());
                 annotate_violations(exit_code, command, &mut stderr_lines, approvable);
             }
 
@@ -1675,8 +1670,7 @@ pub(crate) const OUTSIDE_SANDBOX_HINT: &str = "Koda's sandbox blocked this comma
      needs it, run it again with Bash, outside_sandbox=true and a reason; they'll be \
      asked to approve it.";
 
-/// [`OUTSIDE_SANDBOX_HINT`] where no one can approve: a sub-agent, or a
-/// headless run.
+/// [`OUTSIDE_SANDBOX_HINT`] where no one can approve: a headless run.
 pub(crate) const NO_WAY_OUT_HINT: &str = "Koda's sandbox blocked this command, and this run can't \
      leave the sandbox: no one is here to approve it. Do without it, or say which \
      command the user should run themselves.";
@@ -3522,7 +3516,8 @@ mod tests {
     /// for the whole Phase 1 stack.
     /// A sandbox denial points to `outside_sandbox` only where someone can
     /// approve it: not for a headless run, whose client answers approvals
-    /// itself, and not for a sub-agent.
+    /// itself. A sub-agent asks in the main session, as Codex's child
+    /// inherits its parent's approval policy.
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn the_way_out_is_offered_only_where_someone_can_approve_it() {
@@ -3573,7 +3568,12 @@ mod tests {
         assert!(headless.contains(NO_WAY_OUT_HINT), "{headless}");
         assert!(!headless.contains("outside_sandbox=true"), "{headless}");
         let sub_agent = run(&Someone, Some(7)).await;
-        assert!(sub_agent.contains(NO_WAY_OUT_HINT), "{sub_agent}");
+        assert!(sub_agent.contains(OUTSIDE_SANDBOX_HINT), "{sub_agent}");
+        let headless_sub_agent = run(&Nobody, Some(7)).await;
+        assert!(
+            headless_sub_agent.contains(NO_WAY_OUT_HINT),
+            "{headless_sub_agent}"
+        );
     }
 
     #[cfg(target_os = "macos")]

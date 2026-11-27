@@ -866,6 +866,8 @@ fn run_sub_agent<'a>(
             &instructions_for(&sub_config.system_prompt, effective_root != project_root),
             &env,
             false, // no person answers a sub-agent
+            // but its requests to leave the sandbox ask in the main session
+            sink.can_ask(),
             &tools.skill_registry,
         );
         if sub_config.shell_search {
@@ -1868,9 +1870,12 @@ impl crate::engine::EngineSink for UsageSink {
         self.emit(event);
     }
 
-    /// It asks through the session's approver, not the sink.
+    /// It asks through the session's approver, in the session's client,
+    /// so someone can answer where the session has someone.
     fn can_ask(&self) -> bool {
-        false
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.can_ask())
     }
 }
 

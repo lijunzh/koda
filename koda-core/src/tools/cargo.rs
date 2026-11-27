@@ -1073,15 +1073,6 @@ pub async fn run_cargo(
     .await
 }
 
-/// Whether a sandbox denial may point at a run outside the sandbox: only
-/// where someone can approve one. A headless run or background child can't
-/// ask ([`ToolExecCtx::can_ask`]), and a sub-agent (`caller_spawner`) is always refused, as in
-/// Bash. Cargo had no sink from the dispatcher, so before `can_ask` it
-/// offered the way out in every run.
-fn approvable(can_ask: bool, caller_spawner: Option<u32>) -> bool {
-    can_ask && caller_spawner.is_none()
-}
-
 /// [`run_cargo`] plus extra environment variables for the child, set after
 /// the sandbox's env scrub. Production passes none. The end-to-end test
 /// uses it to cut the nested cargo off from the env of the cargo that is
@@ -1105,7 +1096,7 @@ async fn run_cargo_with_env(
     tracing::info!("Running {command}");
     let start = Instant::now();
     // As for Bash: a sandbox denial offers a run outside the sandbox only
-    // when `approvable` (see [`approvable`]), and only when a sandbox backend
+    // when `approvable` (someone can approve leaving the sandbox), and only when a sandbox backend
     // ran the command.
     let mut cmd = crate::sandbox::build(
         &command,
@@ -1227,7 +1218,9 @@ impl Tool for CargoTool {
             ctx.proxy_port,
             ctx.socks5_port,
             ctx.sink,
-            approvable(ctx.can_ask, ctx.caller_spawner),
+            // A sandbox denial points at a run outside the sandbox only
+            // where someone can approve one, a sub-agent's run included.
+            ctx.can_ask,
         )
         .await
         {
@@ -1858,13 +1851,6 @@ mod tests {
     }
 
     // ── end to end ───────────────────────────────────────────────────
-
-    #[test]
-    fn only_a_top_level_agent_that_can_ask_is_offered_the_way_out() {
-        assert!(approvable(true, None));
-        assert!(!approvable(false, None), "headless or a background child");
-        assert!(!approvable(true, Some(7)), "a sub-agent");
-    }
 
     /// What `approvable` is for: `cargo test` whose test hits the sandbox
     /// (here a write to `~/.ssh`) names the way out only where it exists. A
