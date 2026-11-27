@@ -90,7 +90,7 @@ re-exports as `providers`, `model_alias`, `model_context`, `model_effort` and
 `provider_catalog`),
 `koda-skills` and `koda-memory` (skills, and the instruction files and Koda's
 notes, re-exported by `koda-core` as `skills` and `memory`), `koda-command`
-(shell command classification and path linting, with `ToolEffect`),
+(shell command classification, with `ToolEffect`),
 `koda-mcp` (the MCP client, re-exported as `mcp`),
 `koda-state` (Koda's stored state: the `SessionStore` trait and its SQLite
 `Database`, how its SQLite files are opened, and the diagnostic log database,
@@ -118,7 +118,7 @@ In `koda-core/src/`:
 - **Tools:** `tools/` (`mod.rs` has the registry, dispatcher and
   `safe_resolve_path()`), `tool_dispatch.rs`, `approval_flow.rs`
 - **Safety:** `trust.rs`, `sandbox.rs`; shell command classification in
-  `koda-command/src/` (`bash_safety.rs`, `bash_path_lint.rs`, `ToolEffect`)
+  `koda-command/src/` (`bash_safety.rs`, `scratch_path.rs`, `ToolEffect`)
 - **Sub-agents:** `sub_agent_dispatch.rs`, `child_agent.rs`, `sub_agent_cache.rs`
 - **Providers:** `koda-providers/src/` (all implement the `LlmProvider` trait;
   `provider_catalog.rs`, `model_alias.rs`, `model_context.rs`,
@@ -162,8 +162,9 @@ separate "strict mode", "yolo mode" or per-tool toggles.
   its parent.
 - **Agent configs** declare `"trust": "plan" | "auto"` (`config.rs`).
   Legacy `write_access: bool` still loads with a warning.
-- **Folder scoping:** `is_outside_project()` (`trust.rs`), `lint_bash_paths()`
-  (`bash_path_lint.rs`), startup warning when project_root == $HOME
+- **Folder scoping:** `is_outside_project()` (`trust.rs`) for Edit and Write,
+  with temp dirs exempt (`scratch_path.rs`); a command's paths aren't checked
+  (the sandbox holds them, as in Codex); startup warning when project_root == $HOME
 - **Process sandbox** (`sandbox.rs`, always on): writes restricted to project +
   /tmp + cache dirs; credential dirs (~/.ssh, ~/.aws, etc.) blocked. macOS uses
   `sandbox-exec -p`, Linux `bwrap`, with a `tracing::warn!` fallback if the

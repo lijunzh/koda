@@ -94,9 +94,9 @@ pub mod last_provider;
 pub use koda_state::log_db;
 /// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
-/// Shell command classification and path linting: `koda-command`'s, under
-/// their old paths.
-pub use koda_command::{bash_path_lint, bash_safety};
+/// Shell command classification and the scratch paths outside the project:
+/// `koda-command`'s.
+pub use koda_command::{bash_safety, scratch_path};
 /// The MCP client: `koda-mcp`, under its old path.
 pub use koda_mcp as mcp;
 /// Instruction files (`AGENTS.md`, `CLAUDE.md`) and Koda's own notes: the

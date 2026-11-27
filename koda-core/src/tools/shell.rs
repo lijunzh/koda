@@ -22,7 +22,7 @@
 //!
 //! - Commands are classified by `bash_safety::classify_bash_command`
 //! - Destructive commands (`rm -rf`, `git push --force`) always need confirmation
-//! - Path escapes outside the project root are flagged by `bash_path_lint`
+//! - Paths aren't checked: the kernel sandbox decides what a command can write
 //! - Output is capped to prevent context overflow: the model sees stderr and
 //!   stdout within a ~10,000-token budget, keeping the head and the tail with
 //!   the omitted lines marked in the middle (the full output is stored)

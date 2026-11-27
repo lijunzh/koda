@@ -49,10 +49,11 @@
 //!
 //! ## Always-on safety floors
 //!
-//! - **Outside-project floor** (#218): writes outside `project_root`
-//!   confirm in Auto and are refused in Plan. Temp dirs (`/tmp`,
+//! - **Outside-project floor** (#218): an Edit or Write outside
+//!   `project_root` asks in Auto and is refused in Plan. Temp dirs (`/tmp`,
 //!   `$TMPDIR`, `/var/folders/*/T`) and `~/.cache/koda` are exempt
-//!   (#560, #1236).
+//!   (#560, #1236). A command's paths aren't checked: the kernel sandbox
+//!   decides what it can write, as in Codex.
 //! - **No sandbox on this machine** (#860): every command and change
 //!   asks first in Auto, as Claude Code asks with its sandbox off, and Plan
 //!   refuses commands it can't contain.
@@ -304,9 +305,11 @@ fn check_tool_inner(
         return ToolApproval::Blocked;
     }
 
-    // Hardcoded floor: writes outside project root always need confirmation (#218).
+    // A file tool aimed outside the project asks (#218). A command's paths
+    // aren't read: the kernel sandbox decides what it can write, as in
+    // Codex, and a forced `rm` asks wherever it points.
     if let Some(root) = project_root
-        && reaches_outside_project(tool_name, args, root)
+        && is_outside_project(tool_name, args, root)
     {
         return ToolApproval::NeedsConfirmation;
     }
@@ -400,7 +403,7 @@ fn is_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &
             }
             let outside = !resolved.starts_with(resolve_through_links(project_root));
             // Allow temp directories (#560)
-            if outside && crate::bash_path_lint::is_safe_external_path(&resolved) {
+            if outside && crate::scratch_path::is_safe_external_path(&resolved) {
                 return false;
             }
             outside
@@ -445,23 +448,6 @@ fn resolve_through_links(path: &Path) -> std::path::PathBuf {
             _ => return clean,
         }
     }
-}
-
-/// Whether a call trips the outside-project floor: a file tool aimed outside
-/// the project, or a Bash command whose paths or `cd` leave it.
-fn reaches_outside_project(tool_name: &str, args: &serde_json::Value, project_root: &Path) -> bool {
-    if is_outside_project(tool_name, args, project_root) {
-        return true;
-    }
-    if tool_name == "Bash" {
-        let command = args
-            .get("command")
-            .or(args.get("cmd"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        return crate::bash_path_lint::lint_bash_paths(command, project_root).has_warnings();
-    }
-    false
 }
 
 // ── Allow for this session ────────────────────────────────
@@ -666,8 +652,7 @@ pub fn session_allow_key(
     if tool_name == "Bash" && crate::tools::shell::wants_outside_sandbox(args) {
         return prefix_rule_key(args);
     }
-    if effect != ToolEffect::LocalMutation || reaches_outside_project(tool_name, args, project_root)
-    {
+    if effect != ToolEffect::LocalMutation || is_outside_project(tool_name, args, project_root) {
         return None;
     }
     let subject = match tool_name {
@@ -1081,9 +1066,25 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_cd_outside_needs_confirmation() {
+    fn a_commands_paths_dont_decide_its_approval() {
+        // As in Codex: the sandbox holds a command wherever it reads, and
+        // a forced `rm` asks wherever it points. With no sandbox every
+        // command asks anyway.
         let root = Path::new("/home/user/project");
-        let args = serde_json::json!({"command": "cd /etc && ls"});
+        let contained = if crate::sandbox::is_available() {
+            ToolApproval::AutoApprove
+        } else {
+            ToolApproval::NeedsConfirmation
+        };
+        for command in ["cd /etc && ls", "cat ../other/notes.md", "cd ~ && ls"] {
+            let args = serde_json::json!({ "command": command });
+            assert_eq!(
+                check_tool("Bash", &args, TrustMode::Auto, Some(root)),
+                contained,
+                "{command}"
+            );
+        }
+        let args = serde_json::json!({"command": "cd /tmp && rm -rf x"});
         assert_eq!(
             check_tool("Bash", &args, TrustMode::Auto, Some(root)),
             ToolApproval::NeedsConfirmation,
@@ -1302,7 +1303,6 @@ mod tests {
             "command": "cargo fmt", "outside_sandbox": true, "reason": "x",
         });
         assert_eq!(key("Bash", unsandboxed, root), None);
-        assert_eq!(bash("cd ~ && touch a"), None);
         assert_eq!(
             key(
                 "Edit",

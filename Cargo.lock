@@ -2146,7 +2146,6 @@ dependencies = [
 name = "koda-command"
 version = "0.7.14"
 dependencies = [
- "path-clean",
  "regex",
  "schemars",
  "serde",

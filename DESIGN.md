@@ -1381,8 +1381,9 @@ call is classified into one of four effects (ReadOnly, LocalMutation,
 Destructive, RemoteAction). TrustMode (Plan/Auto) picks the kernel sandbox
 and determines which effects need confirmation: Plan's sandbox keeps the
 project read-only, Auto's can write it but keeps `.git` read-only.
-Hardcoded floors ensure outside-project writes always require confirmation
-regardless of mode. The kernel sandbox (always active) enforces the
+Edit and Write stay in the project and temp directories, and ask before
+changing Koda's own settings. A shell command's paths aren't checked, as in
+Codex: the sandbox decides what it can write. The kernel sandbox (always active) enforces the
 perimeter.
 
 **TrustMode is the single mechanism** (#1250). The same `TrustMode` enum

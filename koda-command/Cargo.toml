@@ -13,7 +13,6 @@ keywords = ["ai", "coding-agent", "shell", "bash", "safety"]
 categories = ["development-tools", "parser-implementations"]
 
 [dependencies]
-path-clean = "1"
 regex = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

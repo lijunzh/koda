@@ -257,7 +257,7 @@ prompts and the sandbox ([Approval](approval.md), [Sandbox](sandbox.md)).
 | Shell, inside the sandbox | `git status`, `cargo test`, `echo > file`, `gh issue create` | ✅ Auto (read-only sandbox) | ✅ Auto |
 | Shell, leaving the sandbox | `outside_sandbox: true` (`git commit`, `git push` over SSH) | ❌ Deny | ⏸ Prompt |
 | Destructive shell | `rm -rf`, `sudo`, `git push --force`, `git reset --hard` | ❌ Deny | ⏸ Prompt |
-| Outside-project write | Write/Edit to paths outside project root | ❌ Deny | ⏸ Prompt |
+| Outside-project write | Write/Edit of Koda's settings (elsewhere outside the project and temp directories: refused) | ❌ Deny | ⏸ Prompt |
 
 With no sandbox on the machine, Auto prompts for every shell command and
 edit, and Plan denies shell commands. Sub-agents follow the session's mode,

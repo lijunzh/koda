@@ -48,7 +48,6 @@ in Plan reopens in Plan.
 | Edit, Write | ✅ runs | ❌ refused |
 | A destructive command (`rm -rf`, `git push --force`, …) | ⏸ asks | ❌ refused |
 | A command asking to leave the sandbox (`outside_sandbox`) | ⏸ asks | ❌ refused |
-| A command naming a path outside the project (`cd ~`, `> ../x`) | ⏸ asks | ✅ runs (read-only sandbox) |
 | Edit or Write in a temp directory (`/tmp`, `$TMPDIR`) | ✅ runs | ❌ refused |
 | Edit or Write of Koda's own settings (`~/.config/koda`) | ⏸ asks | ❌ refused |
 | Edit or Write anywhere else outside the project | ❌ refused | ❌ refused |
@@ -120,8 +119,9 @@ These apply in both modes:
    directories and files. See [Sandbox](./sandbox.md).
 2. **Outside-project floor:** Edit and Write work only in the project and
    temp directories, and ask before changing Koda's own settings, which
-   decide what the next session runs; a command that names a path outside
-   the project asks first in Auto.
+   decide what the next session runs. A command's paths aren't checked,
+   as in Codex: `cd ~ && ls` and `cat ../notes.md` run, a write outside the
+   project fails at the kernel, and a forced `rm` asks wherever it points.
 3. **Agent-file protection:** `.koda/agents/` and `.koda/skills/` are
    write-protected in every mode, so a prompt injection can't rewrite an
    agent's tools or system prompt mid-session.

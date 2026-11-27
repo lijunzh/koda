@@ -1,11 +1,11 @@
-//! How Koda reads a shell command: what it does (read-only, a local
-//! change, a remote action, or destructive) and which paths it touches.
-//! Koda's approval rules and sandbox act on the answer.
+//! How Koda reads a shell command: whether it is destructive, and what it
+//! does in words. Koda's approval rules act on the answer; the kernel
+//! sandbox decides what a command can touch.
 //!
 //! - [`bash_safety`]: classifies a command into a [`ToolEffect`], token by
 //!   token with `shlex`, heredocs and command substitutions included.
-//! - [`bash_path_lint`]: finds paths a command would touch outside the
-//!   project.
+//! - [`scratch_path`]: the temp and cache directories outside the project
+//!   that file tools may write.
 //! - [`parse_command`]: what a command does, in words a person reads
 //!   (Codex's `parse_command`), for clients to show.
 //!
@@ -16,12 +16,12 @@
 //! it is published for `cargo install koda-cli`, not as a library to build
 //! on.
 
-/// Paths a command touches outside the project.
-pub mod bash_path_lint;
 /// Shell command classification: what a command does.
 pub mod bash_safety;
 /// What a command does, in words: reads a file, lists, searches.
 pub mod parse_command;
+/// Temp and cache directories outside the project.
+pub mod scratch_path;
 
 /// Effect classification for tool calls.
 ///

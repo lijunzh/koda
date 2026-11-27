@@ -167,14 +167,22 @@ fn matrix() -> Vec<(&'static str, &'static str, serde_json::Value, Exp, Exp)> {
             Ask,
             Block,
         ),
-        // The outside-project floor (#218) asks in Auto; Plan's read-only
-        // sandbox holds the command, so it runs there. /tmp is exempt (#560).
+        // A command's paths aren't read, as in Codex: the sandbox decides
+        // what it can write. A `cd` outside and a read there run; a write
+        // there fails at the kernel; a forced `rm` asks wherever it points.
         (
-            "bash path escape",
+            "cd outside the project and read",
             "Bash",
             json!({"command": "cd /etc && ls"}),
-            Ask,
+            Contained,
             Sandboxed,
+        ),
+        (
+            "cd outside the project and force-remove",
+            "Bash",
+            json!({"command": "cd /tmp && rm -rf x"}),
+            Ask,
+            Block,
         ),
         (
             "invoke a sub-agent",
