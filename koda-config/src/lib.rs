@@ -98,14 +98,14 @@ pub struct ConfigToml {
     /// its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_context_window: Option<u64>,
-    /// The most tokens a reply may use, as `--max-tokens` gives it.
+    /// The most tokens a reply may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_max_output_tokens: Option<u32>,
-    /// The sampling temperature, as `--temperature` gives it (0.0 to 2.0).
+    /// The sampling temperature (0.0 to 2.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_temperature: Option<f64>,
-    /// A thinking budget in tokens, for Gemini models, as
-    /// `--thinking-budget` gives it. Claude models take an effort instead.
+    /// A thinking budget in tokens, for Gemini models. Claude models take an
+    /// effort instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_thinking_budget: Option<u32>,
     /// The agent new sessions run, as `--agent` gives it: a built-in, or a

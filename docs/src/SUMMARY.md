@@ -9,6 +9,7 @@
 - [Installation](./installation.md)
 - [Quickstart](./quickstart.md)
 - [How Koda works](./how-koda-works.md)
+- [Upgrading to 0.8](./upgrading-0.8.md)
 - [Upgrading to 0.7](./upgrading-0.7.md)
 - [CLI reference](./cli-reference.md)
 - [Headless mode](./headless.md)

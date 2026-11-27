@@ -61,8 +61,8 @@ fn unknown_provider(name: &str) -> ErrorObject {
     ))
 }
 
-/// Refuse an effort or thinking budget given for this run (`--effort`,
-/// `--thinking-budget` or `-c`) that the session's Claude model doesn't
+/// Refuse an effort or thinking budget given for this run (`--effort` or
+/// `-c`) that the session's Claude model doesn't
 /// take: a person typed it and can fix the command. The file's and an
 /// agent's are corrected at request time instead, and so are the run's for
 /// sessions after the first.
@@ -84,7 +84,7 @@ pub(crate) fn check_run_reasoning(
     // is for Gemini.
     if loaded.flag_value("model_thinking_budget").is_some() {
         return Err(invalid(format!(
-            "{model} takes no --thinking-budget. Use --effort with one of: {}.",
+            "{model} takes no model_thinking_budget. Use --effort with one of: {}.",
             koda_core::model_effort::LEVELS.join(", ")
         )));
     }
@@ -628,7 +628,7 @@ mod tests {
         assert!(err.message.contains("lm-studio"), "{err:?}");
     }
 
-    /// `--effort` and `--thinking-budget` are checked against the session's
+    /// `--effort` and `-c model_thinking_budget` are checked against the session's
     /// Claude model; the file's own values aren't.
     #[test]
     fn a_run_effort_or_budget_the_claude_model_doesnt_take_is_refused() {

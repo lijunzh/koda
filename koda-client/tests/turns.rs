@@ -313,8 +313,8 @@ async fn a_turn_runs_from_start_to_finish() {
 }
 
 /// `koda`'s flags reach the host as config values for the run, as Codex's
-/// do (`--max-tokens` is `-c model_max_output_tokens=...`, `--mode` is `-c
-/// mode=...`). A host started from the config alone, as `koda` starts
+/// do (`--max-context-tokens` is `-c model_context_window=...`, `--mode` is
+/// `-c mode=...`). A host started from the config alone, as `koda` starts
 /// one, runs the config's model choice with them, and the model gets them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_host_starts_from_the_config_and_this_runs_values() {

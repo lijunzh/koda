@@ -33,11 +33,6 @@ take them all. `koda serve` takes the config flags but not `--resume`,
 given before `exec` (`koda --model x exec "…"`) carries over to it; one
 given before a subcommand that can't use it is an error, not ignored.
 
-**Deprecated, going in 0.8:** `--max-tokens`, `--temperature` and
-`--thinking-budget` still work, with a warning; use
-`-c model_max_output_tokens=N`, `-c model_temperature=X` and
-`-c model_thinking_budget=N`.
-
 Coming from 0.6, where `koda -p` and `--output-format` ran a prompt, see
 [Upgrading to 0.7](./upgrading-0.7.md).
 

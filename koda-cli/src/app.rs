@@ -211,10 +211,6 @@ struct ConfigFlags {
     )]
     project_root: Option<PathBuf>,
 
-    /// Deprecated, to go in 0.8: `-c model_max_output_tokens=N`.
-    #[arg(long, hide = true)]
-    max_tokens: Option<u32>,
-
     /// Context window size in tokens, for a server that doesn't report one.
     ///
     /// Overrides the agent file, the server's report and Koda's model table.
@@ -225,14 +221,6 @@ struct ConfigFlags {
         display_order = 14
     )]
     max_context_tokens: Option<u64>,
-
-    /// Deprecated, to go in 0.8: `-c model_temperature=X`.
-    #[arg(long, hide = true)]
-    temperature: Option<f64>,
-
-    /// Deprecated, to go in 0.8: `-c model_thinking_budget=N`.
-    #[arg(long, hide = true)]
-    thinking_budget: Option<u32>,
 
     /// How much the model reasons: low, medium, high, xhigh or max.
     ///
@@ -280,10 +268,7 @@ impl ConfigFlags {
     fn inherit(&mut self, root: &Self) {
         inherit(&mut self.agent, &root.agent);
         inherit(&mut self.project_root, &root.project_root);
-        inherit(&mut self.max_tokens, &root.max_tokens);
         inherit(&mut self.max_context_tokens, &root.max_context_tokens);
-        inherit(&mut self.temperature, &root.temperature);
-        inherit(&mut self.thinking_budget, &root.thinking_budget);
         inherit(&mut self.reasoning_effort, &root.reasoning_effort);
         inherit(&mut self.mode, &root.mode);
         let mine = std::mem::take(&mut self.mcp_config);
@@ -295,41 +280,13 @@ impl ConfigFlags {
     fn given_beyond_project_root(&self) -> Vec<&'static str> {
         [
             ("--agent", self.agent.is_some()),
-            ("--max-tokens", self.max_tokens.is_some()),
             ("--max-context-tokens", self.max_context_tokens.is_some()),
-            ("--temperature", self.temperature.is_some()),
-            ("--thinking-budget", self.thinking_budget.is_some()),
             ("--reasoning-effort", self.reasoning_effort.is_some()),
             ("--mode", self.mode.is_some()),
             ("--mcp-config", !self.mcp_config.is_empty()),
         ]
         .into_iter()
         .filter_map(|(name, given)| given.then_some(name))
-        .collect()
-    }
-
-    /// Notices for the flags that go in 0.8, with what replaces each.
-    fn deprecations(&self) -> Vec<String> {
-        [
-            (
-                "--max-tokens",
-                "model_max_output_tokens",
-                self.max_tokens.is_some(),
-            ),
-            (
-                "--temperature",
-                "model_temperature",
-                self.temperature.is_some(),
-            ),
-            (
-                "--thinking-budget",
-                "model_thinking_budget",
-                self.thinking_budget.is_some(),
-            ),
-        ]
-        .into_iter()
-        .filter(|(_, _, given)| *given)
-        .map(|(flag, key, _)| format!("{flag} is deprecated and goes in 0.8; use -c {key}=<value>"))
         .collect()
     }
 }
@@ -800,9 +757,6 @@ pub(crate) async fn run() -> Result<()> {
     // process, as Codex's TUI does: the shared server's config is its own.
     let run_overrides = !overrides.is_empty();
     koda_tui::user_config::set_overrides(overrides);
-    for notice in flags.deprecations() {
-        eprintln!("warning: {notice}");
-    }
 
     // Resolve project root
     let project_root_given = flags.project_root.is_some();
@@ -1301,8 +1255,8 @@ fn stop_signal() -> impl std::future::Future<Output = ()> + Send {
 }
 
 /// The flags that set a config value, as `-c` values:
-/// `--reasoning-effort` is `model_reasoning_effort`, `--max-tokens` is
-/// `model_max_output_tokens`, and so on. The host reads them with the file,
+/// `--reasoning-effort` is `model_reasoning_effort`, `--max-context-tokens`
+/// is `model_context_window`, and so on. The host reads them with the file,
 /// and checks an effort or a thinking budget against the session's model.
 fn flag_overrides(cli: &ConfigFlags) -> Vec<koda_config::Override> {
     use koda_config::Override;
@@ -1310,19 +1264,10 @@ fn flag_overrides(cli: &ConfigFlags) -> Vec<koda_config::Override> {
     if let Some(agent) = &cli.agent {
         overrides.push(Override::new("agent", agent.as_str()));
     }
-    if let Some(tokens) = cli.max_tokens {
-        overrides.push(Override::new("model_max_output_tokens", i64::from(tokens)));
-    }
     if let Some(tokens) = cli.max_context_tokens {
         // At most i64::MAX: TOML's integers are signed.
         let tokens = i64::try_from(tokens).unwrap_or(i64::MAX);
         overrides.push(Override::new("model_context_window", tokens));
-    }
-    if let Some(temperature) = cli.temperature {
-        overrides.push(Override::new("model_temperature", temperature));
-    }
-    if let Some(budget) = cli.thinking_budget {
-        overrides.push(Override::new("model_thinking_budget", i64::from(budget)));
     }
     if let Some(effort) = &cli.reasoning_effort {
         overrides.push(Override::new("model_reasoning_effort", effort.as_str()));
@@ -1467,7 +1412,7 @@ mod tests {
     /// one; before it, Koda does, rather than ignoring it.
     #[test]
     fn mcp_refuses_flags_it_cannot_use() {
-        assert!(Cli::try_parse_from(["koda", "mcp", "list", "--temperature", "2"]).is_err());
+        assert!(Cli::try_parse_from(["koda", "mcp", "list", "--effort", "high"]).is_err());
         assert!(Cli::try_parse_from(["koda", "mcp", "list", "--model", "x"]).is_err());
         let cli = Cli::try_parse_from(["koda", "--model", "x", "mcp", "list"]).unwrap();
         let error = mcp_refusal(&cli.session, &cli.flags, false).unwrap();
@@ -1568,19 +1513,12 @@ mod tests {
         assert_eq!(args.prompt.as_deref(), Some("look"));
     }
 
-    /// The flags going in 0.8 still set their key, with a warning naming
-    /// the `-c` that replaces each.
+    /// The flags deprecated in 0.7 are gone: their `-c` keys replace them.
     #[test]
-    fn deprecated_flags_warn_with_their_replacement() {
-        let cli =
-            Cli::try_parse_from(["koda", "--temperature", "0.5", "--max-tokens", "9"]).unwrap();
-        let notices = cli.flags.deprecations();
-        assert_eq!(notices.len(), 2);
-        assert!(
-            notices[0].contains("-c model_max_output_tokens="),
-            "{notices:?}"
-        );
-        assert!(notices[1].contains("-c model_temperature="), "{notices:?}");
+    fn the_flags_deprecated_in_0_7_are_gone() {
+        for flag in ["--max-tokens", "--temperature", "--thinking-budget"] {
+            assert!(Cli::try_parse_from(["koda", flag, "1"]).is_err(), "{flag}");
+        }
         assert!(
             Cli::try_parse_from(["koda", "--effort", "high"])
                 .unwrap()
@@ -1609,24 +1547,15 @@ mod tests {
             "koda",
             "--agent",
             "reviewer",
-            "--max-tokens",
-            "512",
             "--max-context-tokens",
             "65_536",
-            "--temperature",
-            "0.5",
-            "--thinking-budget",
-            "2048",
             "--effort",
             "high",
             "--mode",
             "plan",
         ]);
         assert_eq!(config.agent.as_deref(), Some("reviewer"));
-        assert_eq!(config.model_max_output_tokens, Some(512));
         assert_eq!(config.model_context_window, Some(65_536));
-        assert_eq!(config.model_temperature, Some(0.5));
-        assert_eq!(config.model_thinking_budget, Some(2048));
         assert_eq!(config.model_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(config.mode, Some(koda_config::TrustMode::Plan));
         // Unset flags set nothing.

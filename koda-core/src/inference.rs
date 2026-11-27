@@ -2025,7 +2025,7 @@ async fn inference_loop_inner(ctx: InferenceContext<'_>, stats: &mut TurnStats) 
                 sink.emit(EngineEvent::Warn {
                     message: format!(
                         "Model {} hit its reply limit (max_tokens) {MAX_TRUNCATED_REPLIES} times in a row. \
-                         Lower the effort, raise --max-tokens, or split the task.",
+                         Lower the effort, raise model_max_output_tokens, or split the task.",
                         config.model,
                     ),
                 });
