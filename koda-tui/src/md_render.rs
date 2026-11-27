@@ -116,16 +116,12 @@ impl MarkdownRenderer {
         }
 
         // ── Heading ─────────────────────────────────────────
-        if let Some((level, text)) = parse_heading(raw) {
-            let prefix = match level {
-                1 => "■ ",
-                2 => "▸ ",
-                3 => "• ",
-                _ => "  ",
-            };
+        if let Some((_, text)) = parse_heading(raw) {
+            // Bold and coloured, with no mark before it, as Claude Code
+            // draws a heading: `•` is a list's and `▸` a folded turn's.
             return Line::from(vec![
                 Span::raw(INDENT),
-                Span::styled(format!("{prefix}{text}"), HEADING_STYLE),
+                Span::styled(text.to_string(), HEADING_STYLE),
             ]);
         }
 

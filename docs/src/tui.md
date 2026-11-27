@@ -60,8 +60,9 @@ folds them, so the answer is easy to find:
   commands that only read) are one row with no output. A failed one is
   counted on the row in red. Text from Koda, or any other step, starts a
   new row.
-- **Other commands** keep their own row and the first lines of their
-  output; **edits** show their diff; approvals and errors are never
+- **Other commands** keep their own row and the first lines of what they
+  printed, as Claude Code shows them: no header, the exit code only when the
+  command failed, stderr in red. **Edits** show their diff; approvals and errors are never
   folded.
 - A plan update is the working area's plan, not a row.
 

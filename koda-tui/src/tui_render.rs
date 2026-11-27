@@ -973,15 +973,23 @@ impl TuiRenderer {
                 buffer.fold_since(start, FOLD_HEAD, tail, fold_marker, item);
                 self.break_run(buffer);
             }
-            let exit_line = output.lines().next().unwrap_or("");
-            buffer.push_in(
-                Line::from(vec![
-                    Span::styled("  \u{2514} ", DIM),
-                    Span::styled(exit_line.to_string(), DIM),
-                ]),
-                if quiet { Fold::Full } else { Fold::Always },
-                item,
-            );
+            // Its output is on screen already: only a failure is worth a
+            // line, as Claude Code says only that.
+            let end = match command_output(output) {
+                Some(command) if command.code == 0 => None,
+                Some(command) => Some(Span::styled(format!("Exit code {}", command.code), RED)),
+                None => Some(Span::styled(
+                    output.lines().next().unwrap_or("").to_string(),
+                    DIM,
+                )),
+            };
+            if let Some(end) = end {
+                buffer.push_in(
+                    Line::from(vec![Span::styled("  \u{2514} ", DIM), end]),
+                    if quiet { Fold::Full } else { Fold::Always },
+                    item,
+                );
+            }
             return;
         }
         if changes_shown && matches!(tool, "Write" | "Edit" | "MemoryWrite") {
@@ -1398,6 +1406,59 @@ fn numbered_read_lines(
         .collect()
 }
 
+/// A shell command's result as the user sees it: its exit code and its
+/// output, stderr first as the tool puts it, each line marked whether it was
+/// stderr.
+#[derive(Debug, PartialEq)]
+struct CommandOutput {
+    code: i32,
+    lines: Vec<(String, bool)>,
+}
+
+/// Read the result Koda's shell tool writes for the model (`Exit code: 0 |
+/// stdout: 9 lines | stderr: 0 lines`, `Warning:` lines when it was cut, a
+/// `--- stdout (9 lines) ---` header over each stream, a hint on narrowing
+/// the command) back into what the command printed, as Claude Code shows a
+/// command: the output alone. `None` for any other text, such as a timeout.
+fn command_output(output: &str) -> Option<CommandOutput> {
+    let mut rows = output.lines();
+    let first = rows.next()?.strip_prefix("Exit code: ")?;
+    let code = first.split(" |").next()?.trim().parse().ok()?;
+    let mut lines: Vec<(String, bool)> = Vec::new();
+    let mut stderr = false;
+    for row in rows {
+        let header = row
+            .strip_prefix("--- ")
+            .and_then(|r| r.strip_suffix(" ---"))
+            .map(|r| r.split(" (").next().unwrap_or(r));
+        match header {
+            Some("stdout") | Some("stderr") => {
+                stderr = header == Some("stderr");
+                // The blank line the tool puts before a header.
+                while lines.last().is_some_and(|(l, _)| l.is_empty()) {
+                    lines.pop();
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if row.starts_with("Warning: truncated output")
+            || row.starts_with("Total output lines: ")
+            || row.starts_with("To see what is missing, narrow the command")
+        {
+            continue;
+        }
+        if row.is_empty() && lines.is_empty() {
+            continue;
+        }
+        lines.push((row.to_string(), stderr));
+    }
+    while lines.last().is_some_and(|(l, _)| l.is_empty()) {
+        lines.pop();
+    }
+    Some(CommandOutput { code, lines })
+}
+
 /// A finished tool result as the TUI shows it, each line tagged with the
 /// view it belongs to. The renderer pushes these into the buffer, for live
 /// turns and resumed ones alike, so both look alike and Ctrl+O switches
@@ -1407,6 +1468,9 @@ fn numbered_read_lines(
 ///   1,340`); the highlighted content is in the full view only. Most reads
 ///   aren't worth reading, and they were what made the reply hard to find.
 /// - **Edit, Write:** the diff, not folded, as before.
+/// - **Bash:** what the command printed, without the header the model reads
+///   ([`command_output`]); `Exit code N` first when it failed, stderr in red.
+///   Then folded as everything else.
 /// - **Everything else:** the first [`FOLD_HEAD`] lines and, when the call
 ///   failed, the last [`FOLD_TAIL`], with a [`fold_marker`] for the rest.
 ///
@@ -1521,7 +1585,10 @@ pub(crate) fn tool_output_view(
         };
     }
 
-    let rendered: Vec<Line<'static>> = output.lines().map(&mut render_line).collect();
+    let rendered: Vec<Line<'static>> = match command_output(output).filter(|_| name == "Bash") {
+        Some(command) => command_lines(&command, effect),
+        None => output.lines().map(&mut render_line).collect(),
+    };
     let tail = if failed { FOLD_TAIL } else { 0 };
     if rendered.len() <= FOLD_HEAD + tail + 1 {
         return rendered.into_iter().map(|l| (l, Fold::Always)).collect();
@@ -1538,6 +1605,37 @@ pub(crate) fn tool_output_view(
             Fold::Full
         };
         lines.push((line, fold));
+    }
+    lines
+}
+
+/// A command's output lines: `Exit code N` first when it failed, stderr in
+/// red, `(no output)` when it printed nothing.
+fn command_lines(
+    command: &CommandOutput,
+    effect: Option<koda_client::protocol::item::ToolEffect>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if command.code != 0 {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2502} ", DIM),
+            Span::styled(format!("Exit code {}", command.code), RED),
+        ]));
+    }
+    for (text, stderr) in &command.lines {
+        let style = theme::content_style_for(effect, *stderr);
+        let mut spans = vec![Span::styled("  \u{2502} ", DIM)];
+        spans.extend(parse_ansi_spans(text).into_iter().map(|mut span| {
+            span.style = style.patch(span.style);
+            span
+        }));
+        lines.push(Line::from(spans));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{2514} ", DIM),
+            Span::styled("(no output)", DIM),
+        ]));
     }
     lines
 }
@@ -1849,12 +1947,86 @@ mod tests {
             &mut buffer,
         );
         let folded = text(&buffer);
-        // Header, 5 lines, the marker, the exit line.
-        assert_eq!(folded.len(), 8, "{folded:?}");
+        // Header, 5 lines, the marker; a command that succeeded says
+        // nothing more, as in Claude Code.
+        assert_eq!(folded.len(), 7, "{folded:?}");
         assert!(folded[6].contains("+15 lines"), "{folded:?}");
-        assert!(folded[7].contains("Exit code: 0"), "{folded:?}");
         buffer.set_full(true);
-        assert_eq!(text(&buffer).len(), 22);
+        assert_eq!(text(&buffer).len(), 21);
+    }
+
+    /// A streamed command that failed ends with its exit code.
+    #[test]
+    fn a_streamed_command_that_failed_says_its_exit_code() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let bash = call("b1", "Bash", json!({ "command": "false" }));
+        renderer.render(&started(None, bash.clone()), &mut buffer);
+        renderer.render(&output("b1", "oops\n"), &mut buffer);
+        let done = finished(
+            bash,
+            ToolCallStatus::Failed,
+            "Exit code: 1 | stdout: 1 lines",
+        );
+        renderer.render(&completed(None, done), &mut buffer);
+        assert_eq!(
+            text(&buffer),
+            vec![
+                "\u{25cf} Bash false",
+                "  \u{2502} oops",
+                "  \u{2514} Exit code 1"
+            ]
+        );
+    }
+
+    /// A finished command shows what it printed, as Claude Code does, not the
+    /// header the model reads: its exit code only when it failed, stderr in
+    /// red, the cut marker kept, the hint on narrowing it dropped.
+    #[test]
+    fn a_command_shows_its_output_without_the_models_header() {
+        let ok = "Exit code: 0 | stdout: 2 lines | stderr: 0 lines\n\n--- stdout (2 lines) ---\na.rs\nb.rs";
+        let view = tool_output_view("Bash", None, ok, false, None, None);
+        assert_eq!(
+            view_text(&view, Fold::Full),
+            vec!["  \u{2502} a.rs", "  \u{2502} b.rs"]
+        );
+
+        let failed = "Exit code: 2 | stdout: 1 lines | stderr: 1 lines\n\n--- stderr (1 lines) ---\nerror: no\n\n--- stdout (1 lines) ---\npartial";
+        let view = tool_output_view("Bash", None, failed, true, None, None);
+        assert_eq!(
+            view_text(&view, Fold::Full),
+            vec![
+                "  \u{2502} Exit code 2",
+                "  \u{2502} error: no",
+                "  \u{2502} partial"
+            ]
+        );
+        assert_eq!(view[0].0.spans[1].style.fg, Some(Color::Red));
+        assert_eq!(view[1].0.spans[1].style.fg, Some(Color::Red));
+        assert_ne!(view[2].0.spans[1].style.fg, Some(Color::Red));
+
+        let cut = "Exit code: 0 | stdout: 9000 lines | stderr: 0 lines\nWarning: truncated output (original token count: 99)\nTotal output lines: 9000\n\n--- stdout (9000 lines) ---\n1\n[\u{2026} 8998 lines omitted \u{2026}]\n9000\n\nTo see what is missing, narrow the command (grep, sed -n 'A,Bp', tail). The captured output is also stored; RecallContext can search it.";
+        let shown = command_output(cut).unwrap();
+        let lines: Vec<&str> = shown.lines.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            lines,
+            vec!["1", "[\u{2026} 8998 lines omitted \u{2026}]", "9000"]
+        );
+
+        let quiet = tool_output_view(
+            "Bash",
+            None,
+            "Exit code: 0 | stdout: 0 lines | stderr: 0 lines",
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            view_text(&quiet, Fold::Full),
+            vec!["  \u{2514} (no output)"]
+        );
+        // Another tool's text, or a timeout, is shown as it is.
+        assert!(command_output("Command timed out after 120s").is_none());
     }
 
     /// A refused call says so under its approval's diff, which it doesn't
@@ -2529,7 +2701,7 @@ mod tests {
         buffer.set_full(true);
         let full = text(&buffer);
         assert!(full.iter().any(|l| l.contains("b.rs")), "{full:?}");
-        assert!(full.iter().any(|l| l.contains("Exit code: 0")), "{full:?}");
+        assert!(!full.iter().any(|l| l.contains("Exit code")), "{full:?}");
     }
 
     /// One folded item opens on its own in the folded view: a lookup row to
