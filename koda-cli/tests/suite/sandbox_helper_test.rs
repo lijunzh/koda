@@ -9,7 +9,7 @@
 //! the model is a local stub.
 #![cfg(target_os = "linux")]
 
-use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
+use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::openai::sse;
 use serde_json::{Value, json};
 use std::sync::Arc;
