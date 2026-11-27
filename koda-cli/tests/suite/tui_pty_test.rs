@@ -2635,10 +2635,11 @@ async fn rewind_takes_the_last_turn_out() {
     tui.submit_and_finish("second prompt", "Old reply.");
     tui.submit("/rewind");
     tui.wait_for_screen("Took the last turn out");
-    assert!(
-        input_box(&tui.screen()).contains("secondprompt"),
-        "{}",
-        tui.screen()
+    // The note can be drawn while the `/rewind` menu still covers the input
+    // box: wait for the box itself (a slow macOS runner, CI 2026-11-27).
+    tui.wait_for_screen_that(
+        |screen| input_box(screen).contains("secondprompt"),
+        "show the prompt back in the input box",
     );
     tui.type_text("\r");
     let sent = wait_for_model_call(&server, 3).await;
