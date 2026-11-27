@@ -626,9 +626,7 @@ fn prefix_rule_key(args: &serde_json::Value) -> Option<String> {
         .iter()
         .map(|word| word.as_str())
         .collect::<Option<_>>()?;
-    let banned = BANNED_PREFIXES
-        .iter()
-        .any(|banned| *banned == rule.as_slice());
+    let banned = BANNED_PREFIXES.contains(&rule.as_slice());
     let starts = argv.len() >= rule.len() && argv.iter().zip(&rule).all(|(a, w)| a == w);
     (!rule.is_empty() && !banned && starts && rule.iter().all(|w| !w.contains('\0')))
         .then(|| format!("{PREFIX_KEY}{}", rule.join("\0")))
