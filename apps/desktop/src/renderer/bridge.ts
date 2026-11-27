@@ -18,6 +18,9 @@ interface KodaBridge {
   request(method: string, params: unknown): Promise<unknown>;
   respond(id: number | string, result: unknown): Promise<void>;
   onMessages(listener: (batch: RpcMessage[]) => void): () => void;
+  replaceServer(turns: 'wait' | 'stop'): Promise<void>;
+  retry(): Promise<void>;
+  relaunch(): Promise<void>;
 }
 
 declare global {

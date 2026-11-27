@@ -370,6 +370,7 @@ cd apps/desktop
 npm ci                    # pinned dependencies (exact versions, save-exact)
 npm test                  # unit tests: the socket client, the relay's checks
 KODA_BIN=../../target/debug/koda npm test   # also against a real koda serve
+KODA_BIN=../../target/debug/koda npm run test:e2e   # the app itself, driven by Playwright
 npm run typecheck
 npm start                 # build into out/ and open the app
 ```
@@ -388,8 +389,19 @@ npm start                 # build into out/ and open the app
   (`scripts/gen-types.mjs`, run by `npm test`, `typecheck` and `build`), so
   the page is typed against the protocol of its own commit. They aren't
   committed.
+- **The server:** the app starts or joins it with `koda serve --start`, the
+  rule `koda` follows (`src/main/connection.ts`): an older server with turns
+  running waits for the user's choice in the window; `serve/updating` for a
+  newer Koda ends with a "Restart now" banner and no server of the app's own;
+  a lost server is retried on the TUI's schedule. The `koda` it runs is
+  `KODA_BIN`, else the one inside the app (once packaged), else the first on
+  the login shell's `PATH`, which the app reads once (`src/main/shell-path.ts`,
+  as Goose's and Hermes's apps do) because an app opened from the Finder has
+  launchd's minimal `PATH`. Only `PATH`: keys come from `/key`.
 - **Tests that start a server** use `koda serve --start` on a scratch
-  `XDG_CONFIG_HOME`, never the user's own server.
+  `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
+  built app with Playwright (`playwright-core`'s Electron driver, unseen,
+  `KODA_DESKTOP_TEST=1`); CI runs it under `xvfb-run`.
 - **Version:** the workspace's (see the release checklist).
 
 ## Release checklist

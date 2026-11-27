@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('koda', {
   request: (method: string, params: unknown) => ipcRenderer.invoke('koda:request', method, params),
   /** Answer a request the server sent, such as an approval. */
   respond: (id: number | string, result: unknown) => ipcRenderer.invoke('koda:respond', id, result),
+  /** Replace an older server whose turns are running: `wait` for them, or `stop` them. */
+  replaceServer: (turns: 'wait' | 'stop') => ipcRenderer.invoke('koda:replaceServer', turns),
+  /** Try starting or joining the server again. */
+  retry: () => ipcRenderer.invoke('koda:retry'),
+  /** Quit and open the app again: after an update, the new one. */
+  relaunch: () => ipcRenderer.invoke('koda:relaunch'),
   /** Notifications and server requests, in batches, in order. Returns a function that stops it. */
   onMessages: (listener: (batch: unknown[]) => void) => {
     const handler = (_event: IpcRendererEvent, batch: unknown[]) => listener(batch);

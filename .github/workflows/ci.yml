@@ -432,11 +432,12 @@ jobs:
         run: cargo audit --deny unsound --deny yanked
 
   # The desktop app (apps/desktop): its type check, unit tests and build
-  # always, which take seconds and need no Rust. Its test against a real
-  # `koda serve` needs a koda build, so on a PR it runs only when the PR
-  # changes what that test exercises: the app, the protocol, the client and
-  # server crates or this file. Step-level, as in `audit`, so the job always
-  # reports. Electron's own binary isn't downloaded: nothing here runs it.
+  # always, which take seconds and need no Rust. Its tests against a real
+  # `koda serve`, the app's own included, need a koda build, so on a PR they
+  # run only when the PR changes what they exercise: the app, the protocol,
+  # the client and server crates or this file. Step-level, as in `audit`, so
+  # the job always reports. Electron's binary is downloaded only for the
+  # app's test (`test:e2e`), not by `npm ci`.
   desktop:
     name: Desktop app
     runs-on: ubuntu-latest
@@ -502,6 +503,13 @@ jobs:
       - name: Test against koda serve
         if: steps.scope.outputs.run == 'true'
         run: npx vitest run tests/koda-serve.test.ts
+        env:
+          KODA_BIN: ${{ github.workspace }}/target/debug/koda
+      # The app itself, opened by Playwright under a virtual display: it starts
+      # the server, replaces an older one and stops for a newer Koda.
+      - name: Test the app
+        if: steps.scope.outputs.run == 'true'
+        run: xvfb-run --auto-servernum npm run test:e2e
         env:
           KODA_BIN: ${{ github.workspace }}/target/debug/koda
 
