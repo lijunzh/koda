@@ -24,24 +24,24 @@ the user can immediately invoke via `InvokeAgent`.
   legacy default-deny which silently strips Write/Edit and
   causes opaque "no such tool" failures.
 - **Principle of least privilege.** Pick the lowest trust mode that
-  works: `plan` for pure search/analysis, `safe` for write-capable
-  workers, never `auto` (auto is reserved for the user-controlled
-  top-level session).
+  works: `plan` for pure search/analysis, `auto` only for workers that
+  change files.
 - **One agent, one purpose.** A good `description` is a single sentence
   that lets the main agent know when to invoke it.
 
 ## Trust modes (the only knob you really need)
 
-| Mode    | What's allowed                                           | When to pick it                                                           |
-| ------- | -------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `plan`  | Read-only. Kernel-enforced sandbox blocks all mutations. | Explorers, planners, reviewers, analyzers. Anything that only reads.      |
-| `safe`  | Reads + sub-agent-context auto-approved Write/Edit.       | Workers that modify files. Default for write-capable sub-agents.          |
-| `auto`  | Reads + writes + (with caveats) network actions.         | **Don't.** Reserved for the top-level interactive `koda` agent only.      |
+| Mode    | What's allowed                                                        | When to pick it                                                      |
+| ------- | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `plan`  | Read-only. Commands run in a read-only sandbox with no network.       | Explorers, planners, reviewers, analyzers. Anything that only reads. |
+| `auto`  | Edits and commands inside the sandbox (project writable, `.git` not). | Workers that change files.                                           |
 
-Destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) are
-**always** blocked in sub-agents regardless of trust — the safe-side
-rule. If the user wants those, they invoke them top-level with their
-own consent.
+There are only these two (`safe` was removed in 0.8.0 and now loads as
+`plan` with a warning). The session's mode caps the agent: in a Plan
+session every agent is read-only. Whatever would ask the user for the
+main agent (a destructive command such as `rm -rf` or `git push --force`,
+leaving the sandbox, an edit of `.git`) asks for a sub-agent too, in the
+main session.
 
 ## Process
 
@@ -175,11 +175,9 @@ keep the project read-only, and most builds would fail.
   default-deny which silently strips Write/Edit and causes
   opaque "no such tool" failures. This is the #1 footgun. Always
   declare `trust` explicitly.
-- **Don't set `trust: "auto"` on a sub-agent.** Auto is reserved for
-  the top-level user-controlled session. The kernel won't let a
-  sub-agent escalate above its parent's trust anyway (`derive_child_trust`
-  clamps `min(parent, declared)`), so declaring auto is misleading at
-  best and silently downgraded at worst.
+- **Don't give a read-only agent `trust: "auto"`.** Use `plan` unless it
+  must change files (or build: see the tester shape above); the session's
+  mode caps it either way.
 - **Don't put both `allowed_tools` and `disallowed_tools`.** Pick one.
   When `allowed_tools` is non-empty, `disallowed_tools` is redundant.
 - **Don't set the agent's `model` to something the user hasn't
