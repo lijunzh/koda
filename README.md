@@ -48,12 +48,14 @@ commands and keys.
 
 - **Tools for a codebase:** read (text, images, PDFs, notebooks), search,
   edit, shell commands, the web, sub-agents, a todo list and memory.
-- **Trust modes:** Auto (the default) runs everything inside the sandbox and
-  asks before destructive commands, leaving the sandbox, or touching files
-  outside the project; Plan only looks. `Shift+Tab` switches between them.
+- **Trust modes, as in Codex:** Auto (the default) runs everything inside the
+  sandbox and asks before a destructive command, leaving the sandbox, editing
+  `.git` or Koda's settings, or reaching a host off the allow-list; Plan only
+  looks. `Shift+Tab` switches between them.
 - **A kernel sandbox for every command:** Seatbelt on macOS, bubblewrap on
-  Linux. Writes stay in the project and temporary folders, credential folders
-  are blocked, and the network goes through Koda's proxy.
+  Linux. Writes stay in the project and temporary folders, `.git` and
+  credential folders are read-only, and the network goes through Koda's
+  proxy.
 - **15 providers:** Anthropic, OpenAI, Gemini, OpenRouter, Groq, xAI, DeepSeek,
   Mistral, and local servers (LM Studio, Ollama, llama.cpp, vLLM) among them.
   `koda --oss` runs a local model with nothing to set up.

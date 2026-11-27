@@ -274,10 +274,9 @@ pub struct SessionResumeResponse {
 pub struct SessionStartedNotification {
     /// The session.
     pub session: Session,
-    /// The Koda release, such as `0.7.0`.
+    /// The Koda release, such as `0.8.0`, which says which protocol the
+    /// stream speaks: a reader that can't read it should stop.
     pub koda_version: String,
-    /// [`crate::PROTOCOL_VERSION`]. A reader that can't read it should stop.
-    pub protocol_version: u32,
 }
 
 /// `session/unsubscribe`: the client is done with a session. Its running

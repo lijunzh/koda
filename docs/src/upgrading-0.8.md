@@ -111,6 +111,9 @@ Each can also go in `config.toml`.
 ## For clients of the protocol
 
 - `TrustMode` has no `safe`.
+- `initialize` and `session/started` no longer carry `protocolVersion`, as
+  Codex's app-server has none: the Koda version (`serverInfo.version`,
+  `kodaVersion`) says which protocol a stream speaks.
 - `item/toolCall/requestApproval` has two new fields: `sessionPrefix`, what
   `acceptForSession` covers for a command leaving the sandbox, and
   `networkApprovalContext` (`host`, `protocol`), as Codex's, for a host off the

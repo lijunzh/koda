@@ -299,11 +299,11 @@ pub async fn run_headless(
                     // `turn_token_budget` stopped leaves it active, and the
                     // host starts the next turn, as Hermes and Codex go on
                     // after a turn cut short by a limit. A failed turn
-                    // blocks it, and that update ends the run.
-                    if goal.is_some() {
-                        goal_active = goal_status(&client, &session_id).await?
-                            == Some(GoalStatus::Active);
-                    }
+                    // blocks it, and that update ends the run. The stream
+                    // says so in order; asking the host for the goal here
+                    // could answer from a later turn (the next turn had
+                    // already completed the goal), and the run ended on
+                    // this one.
                     if goal_active {
                         last = Some(done);
                         continue;
@@ -560,17 +560,6 @@ async fn set_goal(client: &InProcessClient, session_id: &str, objective: &str) -
         })
         .await?;
     Ok(())
-}
-
-/// The session's goal's status, if it has one.
-async fn goal_status(client: &InProcessClient, session_id: &str) -> Result<Option<GoalStatus>> {
-    use koda_client::protocol::goal::SessionGoalGetParams;
-    let answer = client
-        .request::<methods::SessionGoalGet>(SessionGoalGetParams {
-            session_id: session_id.to_string(),
-        })
-        .await?;
-    Ok(answer.goal.map(|goal| goal.status))
 }
 
 /// The session's background commands, and whether a turn will start for them.

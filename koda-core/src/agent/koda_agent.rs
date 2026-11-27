@@ -115,8 +115,13 @@ fn system_prompt_for(
     interactive: bool,
     skills: &crate::skills::SkillRegistry,
 ) -> String {
-    let mut prompt =
-        crate::prompt::build_system_prompt(&config.system_prompt, env, interactive, skills);
+    let mut prompt = crate::prompt::build_system_prompt(
+        &config.system_prompt,
+        env,
+        interactive,
+        interactive,
+        skills,
+    );
     if config.shell_search {
         prompt = crate::shell_search::adapt_prompt(&prompt);
     }

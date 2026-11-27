@@ -467,10 +467,9 @@ async fn bad_lines_and_unknown_methods_fail_explicitly() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        init["protocolVersion"],
-        koda_server::protocol::PROTOCOL_VERSION
-    );
+    // The Koda version is the protocol's, as Codex has no other.
+    assert_eq!(init["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
+    assert!(init.get("protocolVersion").is_none(), "{init}");
     let error = wire
         .call(
             "initialize",

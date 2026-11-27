@@ -46,6 +46,29 @@ pub struct EnvironmentInfo<'a> {
     pub platform: &'a str,
 }
 
+/// When a command fails in the sandbox and someone can approve leaving it:
+/// Codex's `on_request` text (`prompts/templates/permissions/approval_policy`),
+/// for any tool chain, not one language's.
+const SANDBOX_ON_REQUEST: &str = "\n## The sandbox\n\n\
+     Commands run in Koda's kernel sandbox (see the Bash tool). If a command that matters \
+     for the user's request fails because of the sandbox, or with a likely sandbox-related \
+     error (a write refused with \"Operation not permitted\" or \"Read-only file system\", \
+     DNS or host resolution, registry or index access, a dependency download), run it \
+     again at once with Bash, outside_sandbox=true and a reason: the user is asked to \
+     approve it. For a command you'll run again, add a prefix_rule such as \
+     [\"cargo\", \"build\"], so the user can allow it for the session. Don't ask in a \
+     message first, and don't leave the sandbox for anything it allows. In plan mode \
+     leaving it is refused.\n";
+
+/// [`SANDBOX_ON_REQUEST`] where no one can approve (`koda exec`): Codex's
+/// `never` text.
+const SANDBOX_NEVER: &str = "\n## The sandbox\n\n\
+     Commands run in Koda's kernel sandbox (see the Bash tool), and no one in this run can \
+     approve leaving it: don't set outside_sandbox, which is refused. If a command fails \
+     because of the sandbox, or with a likely sandbox-related error (a write refused, DNS \
+     or host resolution, registry or index access, a dependency download), do without it, \
+     and say which command the user should run themselves.\n";
+
 /// Build the system prompt with instructions, environment, and tool schemas.
 ///
 /// `interactive` is whether a person answers this session's questions: it
@@ -53,6 +76,11 @@ pub struct EnvironmentInfo<'a> {
 /// and sessions nobody answers (`koda exec`, approval policy `never`) leave
 /// it out. The client's slash commands aren't listed, as Codex's prompt
 /// lists none: the host builds the prompt, and `/help` lists them.
+///
+/// `can_approve` is whether a person can approve a command leaving the
+/// sandbox: in a session a person answers, a sub-agent's included. It picks
+/// the sandbox section, as Codex picks its permissions text by approval
+/// policy (`on_request` or `never`).
 ///
 /// `skill_registry` is used to build the live `## Skills` section so the model
 /// sees every available skill — with its `when_to_use` hint — without needing
@@ -66,6 +94,7 @@ pub fn build_system_prompt(
     base_prompt: &str,
     env: &EnvironmentInfo<'_>,
     interactive: bool,
+    can_approve: bool,
     skill_registry: &SkillRegistry,
 ) -> String {
     let mut prompt = base_prompt.to_string();
@@ -90,13 +119,19 @@ pub fn build_system_prompt(
     }
     prompt.push_str(&model_line(env.model));
 
+    prompt.push_str(if can_approve {
+        SANDBOX_ON_REQUEST
+    } else {
+        SANDBOX_NEVER
+    });
+
     // Quick reference for a session a person is in. Headless runs and
     // sub-agents leave it out; none of it applies to them.
     if interactive {
         prompt.push_str("\n## Koda Quick Reference\n\n");
         prompt.push_str(
-            "- Trust modes, cycled with Shift+Tab: plan (read-only), safe (confirm changes), \
-             auto (default; confirm destructive operations only).\n",
+            "- Trust modes, switched with Shift+Tab: auto (the default; changes run in the \
+             sandbox, and leaving it or a destructive command asks) and plan (read-only).\n",
         );
         prompt.push_str(
             "- Koda keeps no history of file changes. Git is how to get them back, so \
@@ -399,7 +434,7 @@ mod tests {
     fn test_build_system_prompt_no_agents_no_memory() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("You are helpful.", &env, false, &registry);
+        let result = build_system_prompt("You are helpful.", &env, false, false, &registry);
         assert!(result.starts_with("You are helpful."));
         assert!(result.contains("Doing Tasks"));
         assert!(!result.contains("Koda Quick Reference"));
@@ -463,7 +498,7 @@ mod tests {
         .unwrap();
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(result.contains("scout"));
         assert!(result.contains("Scouting agent."));
         assert!(result.contains("Sub-Agents"));
@@ -486,7 +521,7 @@ mod tests {
         .unwrap();
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         // koda (the main agent) must not appear in the sub-agents listing.
         // Check the full result: the agent formatter produces "- **name**" (with desc)
         // or "- name" (without). Neither should match "koda".
@@ -505,7 +540,7 @@ mod tests {
     fn test_environment_section_present() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(result.contains("## Environment"));
         assert!(result.contains("/test/project"));
         assert!(result.contains("test-model"));
@@ -524,7 +559,7 @@ mod tests {
     fn test_instructions_included() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         // Spot-check key sections from instructions.md
         assert!(result.contains("## Doing Tasks"));
         assert!(result.contains("## Executing Actions"));
@@ -536,7 +571,7 @@ mod tests {
     fn an_interactive_session_gets_the_quick_reference_without_commands() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, true, &registry);
+        let result = build_system_prompt("Base.", &env, true, true, &registry);
         assert!(result.contains("## Koda Quick Reference"));
         assert!(result.contains("Shift+Tab"));
         assert!(
@@ -549,7 +584,7 @@ mod tests {
     fn test_no_quick_reference_without_a_repl() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(!result.contains("Koda Quick Reference"));
         assert!(!result.contains("Shift+Tab"));
     }
@@ -560,7 +595,7 @@ mod tests {
     fn test_quick_reference_names_the_real_trust_modes() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, true, &registry);
+        let result = build_system_prompt("Base.", &env, true, true, &registry);
         use crate::trust::TrustMode;
         for mode in [TrustMode::Plan, TrustMode::Auto] {
             assert!(
@@ -575,7 +610,7 @@ mod tests {
     fn test_skills_section_empty_registry() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(result.contains("## Skills"));
         assert!(result.contains("No skills are currently available"));
     }
@@ -590,7 +625,7 @@ mod tests {
             Some("Use when asked to review code or a PR."),
             "# Review\nDo it.",
         );
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(result.contains("code-review"));
         assert!(result.contains("Senior code review"));
         assert!(result.contains("Use when asked to review code or a PR."));
@@ -603,7 +638,7 @@ mod tests {
         let env = test_env();
         let mut registry = SkillRegistry::default();
         registry.add_builtin("plain", "Plain skill", None, "content");
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(result.contains("**plain**"));
         assert!(result.contains("Plain skill"));
     }
@@ -629,7 +664,7 @@ mod tests {
             },
             content: "scoped content".to_string(),
         });
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(result.contains("**scoped**"), "skill name");
         assert!(result.contains("Scoped skill"), "description");
         assert!(result.contains("Use for scoped work"), "when_to_use");
@@ -661,7 +696,7 @@ mod tests {
         // fresh install with no user or project agents configured.
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
 
         assert!(
             result.contains("## Available Sub-Agents"),
@@ -700,7 +735,7 @@ mod tests {
         .unwrap();
         let env = test_env_with_root(dir.path());
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         let alpha_pos = result.find("alpha").unwrap();
         let zebra_pos = result.find("zebra").unwrap();
         assert!(alpha_pos < zebra_pos, "agents should be sorted A→Z");
@@ -793,7 +828,7 @@ mod tests {
         // re-introduction that would re-create the bootstrap-order bug.
         let env = test_env();
         let registry = SkillRegistry::default();
-        let result = build_system_prompt("Base.", &env, false, &registry);
+        let result = build_system_prompt("Base.", &env, false, false, &registry);
         assert!(
             !result.contains("# MCP Server Instructions"),
             "static system prompt must not contain MCP block (composed per-turn instead)"
@@ -811,7 +846,7 @@ mod tests {
     fn prompt_does_not_lie_about_git_checkpointing() {
         let env = test_env();
         let registry = SkillRegistry::default();
-        let prompt = build_system_prompt("You are koda.", &env, true, &registry);
+        let prompt = build_system_prompt("You are koda.", &env, true, true, &registry);
 
         // Phrases from the old (deleted) lie. If any of these come back,
         // either ship the feature or delete them again — do not just
@@ -830,5 +865,25 @@ mod tests {
 
         // Positive: the model knows Koda can't bring a file back.
         assert!(prompt.contains("keeps no history of file changes"));
+    }
+
+    /// The sandbox section follows who can approve, as Codex's permissions
+    /// text follows its approval policy: rerun outside the sandbox where
+    /// someone can, never where no one can (`koda exec`).
+    #[test]
+    fn the_sandbox_section_follows_who_can_approve() {
+        let env = EnvironmentInfo {
+            project_root: Path::new("/tmp/test"),
+            model: "m",
+            platform: "linux",
+        };
+        let registry = SkillRegistry::default();
+        let asked = build_system_prompt("Base.", &env, false, true, &registry);
+        assert!(asked.contains(SANDBOX_ON_REQUEST), "{asked}");
+        assert!(asked.contains("a dependency download"));
+        assert!(!asked.contains(SANDBOX_NEVER));
+        let headless = build_system_prompt("Base.", &env, false, false, &registry);
+        assert!(headless.contains(SANDBOX_NEVER), "{headless}");
+        assert!(!headless.contains(SANDBOX_ON_REQUEST));
     }
 }

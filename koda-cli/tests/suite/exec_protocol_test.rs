@@ -190,8 +190,8 @@ async fn a_run_opens_with_its_session_and_closes_with_the_summary() {
     );
 
     let started = &run.lines[0]["params"];
-    assert_eq!(started["protocolVersion"], 4);
     assert_eq!(started["kodaVersion"], env!("CARGO_PKG_VERSION"));
+    assert!(started.get("protocolVersion").is_none(), "{started}");
     let session = &started["session"];
     assert_eq!(session["modelProvider"], "lm-studio");
     assert_eq!(session["model"], "stub");

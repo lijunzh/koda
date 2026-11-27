@@ -50,10 +50,8 @@
 # initialize: the version check Koda's one-version rule needs. Codex
 # answers with codexHome, platform and userAgent.
 "InitializeResponse.serverInfo" = "Koda's server name and version, which every client compares with its own"
-"InitializeResponse.protocolVersion" = "Koda's protocol version"
 "SessionStartedNotification.kodaVersion" = "For koda exec --json readers, which see no initialize answer"
-"SessionStartedNotification.protocolVersion" = "For koda exec --json readers, which see no initialize answer"
-# Trust modes (safe, auto, plan) in place of Codex's approval and sandbox
+# Trust modes (auto, plan) in place of Codex's approval and sandbox
 # policies.
 "Session.mode" = "Koda's trust mode"
 "SessionSettings.mode" = "Koda's trust mode"
