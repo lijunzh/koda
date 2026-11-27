@@ -158,8 +158,225 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* A grid item is as wide as its content by default: a long path would push the pane past the window. */
+  min-width: 0;
 }
 .main-column > p,
 .main-column > .banner {
   margin: 12px 32px 0;
+}
+/* The open session */
+.session-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+.session-view header {
+  padding: 16px 24px 8px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+.heading {
+  flex: 1;
+  min-width: 0;
+}
+.subtitle {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-view > .problem,
+.session-view > .detail {
+  padding: 0 24px;
+}
+.transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 24px 16px;
+}
+.turn {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 400px;
+}
+.row {
+  margin: 8px 0;
+}
+.row.user {
+  display: flex;
+  justify-content: flex-end;
+}
+.user-text {
+  white-space: pre-wrap;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-radius: 12px;
+  padding: 8px 12px;
+  max-width: 80%;
+}
+.fold {
+  background: none;
+  border: none;
+  padding: 2px 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.row.thought .fold,
+.row.worked .fold,
+.more-lines {
+  color: var(--muted);
+}
+.thought-text {
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 13px;
+  border-left: 2px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding-left: 10px;
+  margin: 4px 0;
+}
+.worked-rows {
+  border-left: 2px solid color-mix(in srgb, currentColor 15%, transparent);
+  padding-left: 12px;
+}
+.calls {
+  list-style: none;
+  margin: 4px 0 0 16px;
+  padding: 0;
+  font-size: 13px;
+}
+.dot {
+  color: var(--muted);
+}
+.dot.readOnly,
+.dot.read {
+  color: #16a34a;
+}
+.dot.localMutation {
+  color: #2563eb;
+}
+.dot.remoteAction,
+.dot.destructive {
+  color: var(--problem);
+}
+.failed,
+.row.note.error {
+  color: #dc2626;
+}
+.row.note {
+  color: var(--muted);
+  font-size: 13px;
+}
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+.tool-head code {
+  font-size: 13px;
+}
+.tool-out,
+.tool-diff {
+  margin: 4px 0 0 16px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 480px;
+  overflow: auto;
+}
+.stderr {
+  color: #dc2626;
+}
+.diff-add {
+  color: #16a34a;
+}
+.diff-del {
+  color: #dc2626;
+}
+.diff-hunk {
+  color: #7c3aed;
+}
+.diff-file {
+  color: var(--muted);
+}
+.md {
+  line-height: 1.55;
+}
+.md pre {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  overflow-x: auto;
+}
+.md table {
+  border-collapse: collapse;
+}
+.md th,
+.md td {
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding: 4px 8px;
+}
+.md-image {
+  color: var(--muted);
+}
+.hljs-keyword,
+.hljs-built_in,
+.hljs-type {
+  color: #7c3aed;
+}
+.hljs-string,
+.hljs-regexp {
+  color: #16a34a;
+}
+.hljs-comment {
+  color: var(--muted);
+  font-style: italic;
+}
+.hljs-number,
+.hljs-literal {
+  color: #d97706;
+}
+.hljs-title,
+.hljs-function {
+  color: #2563eb;
+}
+/* The prompt box */
+.composer {
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  padding: 10px 24px 16px;
+}
+.working {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.spinner {
+  display: inline-block;
+  animation: spin 2s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.composer-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.composer textarea {
+  flex: 1;
+  resize: vertical;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  background: transparent;
+  color: inherit;
 }

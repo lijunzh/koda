@@ -25,7 +25,6 @@ const PAGE_METHODS: ReadonlySet<string> = new Set([
   'session/backgroundTerminals/terminate',
   'session/memory/read',
   'turn/interrupt',
-  'turn/steer',
   'modelProvider/list',
   'mcpServerStatus/list',
   'agent/list',
@@ -33,7 +32,7 @@ const PAGE_METHODS: ReadonlySet<string> = new Set([
 ]);
 
 /** Methods the page may call when its parameters pass a check. */
-const CHECKED: Readonly<Record<string, (params: Record<string, unknown>) => string | null>> = {
+const CHECKED: Record<string, (params: Record<string, unknown>) => string | null> = {
   // `baseUrl` would send the provider's stored key to that address.
   'model/list': (params) => (params.baseUrl === undefined ? null : 'model/list takes no baseUrl from the page'),
   // Opening a session by its id alone: the server opens it in the folder it
@@ -45,6 +44,30 @@ const CHECKED: Readonly<Record<string, (params: Record<string, unknown>) => stri
     return typeof params.sessionId === 'string' ? null : 'session/resume needs a sessionId';
   },
 };
+
+/**
+ * Why a prompt from the page can't go: only typed text for now. Images,
+ * mentioned files and skills come with checks of their own (a mentioned
+ * file must be in the session's folder).
+ */
+function promptRefusal(method: string, params: Record<string, unknown>, keys: readonly string[]): string | null {
+  const extra = Object.keys(params).filter((key) => !keys.includes(key));
+  if (extra.length) return `${method} takes ${keys.join(', ')} from the page, not ${extra.join(', ')}`;
+  if (typeof params.sessionId !== 'string') return `${method} needs a sessionId`;
+  const input = params.input;
+  if (!Array.isArray(input) || input.length === 0) return `${method} needs input`;
+  for (const part of input) {
+    const p = part as Record<string, unknown> | null;
+    if (!p || p.type !== 'text' || typeof p.text !== 'string') return `${method} takes only text from the page`;
+  }
+  return null;
+}
+
+CHECKED['turn/start'] = (params) =>
+  // No `mode`: a turn can't raise its own trust; nor an `outputSchema`.
+  promptRefusal('turn/start', params, ['sessionId', 'input', 'clientUserMessageId']);
+CHECKED['turn/steer'] = (params) =>
+  promptRefusal('turn/steer', params, ['sessionId', 'expectedTurnId', 'input', 'clientUserMessageId']);
 
 /** Every method the relay knows: for the test that each still exists in the protocol. */
 export const RELAYED_METHODS: readonly string[] = [...PAGE_METHODS, ...Object.keys(CHECKED)];

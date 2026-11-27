@@ -115,45 +115,48 @@ enum Lookup {
     Command,
 }
 
-/// Which of the session's calls only look: a read, search or listing, or a
-/// command the host found read-only. They fold into one row, as Claude Code
-/// folds reads and searches. A call stored before Koda sent its effect
-/// keeps its own row.
+/// Which of the session's calls only look: a read, search or listing. They
+/// fold into one row, as Claude Code folds reads and searches.
 ///
 /// A command counts as what its `commandActions` say it does, as Codex's
-/// `Explored` cell reads them: `cat a.rs && rg x` is a read and a search.
-/// One it can't read (`Unknown`) counts as a command.
+/// `Explored` cell reads them, whatever its effect: `cat a.rs && rg x` is a
+/// read and a search. Since 0.8.0 the host rates no command read-only (the
+/// sandbox decides what one may change), so the actions are what tell a
+/// lookup. A command with a part they can't read keeps its own row, as
+/// Codex gives it a `Ran` cell; in a session stored when the host still rated
+/// commands, a read-only one counts as a command in the row. Other tools
+/// fold when the host says they only read. A call stored before Koda sent its
+/// effect keeps its own row.
 fn lookup(
     tool: &str,
     effect: Option<ToolEffect>,
     actions: &[CommandAction],
 ) -> Option<Vec<Lookup>> {
-    if effect != Some(ToolEffect::ReadOnly) {
-        return None;
-    }
+    let read_only = effect == Some(ToolEffect::ReadOnly);
     match tool {
-        "Read" => Some(vec![Lookup::Read]),
-        "Grep" | "Glob" => Some(vec![Lookup::Search]),
-        "List" => Some(vec![Lookup::List]),
         "Bash"
-            if actions.is_empty()
-                || actions
+            if !actions.is_empty()
+                && !actions
                     .iter()
                     .any(|a| matches!(a, CommandAction::Unknown { .. })) =>
         {
-            Some(vec![Lookup::Command])
+            Some(
+                actions
+                    .iter()
+                    .map(|action| match action {
+                        CommandAction::Read { .. } => Lookup::Read,
+                        CommandAction::ListFiles { .. } => Lookup::List,
+                        CommandAction::Search { .. } => Lookup::Search,
+                        CommandAction::Unknown { .. } => Lookup::Command,
+                    })
+                    .collect(),
+            )
         }
-        "Bash" => Some(
-            actions
-                .iter()
-                .map(|action| match action {
-                    CommandAction::Read { .. } => Lookup::Read,
-                    CommandAction::ListFiles { .. } => Lookup::List,
-                    CommandAction::Search { .. } => Lookup::Search,
-                    CommandAction::Unknown { .. } => Lookup::Command,
-                })
-                .collect(),
-        ),
+        "Bash" => read_only.then(|| vec![Lookup::Command]),
+        _ if !read_only => None,
+        "Read" => Some(vec![Lookup::Read]),
+        "Grep" | "Glob" => Some(vec![Lookup::Search]),
+        "List" => Some(vec![Lookup::List]),
         _ => None,
     }
 }
@@ -2629,6 +2632,122 @@ mod tests {
         assert_eq!(
             text(&buffer),
             vec!["\u{25cf} Read 1 file, searched 1 pattern, ran 1 command (ctrl+o to expand)"]
+        );
+    }
+
+    /// Since 0.8.0 the host rates every command a local change; a command
+    /// still folds as what its actions say it does, as Codex's `Explored`
+    /// cell, and one with a part they can't read keeps its own row. The TUI
+    /// folded none of these in 0.8.0.
+    #[test]
+    fn a_command_folds_by_what_it_does_not_by_its_effect() {
+        let mut renderer = TuiRenderer::new();
+        let mut buffer = ScrollBuffer::new(256);
+        let command = |id: &str, command: &str, actions: Vec<CommandAction>| match call(
+            id,
+            "Bash",
+            json!({"command": command}),
+        ) {
+            Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                kind,
+                status,
+                output,
+                detail,
+                changes,
+                progress,
+                exit_code,
+                duration_ms,
+                ..
+            } => Item::ToolCall {
+                id,
+                tool,
+                arguments,
+                effect: Some(ToolEffect::LocalMutation),
+                kind,
+                status,
+                output,
+                detail,
+                changes,
+                command_actions: actions,
+                progress,
+                exit_code,
+                duration_ms,
+            },
+            other => other,
+        };
+        let run = |renderer: &mut TuiRenderer, buffer: &mut ScrollBuffer, item: Item| {
+            renderer.render(&started(None, item.clone()), buffer);
+            let done = match finished(item, ToolCallStatus::Completed, "x") {
+                Item::ToolCall {
+                    id,
+                    tool,
+                    arguments,
+                    kind,
+                    status,
+                    output,
+                    detail,
+                    changes,
+                    progress,
+                    exit_code,
+                    duration_ms,
+                    ..
+                } => Item::ToolCall {
+                    id,
+                    tool,
+                    arguments,
+                    effect: Some(ToolEffect::LocalMutation),
+                    kind,
+                    status,
+                    output,
+                    detail,
+                    changes,
+                    command_actions: Vec::new(),
+                    progress,
+                    exit_code,
+                    duration_ms,
+                },
+                other => other,
+            };
+            renderer.render(&completed(None, done), buffer);
+        };
+        let ls = command(
+            "c1",
+            "ls src",
+            vec![CommandAction::ListFiles {
+                command: "ls src".into(),
+                path: Some("src".into()),
+            }],
+        );
+        run(&mut renderer, &mut buffer, ls);
+        let cat = command(
+            "c2",
+            "cat README.md",
+            vec![CommandAction::Read {
+                command: "cat README.md".into(),
+                name: "README.md".into(),
+                path: "README.md".into(),
+            }],
+        );
+        run(&mut renderer, &mut buffer, cat);
+        let make = command(
+            "c3",
+            "make",
+            vec![CommandAction::Unknown {
+                command: "make".into(),
+            }],
+        );
+        run(&mut renderer, &mut buffer, make);
+        let shown = text(&buffer);
+        assert_eq!(
+            shown[0], "\u{25cf} Read 1 file, listed 1 directory (ctrl+o to expand)",
+            "{shown:?}"
+        );
+        assert!(
+            shown.iter().skip(1).any(|l| l.contains("make")),
+            "{shown:?}"
         );
     }
 

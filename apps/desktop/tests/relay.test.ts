@@ -34,7 +34,7 @@ describe('relay', () => {
 
   it('refuses what later steps add with their checks', () => {
     // Each needs a check of its parameters first (a folder, a mode, a config).
-    for (const method of ['turn/start', 'session/start', 'session/fork', 'session/settings/update']) {
+    for (const method of ['session/start', 'session/fork', 'session/settings/update']) {
       expect(refusal(method, {}), method).not.toBeNull();
     }
   });
@@ -51,6 +51,19 @@ describe('relay', () => {
     expect(refusal('session/resume', { sessionId: 's1', cwd: '/' })).toMatch(/cwd/);
     expect(refusal('session/resume', { sessionId: 's1', config: { mode: 'auto' } })).toMatch(/config/);
     expect(refusal('session/resume', { sessionId: 's1', baseUrl: 'https://x' })).toMatch(/baseUrl/);
+  });
+
+  it('sends a typed prompt, and nothing that would raise the turn or reach outside the session', () => {
+    const text = [{ type: 'text', text: 'hello' }];
+    expect(refusal('turn/start', { sessionId: 's', input: text })).toBeNull();
+    expect(refusal('turn/steer', { sessionId: 's', expectedTurnId: 't', input: text })).toBeNull();
+    expect(refusal('turn/start', { sessionId: 's', input: text, mode: 'auto' })).toMatch(/mode/);
+    expect(refusal('turn/start', { sessionId: 's', input: text, outputSchema: {} })).toMatch(/outputSchema/);
+    expect(refusal('turn/start', { sessionId: 's', input: [] })).toMatch(/input/);
+    expect(refusal('turn/start', { sessionId: 's', input: [{ type: 'mention', path: '/etc/passwd', name: 'p' }] })).toMatch(
+      /only text/,
+    );
+    expect(refusal('turn/start', { input: text })).toMatch(/sessionId/);
   });
 
   it('refuses what is not a method and params that are not an object', () => {
