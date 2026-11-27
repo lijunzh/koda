@@ -526,6 +526,16 @@ impl TuiContext {
                 }
             };
 
+        // What a key handler sent as the turn ended, which the loop no longer
+        // reads: text queued with Tab joins the queue, so the next prompt
+        // sends it, and steering text goes back to the input box as any the
+        // host refuses does. A `/side` question is dropped with the turn.
+        while let Ok(command) = cmd_rx.try_recv() {
+            if !matches!(command, TurnCommand::Side { .. }) {
+                self.send_turn_command(command, &mut tracker).await;
+            }
+        }
+
         // A thought not drawn yet goes in; the lookup row closes.
         self.renderer.end_turn(&mut self.scroll_buffer);
         // Its sub-agents ended with it; what it left running in the
