@@ -5,9 +5,10 @@
 //!
 //! ```rust,ignore
 //! let tui = TestTui::start(vec![text("Hello.")]).await;
-//! tui.run(async |tui| {
-//!     tui.submit("hi").await;
-//!     tui.wait_for_screen("Hello.").await;
+//! tui.run(async |driver: Driver| {
+//!     driver.submit("hi").await;
+//!     driver.wait_for_screen("Hello.").await;
+//!     driver
 //! })
 //! .await;
 //! ```
@@ -25,6 +26,7 @@ use tokio::sync::mpsc;
 
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 
+use crate::session_id::Resume;
 use crate::tui_context::TuiContext;
 use crate::tui_types::TuiIo;
 
@@ -50,9 +52,8 @@ pub(crate) struct Driver {
     /// The scripted model.
     pub server: FakeLlmServer,
     /// The project folder.
-    #[allow(dead_code)]
     pub project: tempfile::TempDir,
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
 }
 
 impl TestTui {
@@ -71,6 +72,11 @@ impl TestTui {
     /// before each change, which the approval tests need.
     pub async fn start_safe(replies: Vec<ResponseTemplate>) -> Self {
         let server = koda_test_utils::openai::model(replies).await;
+        Self::start_safe_on(server).await
+    }
+
+    /// A TUI in Safe mode whose model is `server`.
+    pub async fn start_safe_on(server: FakeLlmServer) -> Self {
         Self::start_with(server, tempfile::tempdir().unwrap(), "mode = \"safe\"\n").await
     }
 
@@ -89,6 +95,27 @@ impl TestTui {
         let koda = home.path().join(".config/koda");
         std::fs::create_dir_all(&koda).unwrap();
         std::fs::write(koda.join("config.toml"), config).unwrap();
+        Self::open(server, project, home, None).await
+    }
+
+    /// A new TUI in the last one's home and project, on its server, as
+    /// `koda` started again there: `resume` names the session to open.
+    pub async fn start_again(driver: Driver, resume: Option<Resume>) -> Self {
+        let Driver {
+            server,
+            project,
+            home,
+            ..
+        } = driver;
+        Self::open(server, project, home, resume).await
+    }
+
+    async fn open(
+        server: FakeLlmServer,
+        project: tempfile::TempDir,
+        home: tempfile::TempDir,
+        resume: Option<Resume>,
+    ) -> Self {
         koda_config::runtime_env::set(
             "XDG_CONFIG_HOME",
             home.path().join(".config").to_string_lossy(),
@@ -103,10 +130,13 @@ impl TestTui {
             base_url: Some(server.url()),
             model: Some("stub-model".to_string()),
         };
+        // Canonical, as `koda` hands it over (`/var` is `/private/var` on
+        // macOS): sessions are listed by the root they were stored under.
+        let root = std::fs::canonicalize(project.path()).unwrap();
         let ctx = TuiContext::new(
-            project.path().to_path_buf(),
+            root,
             named,
-            None,
+            resume,
             false,
             tokio::spawn(async { None }),
             false,
@@ -125,13 +155,14 @@ impl TestTui {
                 keys,
                 server,
                 project,
-                _home: home,
+                home,
             },
         }
     }
 
-    /// Run the TUI's event loop with `script` beside it, then `/exit`.
-    pub async fn run<F, Fut>(mut self, script: F)
+    /// Run the TUI's event loop with `script` beside it, then `/exit`. The
+    /// driver comes back, for what a test checks once the TUI has gone.
+    pub async fn run<F, Fut>(mut self, script: F) -> Driver
     where
         F: FnOnce(Driver) -> Fut,
         Fut: std::future::Future<Output = Driver>,
@@ -145,22 +176,33 @@ impl TestTui {
             driver
         };
         let (looped, driver) = tokio::join!(self.ctx.run_event_loop(&cmd_tx, &mut cmd_rx), script);
-        drop((keys, driver));
+        drop(keys);
         looped.unwrap();
+        driver
     }
 }
 
 impl Driver {
     /// The screen, one line per row, with trailing spaces trimmed.
+    ///
+    /// A wide character covers the cell after it, as a terminal draws it.
+    /// The test backend keeps whatever that cell held before (ratatui
+    /// doesn't redraw a covered cell), which after a scroll can be another
+    /// row's character: `⏳🔒>` where a terminal shows `⏳>`.
     pub fn screen(&self) -> String {
+        use unicode_width::UnicodeWidthStr;
         let screen = self.screen.lock().unwrap();
         let buffer = screen.buffer();
         let area = buffer.area;
         (0..area.height)
             .map(|y| {
-                let row: String = (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol().to_string())
-                    .collect();
+                let mut row = String::new();
+                let mut x = 0;
+                while x < area.width {
+                    let symbol = buffer[(x, y)].symbol();
+                    row.push_str(symbol);
+                    x += (symbol.width() as u16).max(1);
+                }
                 row.trim_end().to_string()
             })
             .collect::<Vec<_>>()
@@ -220,15 +262,7 @@ impl Driver {
     /// The `count`th chat request the model got (1 is the first), as text;
     /// waits for it.
     pub async fn model_call(&self, count: usize) -> String {
-        let deadline = Instant::now() + WAIT;
-        loop {
-            let calls = koda_test_utils::openai::chat_requests(&self.server).await;
-            if let Some(call) = calls.get(count - 1) {
-                return call.to_string();
-            }
-            assert!(Instant::now() < deadline, "no model call {count}");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        model_call_on(&self.server, count).await
     }
 
     /// How many chat requests the model has had.
@@ -260,6 +294,93 @@ impl Driver {
         let _ = self.keys.send(Event::Paste(text.to_string()));
     }
 
+    /// Wait until `done` holds, saying `what` if it never does.
+    pub async fn wait_until(&self, done: impl Fn() -> bool, what: &str) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting until {what}:\n{}",
+                self.screen()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Answer every approval with `y` until `done` holds.
+    pub async fn approve_until(&self, done: impl Fn() -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out:\n{}", self.screen());
+            if self.screen().contains("[y] approve") {
+                self.press(KeyCode::Char('y'));
+                self.wait_for_screen_without("[y] approve").await;
+            } else {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+
+    /// In an open picker, press Down until the highlighted line shows
+    /// `text`. Pickers move with the arrow keys only, and Down wraps.
+    pub async fn highlight(&self, text: &str) {
+        let highlighted = |screen: &str| {
+            screen
+                .lines()
+                .any(|line| line.trim_start().starts_with('\u{203a}') && line.contains(text))
+        };
+        for _ in 0..40 {
+            if highlighted(&self.screen()) {
+                return;
+            }
+            let before = self.screen();
+            self.press(KeyCode::Down);
+            self.wait_for_screen_that(|screen| screen != before, "move the highlight")
+                .await;
+        }
+        panic!("never highlighted {text:?}:\n{}", self.screen());
+    }
+
+    /// Koda's config folder, where its database and `config.toml` are.
+    pub fn config_dir(&self) -> std::path::PathBuf {
+        self.home.path().join(".config/koda")
+    }
+
+    /// Koda's database.
+    pub async fn db(&self) -> koda_state::db::Database {
+        koda_state::db::Database::init(&self.config_dir())
+            .await
+            .unwrap()
+    }
+
+    /// The project's session ids, most recent first.
+    pub async fn sessions(&self) -> Vec<String> {
+        use koda_state::session_store::SessionStore;
+        let project = std::fs::canonicalize(self.project.path()).unwrap();
+        self.db()
+            .await
+            .list_sessions(10, &project)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// The messages session `id` has stored, as one string.
+    pub async fn stored_messages(&self, id: &str) -> String {
+        use koda_state::session_store::SessionStore;
+        self.db()
+            .await
+            .load_all_messages(id)
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Put `text` in the input box and press Enter.
     pub async fn submit(&self, text: &str) {
         self.paste(text);
@@ -270,6 +391,20 @@ impl Driver {
         )
         .await;
         self.press(KeyCode::Enter);
+    }
+}
+
+/// The `count`th chat request `server` got (1 is the first), as text;
+/// waits for it.
+pub(crate) async fn model_call_on(server: &FakeLlmServer, count: usize) -> String {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let calls = koda_test_utils::openai::chat_requests(server).await;
+        if let Some(call) = calls.get(count - 1) {
+            return call.to_string();
+        }
+        assert!(Instant::now() < deadline, "no model call {count}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
