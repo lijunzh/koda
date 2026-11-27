@@ -124,8 +124,10 @@ pub fn definitions() -> Vec<ToolDefinition> {
             as add, commit or checkout, has to leave the sandbox), /tmp and cache folders, \
             can't change ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
-            registries over HTTP(S){own_ports}. ssh, git over SSH, other hosts, the local \
-            network and {other_localhost} are unreachable.{find_processes} When a command the user \
+            registries over HTTP(S){own_ports}; when a command reaches for another host, \
+            the user is asked whether to allow it, so just run the command. ssh, git over \
+            SSH, the local network and {other_localhost} are unreachable.{find_processes} \
+            When a command the user \
             needs fails because of \
             the sandbox (\"Operation not permitted\", or no connection to a host the \
             proxy doesn't allow, such as a git push over SSH), run it again at once \

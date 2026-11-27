@@ -168,7 +168,14 @@ async fn handle_one(
         return Ok(());
     }
 
-    if !filter.allows(&target) {
+    let port = target
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
+        .unwrap_or(443);
+    if !filter
+        .decide(&target, port, super::NetworkProtocol::Https)
+        .await
+    {
         write_status(&mut client, 403, "Forbidden").await?;
         debug!("proxy: blocked CONNECT {target} (not in allowlist)");
         return Ok(());
@@ -381,6 +388,64 @@ mod tests {
         let body_str = String::from_utf8_lossy(&body);
         let body_str = body_str.trim_start_matches("\r\n");
         assert_eq!(body_str, payload, "tunneled body mismatch");
+    }
+
+    /// Says yes or no to every unlisted host, recording what it was asked.
+    struct Asker {
+        yes: bool,
+        asked: std::sync::Mutex<Vec<(String, u16, crate::proxy::NetworkProtocol)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::proxy::HostAsker for Asker {
+        async fn allow(
+            &self,
+            host: &str,
+            port: u16,
+            protocol: crate::proxy::NetworkProtocol,
+        ) -> bool {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((host.to_string(), port, protocol));
+            self.yes
+        }
+    }
+
+    /// A host off the list is put to the asker, as Codex's managed proxy
+    /// asks: a yes tunnels it, a no is a 403. A listed host isn't asked
+    /// about.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unlisted_host_goes_to_the_asker() {
+        let payload = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        for yes in [true, false] {
+            let (up_port, _) = fake_upstream(payload).await;
+            let asker = std::sync::Arc::new(Asker {
+                yes,
+                asked: std::sync::Mutex::new(Vec::new()),
+            });
+            let filter = Filter::new(["github.com"])
+                .unwrap()
+                .with_asker(asker.clone());
+            let server = Server::bind(None, filter)
+                .await
+                .unwrap()
+                .with_upstream(crate::proxy::upstream::UpstreamConfig::Direct);
+            let proxy_port = server.port();
+            tokio::spawn(server.serve());
+
+            let (status, _) = do_connect(proxy_port, &format!("127.0.0.1:{up_port}")).await;
+            let expected = if yes { "HTTP/1.1 200" } else { "HTTP/1.1 403" };
+            assert!(status.starts_with(expected), "yes={yes}: {status:?}");
+            assert_eq!(
+                *asker.asked.lock().unwrap(),
+                [(
+                    "127.0.0.1".to_string(),
+                    up_port,
+                    crate::proxy::NetworkProtocol::Https
+                )]
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

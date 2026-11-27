@@ -132,6 +132,8 @@ There is no human to approve tool calls. Koda answers them itself with a
   there to approve each one. Such a run can only read.
 - **Approves** the rest of what would ask in a session, such as a command
   naming a path outside the project, which the sandbox still holds.
+- **Refuses** a host off the proxy's allow-list, as before: nobody is there
+  to approve it.
 - **Skips** AskUser questions (prints to stderr, continues with empty answer)
 
 The sandbox enforces credential protection and write restrictions
@@ -256,7 +258,7 @@ Koda asks with JSON-RPC requests, which have an `id`:
 
 | Method | Carries | Answer |
 |--------|---------|--------|
-| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `command`, `cwd`, `reason`, `outsideSandbox`, `background`, `effect`, `allowForSession`, `agent` | `decision`, as Codex's: `"accept"`, `"acceptForSession"`, `"decline"`, `"cancel"` (no, and stop the turn; for a sub-agent's request, stop that sub-agent), or Koda's `{"declineWithFeedback": {"feedback": "..."}}`. `changes` is the edit's diff, as on the item. For a `Bash` or `Cargo` call, `command` and `cwd` say what would run and where, `reason` why the model wants it, and `outsideSandbox` that it asks to leave the sandbox, as fields a client can lay out; `detail` says the same in a line. `agent` names the sub-agent asking, when it isn't the main agent; a background agent may ask with no turn running, and `turnId` is then empty |
+| `item/toolCall/requestApproval` | `itemId`, `tool`, `detail`, `changes`, `command`, `cwd`, `reason`, `outsideSandbox`, `background`, `effect`, `allowForSession`, `sessionPrefix`, `networkApprovalContext`, `agent` | `decision`, as Codex's: `"accept"`, `"acceptForSession"`, `"decline"`, `"cancel"` (no, and stop the turn; for a sub-agent's request, stop that sub-agent), or Koda's `{"declineWithFeedback": {"feedback": "..."}}`. `changes` is the edit's diff, as on the item. For a `Bash` or `Cargo` call, `command` and `cwd` say what would run and where, `reason` why the model wants it, and `outsideSandbox` that it asks to leave the sandbox, as fields a client can lay out; `detail` says the same in a line. `sessionPrefix` is what `acceptForSession` covers for a command leaving the sandbox (`["git", "commit"]`). `networkApprovalContext` (`host`, `protocol`: `https` or `socks5Tcp`), as Codex's, marks a request about a host off the proxy's allow-list, on the command that reached for it; `acceptForSession` then allows the host. `agent` names the sub-agent asking, when it isn't the main agent; a background agent may ask with no turn running, and `turnId` is then empty |
 | `item/tool/requestUserInput` | `itemId`, `question`, `options` | `answer` |
 | `turn/loopCap/requestDecision` | `cap`, `recentTools` | `decision`: `continue50`, `continue200` or `stop` |
 

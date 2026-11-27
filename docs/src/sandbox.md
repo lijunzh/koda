@@ -212,9 +212,35 @@ run in the host's sandbox.
 ## When a command needs to leave the sandbox
 
 Bash commands reach the network only through Koda's proxy, which lets
-through GitHub and the main package registries. Every other host is
-unreachable from inside the sandbox, and so are servers on your local
-network and on `localhost`. The proxy matches hosts, not ports, as
+through GitHub and the main package registries. Servers on your local
+network and on `localhost` are unreachable from inside the sandbox.
+
+### A host that isn't on the list
+
+When a command reaches for another host, Koda asks, as Codex's managed
+proxy does. The question is the command's own, with the host:
+
+```
+  Bash  Network access to docs.rs:443 (not on the allow-list)
+  [y] approve  [s] docs.rs this session  [n] reject  [f] feedback  [esc] stop
+```
+
+- **`y`** lets this connection through. The next connection to the host
+  asks again; connections opened while the question is up share its answer.
+- **`s`** lets every later connection to the host, on that protocol and
+  port, through for the session.
+- **`n`** refuses it and stops the command, and the model is told the
+  network access was denied.
+
+The question belongs to the command that opened the connection when exactly
+one command is running. With none running (a server started in the
+background, say), it names no command, and is asked only while a turn runs.
+With several at once (a parallel batch), the host is refused without
+asking, since stopping one of them would be a guess. With nobody to ask
+(`koda exec`), it is refused. All of this is Codex's managed proxy's
+behaviour. A command that ends takes its question with it.
+
+The proxy matches hosts, not ports, as
 Anthropic's sandbox-runtime does for an entry without one: an allowed host
 is reachable on any port, so a command that tunnels SSH through the proxy
 can reach `github.com:22`. `~/.ssh` is readable (see "Credential

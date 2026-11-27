@@ -94,6 +94,8 @@ pub mod last_provider;
 pub use koda_state::log_db;
 /// Loop detection — catches runaway repeated tool calls.
 pub mod loop_guard;
+/// Asking about a host off the egress proxy's allow-list, as Codex does.
+pub mod network_approval;
 /// Shell command classification and the scratch paths outside the project:
 /// `koda-command`'s.
 pub use koda_command::{bash_safety, scratch_path};

@@ -449,6 +449,7 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             tool_name,
             detail,
             allow_for_session,
+            session_label,
             agent,
             background,
             ..
@@ -497,7 +498,10 @@ fn render_menu(frame: &mut ratatui::Frame, menu: &MenuContent, menu_area: ratatu
             if *allow_for_session {
                 keys.extend([
                     Span::styled("[s]", Style::default().fg(Color::Green)),
-                    Span::styled(" this session  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(" {}  ", session_label.as_deref().unwrap_or("this session")),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]);
             }
             keys.extend([

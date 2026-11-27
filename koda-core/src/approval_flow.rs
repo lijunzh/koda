@@ -42,6 +42,15 @@ pub trait Approver: Send + Sync {
     /// The answer, or `None` when it can't be asked or got no answer (the
     /// client went away, or the request was withdrawn).
     async fn approve(&self, request: AgentApproval) -> Option<ApprovalDecision>;
+
+    /// The answer about a host off the proxy's allow-list
+    /// ([`crate::network_approval`]), or `None` when nobody can be asked.
+    async fn approve_network(
+        &self,
+        _request: crate::network_approval::NetworkApproval,
+    ) -> Option<ApprovalDecision> {
+        None
+    }
 }
 
 /// The engine's end of the command channel for one turn.

@@ -151,69 +151,72 @@ async fn handle_one(
     filter: &Filter,
     upstream: &crate::proxy::upstream::UpstreamConfig,
 ) -> Result<()> {
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+    // Only the handshake has a deadline: a person may take a while to
+    // answer about an unlisted host, and a tunnel lasts as long as its
+    // relay allows.
+    let outcome = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         greet(&mut client).await?;
-        let target = read_request(&mut client).await?;
-
-        let target = match target {
-            RequestOutcome::Reject { rep, atyp } => {
-                send_reply(&mut client, rep, atyp).await?;
-                return Ok(());
-            }
-            RequestOutcome::Connect(t) => t,
-        };
-
-        if !filter.allows(&target.host) {
-            debug!("socks5: blocked CONNECT {} (not in allowlist)", target.host);
-            send_reply(&mut client, REP_NOT_ALLOWED, 0x03).await?;
-            return Ok(());
-        }
-
-        // Allowed. Resolve + dial upstream — either directly or through
-        // the chained corp proxy. The `connect_upstream` helper handles
-        // the dispatch, including NO_PROXY bypass for hosts that the
-        // user's environment marks as direct-routable.
-        let upstream_addr = format!("{}:{}", target.host, target.port);
-        let dial = crate::proxy::upstream::connect_upstream(&upstream_addr, upstream).await;
-
-        let upstream_sock = match dial {
-            Ok(s) => s,
-            Err(e) => {
-                // The upstream layer wraps anyhow::Error around a root
-                // cause that may be an `io::Error` (direct dial) or a
-                // CONNECT-status error (chained dial). For the former we
-                // can map to a precise REP code; for the latter we use
-                // REP_GENERAL_FAILURE because none of the SOCKS5 codes
-                // really capture "corp proxy refused".
-                let rep = e
-                    .downcast_ref::<std::io::Error>()
-                    .map(io_error_to_rep)
-                    .unwrap_or(REP_GENERAL_FAILURE);
-                warn!("socks5: upstream connect to {upstream_addr} failed: {e:#}");
-                send_reply(&mut client, rep, 0x03).await?;
-                return Ok(());
-            }
-        };
-
-        send_reply(&mut client, REP_SUCCEEDED, 0x03).await?;
-
-        // Bidirectional copy with idle + total timeouts (Phase 3f of
-        // #934). Same rationale as [`super::server`]: SOCKS5 clients
-        // (git-over-https, raw TCP) never half-close after the reply,
-        // so without an idle deadline a wedged peer pins the slot for
-        // the kernel keepalive's two-hour default. See
-        // [`super::relay::relay_with_timeouts`] for the design notes.
-        let _ = super::relay::relay_with_timeouts(
-            client,
-            upstream_sock,
-            super::relay::DEFAULT_IDLE_TIMEOUT,
-            super::relay::DEFAULT_TOTAL_TIMEOUT,
-        )
-        .await;
-        Ok::<_, anyhow::Error>(())
+        read_request(&mut client).await
     })
     .await
     .context("socks5 handshake timed out")??;
+    let target = match outcome {
+        RequestOutcome::Reject { rep, atyp } => {
+            send_reply(&mut client, rep, atyp).await?;
+            return Ok(());
+        }
+        RequestOutcome::Connect(t) => t,
+    };
+
+    if !filter
+        .decide(&target.host, target.port, super::NetworkProtocol::Socks5Tcp)
+        .await
+    {
+        debug!("socks5: blocked CONNECT {} (not in allowlist)", target.host);
+        send_reply(&mut client, REP_NOT_ALLOWED, 0x03).await?;
+        return Ok(());
+    }
+    // Allowed. Resolve + dial upstream — either directly or through
+    // the chained corp proxy. The `connect_upstream` helper handles
+    // the dispatch, including NO_PROXY bypass for hosts that the
+    // user's environment marks as direct-routable.
+    let upstream_addr = format!("{}:{}", target.host, target.port);
+    let dial = crate::proxy::upstream::connect_upstream(&upstream_addr, upstream).await;
+
+    let upstream_sock = match dial {
+        Ok(s) => s,
+        Err(e) => {
+            // The upstream layer wraps anyhow::Error around a root
+            // cause that may be an `io::Error` (direct dial) or a
+            // CONNECT-status error (chained dial). For the former we
+            // can map to a precise REP code; for the latter we use
+            // REP_GENERAL_FAILURE because none of the SOCKS5 codes
+            // really capture "corp proxy refused".
+            let rep = e
+                .downcast_ref::<std::io::Error>()
+                .map(io_error_to_rep)
+                .unwrap_or(REP_GENERAL_FAILURE);
+            warn!("socks5: upstream connect to {upstream_addr} failed: {e:#}");
+            send_reply(&mut client, rep, 0x03).await?;
+            return Ok(());
+        }
+    };
+
+    send_reply(&mut client, REP_SUCCEEDED, 0x03).await?;
+
+    // Bidirectional copy with idle + total timeouts (Phase 3f of
+    // #934). Same rationale as [`super::server`]: SOCKS5 clients
+    // (git-over-https, raw TCP) never half-close after the reply,
+    // so without an idle deadline a wedged peer pins the slot for
+    // the kernel keepalive's two-hour default. See
+    // [`super::relay::relay_with_timeouts`] for the design notes.
+    let _ = super::relay::relay_with_timeouts(
+        client,
+        upstream_sock,
+        super::relay::DEFAULT_IDLE_TIMEOUT,
+        super::relay::DEFAULT_TOTAL_TIMEOUT,
+    )
+    .await;
     Ok(())
 }
 

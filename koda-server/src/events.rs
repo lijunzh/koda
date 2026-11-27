@@ -711,6 +711,8 @@ impl EventProjector {
                             reason: None,
                             outside_sandbox: false,
                             background: false,
+                            session_prefix: None,
+                            network_approval_context: None,
                         },
                         command,
                     ),
@@ -1057,8 +1059,54 @@ impl EventProjector {
                 name: request.agent_name,
                 id: request.agent_id,
             }),
+            session_prefix: None,
+            network_approval_context: None,
         };
         (id, with_command(params, request.command))
+    }
+
+    /// A request to reach a host off the proxy's allow-list, on the command
+    /// that reached for it, as Codex asks with `networkApprovalContext`.
+    pub(crate) fn network_approval(
+        &mut self,
+        request: koda_core::network_approval::NetworkApproval,
+    ) -> (RequestId, ToolCallApprovalParams) {
+        use koda_protocol::item::{NetworkApprovalContext, NetworkApprovalProtocol};
+        let id = self.new_request_id();
+        let protocol = match request.protocol {
+            koda_sandbox::NetworkProtocol::Https => NetworkApprovalProtocol::Https,
+            koda_sandbox::NetworkProtocol::Socks5Tcp => NetworkApprovalProtocol::Socks5Tcp,
+        };
+        let params =
+            ToolCallApprovalParams {
+                session_id: self.session_id.clone(),
+                turn_id: self.turn(),
+                // With no command running, the question names none, and its
+                // command is Codex's `network-access <target>`.
+                item_id: request.tool_call_id.unwrap_or_default(),
+                tool: "Bash".to_string(),
+                detail: format!(
+                    "Network access to {}:{} (not on the allow-list)",
+                    request.host, request.port
+                ),
+                changes: Vec::new(),
+                command: Some(request.command.unwrap_or_else(|| {
+                    format!("network-access {}:{}", request.host, request.port)
+                })),
+                cwd: None,
+                reason: None,
+                outside_sandbox: false,
+                background: false,
+                effect: effect_of(koda_core::tools::ToolEffect::RemoteAction),
+                allow_for_session: true,
+                session_prefix: None,
+                network_approval_context: Some(NetworkApprovalContext {
+                    host: request.host,
+                    protocol,
+                }),
+                agent: None,
+            };
+        (id, params)
     }
 
     /// A request id for a request of the host's own, not the engine's: an
@@ -1394,6 +1442,9 @@ fn with_command(
         params.reason = command.reason;
         params.outside_sandbox = command.outside_sandbox;
         params.background = command.background;
+        if params.allow_for_session {
+            params.session_prefix = command.session_prefix;
+        }
     }
     params
 }

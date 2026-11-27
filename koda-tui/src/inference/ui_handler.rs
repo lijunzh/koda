@@ -72,6 +72,7 @@ pub(crate) fn show_request(
                 tool_name: params.tool.clone(),
                 detail: params.detail.clone(),
                 allow_for_session: params.allow_for_session,
+                session_label: session_label(params),
                 agent: params.agent.as_ref().map(|agent| match &agent.id {
                     Some(id) => format!("{} {id}", agent.name),
                     None => agent.name.clone(),
@@ -105,4 +106,17 @@ pub(crate) fn show_request(
             });
         }
     }
+}
+
+/// What `s` covers on an approval, in the words the prompt shows: the host
+/// a command asks to reach, as Codex's "allow this host", or the command
+/// prefix, as Claude Code's "don't ask again for `git commit:*`".
+fn session_label(params: &koda_client::protocol::item::ToolCallApprovalParams) -> Option<String> {
+    if let Some(network) = &params.network_approval_context {
+        return Some(format!("{} this session", network.host));
+    }
+    params
+        .session_prefix
+        .as_ref()
+        .map(|prefix| format!("`{} …` this session", prefix.join(" ")))
 }

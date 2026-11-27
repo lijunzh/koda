@@ -82,7 +82,7 @@ pub use env::{
     DEFAULT_NO_PROXY, PROXY_PORT_ENV_KEY, ca_bundle_for_policy, proxy_env_vars, socks5_env_vars,
 };
 pub use external::ExternalProxy;
-pub use filter::{DEFAULT_DEV_ALLOWLIST, Filter};
+pub use filter::{DEFAULT_DEV_ALLOWLIST, Filter, HostAsker, NetworkProtocol};
 pub use handle::ProxyHandle;
 pub use server::Server;
 pub use socks5::Socks5Server;

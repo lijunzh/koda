@@ -207,7 +207,7 @@ pub enum MenuContent {
     /// Wizard trail — completed steps shown dimmed during a multi-step flow.
     WizardTrail(Vec<(String, String)>),
     /// Approval hotkey bar — shown during inference when the engine requests
-    /// a tool approval (`y`/`s`/`n`/`f`/`a`).
+    /// a tool approval (`y`/`s`/`n`/`f`).
     Approval {
         /// The host's request this answers.
         id: koda_client::protocol::rpc::RequestId,
@@ -215,6 +215,10 @@ pub enum MenuContent {
         detail: String,
         /// Whether `s` (yes for the rest of the session) is offered.
         allow_for_session: bool,
+        /// What `s` covers, when it's more than the call itself: a command
+        /// prefix (`` `git commit …` this session ``) or a host
+        /// (`example.com this session`).
+        session_label: Option<String>,
         /// The sub-agent asking (`explore` or `explore a1b2…`), when it isn't
         /// the main agent: Esc then refuses only this call, as in Claude Code.
         agent: Option<String>,

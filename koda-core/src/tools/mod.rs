@@ -282,6 +282,9 @@ pub struct ToolRegistry {
     page_reader: std::sync::RwLock<Option<Arc<dyn web_fetch::PageReader>>>,
     /// Where sub-agents' approvals go ([`Self::set_approver`]).
     approver: std::sync::RwLock<Option<Arc<dyn crate::approval_flow::Approver>>>,
+    /// The commands running now and the answers about hosts off the
+    /// proxy's allow-list ([`Self::network_approvals`]).
+    network: Arc<crate::network_approval::NetworkApprovals>,
     /// The session's event sink, which outlives a turn
     /// ([`Self::set_session_sink`]).
     session_sink: std::sync::RwLock<Option<std::sync::Weak<dyn crate::engine::EngineSink>>>,
@@ -370,6 +373,7 @@ impl ToolRegistry {
             web_searcher: std::sync::RwLock::new(None),
             page_reader: std::sync::RwLock::new(None),
             approver: std::sync::RwLock::new(None),
+            network: Default::default(),
             session_sink: std::sync::RwLock::new(None),
             web_search_budget: Default::default(),
             caps: OutputCaps::for_context(max_context_tokens),
@@ -485,9 +489,16 @@ impl ToolRegistry {
     /// Send sub-agents' approvals to `approver`, the session's client. Without
     /// one, a sub-agent's call that needs a yes is refused.
     pub fn set_approver(&self, approver: Arc<dyn crate::approval_flow::Approver>) {
+        self.network.set_approver(Arc::clone(&approver));
         if let Ok(mut guard) = self.approver.write() {
             *guard = Some(approver);
         }
+    }
+
+    /// What the session's proxies ask about a host off their allow-list:
+    /// the commands this registry runs, and the client's answers.
+    pub fn network_approvals(&self) -> Arc<crate::network_approval::NetworkApprovals> {
+        Arc::clone(&self.network)
     }
 
     /// Where a background agent reports what outlives its turn, such as the
@@ -800,7 +811,30 @@ impl ToolRegistry {
                 takes_pdfs: self.takes_pdfs(),
                 shell_search: self.shell_search(),
             };
-            let result = tool.execute(&ctx, &args).await;
+            // A sandboxed command reaches the network through the proxy,
+            // which asks about an unlisted host for the one command running;
+            // a no stops the command (dropping it kills its processes), as
+            // Codex cancels the execution.
+            let running =
+                (name == "Bash" && proxy_port.is_some() && !shell::wants_outside_sandbox(&args))
+                    .then(|| {
+                        let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+                        let call_id = sink_for_streaming.map_or("", |(_, id)| id);
+                        self.network.register(call_id, command)
+                    });
+            let result = match &running {
+                Some(running) => tokio::select! {
+                    result = tool.execute(&ctx, &args) => result,
+                    told = running.refused() => ToolResult {
+                        output: told,
+                        success: false,
+                        full_output: None,
+                        images: Vec::new(),
+                        exit_code: None,
+                    },
+                },
+                None => tool.execute(&ctx, &args).await,
+            };
             // Post-execution registry-level recording. Lives here
             // (not on the per-tool struct) because it touches
             // registry state. Each `name == "X"` arm is a sticky
@@ -2033,6 +2067,9 @@ pub struct ApprovalCommand {
     pub outside_sandbox: bool,
     /// Whether it runs in the background.
     pub background: bool,
+    /// What a yes for the session would cover, for a command leaving the
+    /// sandbox with a valid `prefix_rule` ([`crate::trust::session_prefix`]).
+    pub session_prefix: Option<Vec<String>>,
 }
 
 /// [`ApprovalCommand`] for a call of `tool_name` run in `cwd`; `None` for
@@ -2061,12 +2098,16 @@ pub fn approval_command(
         "Cargo" => (cargo::describe(args), None, false, false),
         _ => return None,
     };
+    let session_prefix = outside_sandbox
+        .then(|| crate::trust::session_prefix(args))
+        .flatten();
     Some(ApprovalCommand {
         command,
         cwd: cwd.to_path_buf(),
         reason,
         outside_sandbox,
         background,
+        session_prefix,
     })
 }
 

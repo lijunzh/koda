@@ -4577,3 +4577,89 @@ async fn feedback_is_saved_as_a_zip_about_the_session() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     koda.client.shutdown().await;
 }
+
+/// A local HTTP server answering every request with `body`; its port.
+async fn local_site(body: &'static str) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+/// A sandboxed command reaching for a host that isn't on the proxy's
+/// allow-list asks, as Codex's managed proxy does: the request is the
+/// command's, with the host in `networkApprovalContext`. A yes lets the
+/// connection through; a no refuses it and stops the command, and the model
+/// is told why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unlisted_host_asks_and_the_answer_decides() {
+    if !koda_core::sandbox::is_available() {
+        koda_sandbox::skip_test("no sandbox, so no proxy");
+        return;
+    }
+    for (decision, reached) in [("accept", true), ("decline", false)] {
+        let port = local_site("network-ok").await;
+        // `-p` tunnels through the proxy with CONNECT, as HTTPS would.
+        let command = format!(
+            "curl -s -p --noproxy '' -x \"$HTTPS_PROXY\" http://127.0.0.1:{port}/; echo done"
+        );
+        let server = model(vec![
+            tool_call("call_1", "Bash", json!({ "command": command })),
+            text("Done."),
+        ])
+        .await;
+        let mut koda = Koda::start(config(&server)).await;
+        koda.turn("Fetch the page").await;
+
+        let request = koda.request().await;
+        let ServerRequest::ToolCallApproval { id, params } = &request else {
+            panic!("expected an approval, got {request:?}");
+        };
+        let network = params
+            .network_approval_context
+            .as_ref()
+            .expect("a network request");
+        assert_eq!(network.host, "127.0.0.1");
+        assert_eq!(params.item_id, "call_1", "the command's own request");
+        assert!(
+            params.allow_for_session,
+            "a host can be allowed for the session"
+        );
+        koda.answer(id, json!({ "decision": decision })).await;
+
+        let messages = koda.until("turn/completed").await;
+        assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+        // What the command's result told the model.
+        let told = chat_requests(&server).await[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| m["content"].to_string())
+            .collect::<String>();
+        assert_eq!(told.contains("network-ok"), reached, "{decision}: {told}");
+        if reached {
+            assert!(told.contains("done"), "{told}");
+        } else {
+            assert!(
+                told.contains("denied network access to 127.0.0.1"),
+                "the model hears the command was stopped: {told}"
+            );
+            assert!(!told.contains("done"), "the command went on: {told}");
+        }
+        koda.client.shutdown().await;
+    }
+}
