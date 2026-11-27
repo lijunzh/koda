@@ -413,12 +413,14 @@ pub(crate) async fn execute_one_tool(
         if tools.catalog().is_mutating_call(&tc.function_name, &args) {
             sub_agent_cache.invalidate();
         }
-        // `Bash` streams its output; `WebSearch` and `WebFetch` report what
-        // their model requests used; `TodoWrite` sends the plan. A call run
-        // early, while the reply streams (Anthropic's), always gets the sink.
+        // `Bash` and `Cargo` stream their output; `WebSearch` and `WebFetch`
+        // report what their model requests used; `TodoWrite` sends the plan;
+        // `Monitor`, like the other two, needs its call's id to be named in
+        // a network question. A call run early, while the reply streams
+        // (Anthropic's), always gets the sink.
         let streaming = if matches!(
             tc.function_name.as_str(),
-            "Bash" | "WebSearch" | "WebFetch" | "TodoWrite"
+            "Bash" | "Cargo" | "Monitor" | "WebSearch" | "WebFetch" | "TodoWrite"
         ) {
             Some((sink, tc.id.as_str()))
         } else {

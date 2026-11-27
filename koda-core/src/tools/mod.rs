@@ -493,6 +493,17 @@ impl ToolRegistry {
         }
     }
 
+    /// Share `approvals` with another registry: a sub-agent's commands
+    /// count as running for the session's proxies, and its questions go to
+    /// the session's client.
+    pub fn with_network_approvals(
+        mut self,
+        approvals: Arc<crate::network_approval::NetworkApprovals>,
+    ) -> Self {
+        self.network = approvals;
+        self
+    }
+
     /// What the session's proxies ask about a host off their allow-list:
     /// the commands this registry runs, and the client's answers.
     pub fn network_approvals(&self) -> Arc<crate::network_approval::NetworkApprovals> {
@@ -816,13 +827,26 @@ impl ToolRegistry {
             // which asks about an unlisted host for the one command running;
             // a no stops the command (dropping it kills its processes), as
             // Codex cancels the execution.
-            let running =
-                (name == "Bash" && proxy_port.is_some() && !shell::wants_outside_sandbox(&args))
-                    .then(|| {
-                        let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-                        let call_id = sink_for_streaming.map_or("", |(_, id)| id);
-                        self.network.register(call_id, command)
-                    });
+            // Every sandboxed process counts, so a question isn't put to
+            // one command when another may have made the connection; an
+            // offline one can't reach the proxy.
+            let sandboxed = match name {
+                "Bash" => !shell::wants_outside_sandbox(&args),
+                "Monitor" | "Cargo" => true,
+                _ => false,
+            };
+            let running = (sandboxed && proxy_port.is_some() && !policy.net.offline).then(|| {
+                let command = match name {
+                    "Cargo" => describe_action(name, &args),
+                    _ => args
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                };
+                let call_id = sink_for_streaming.map_or("", |(_, id)| id);
+                self.network.register(call_id, &command)
+            });
             let result = match &running {
                 Some(running) => tokio::select! {
                     result = tool.execute(&ctx, &args) => result,

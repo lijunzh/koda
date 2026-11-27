@@ -4,7 +4,7 @@ Koda's kernel sandbox is **always active** — every Bash command runs
 inside a sandboxed process. The sandbox decides what a command can do: in
 Auto a command that stays inside it runs without asking, and one that needs
 more asks to leave it. The [trust mode](./approval.md) picks the sandbox:
-Auto's can write the project, Plan's keeps it read-only.
+Auto's can write the project, Plan's keeps it read-only and has no network.
 
 ## File tool read policy
 
@@ -64,7 +64,8 @@ Bash commands can only write to:
 - The project directory, except `.git`, which is read-only
 - `/tmp` and standard cache dirs (`~/.cache`, `~/.cargo`, etc.)
 
-In Plan the project is read-only too.
+In Plan the project is read-only too, and a command has no network at all,
+not even through the proxy, as in Codex's read-only sandbox.
 
 `.git` is read-only as it is in Codex's workspace-write sandbox, so a
 command can't rewrite history or the repository's config. `git status`,
@@ -177,7 +178,8 @@ its caller. If the parent runs in Plan mode, the child runs in Plan mode
 even if the agent JSON specifies `"trust": "auto"`.
 
 Within that clamp, a sub-agent's calls go through the same rules as the main
-agent's, and what would ask asks in the main session, naming the agent. See
+agent's and its commands through the same proxy, and what would ask asks in
+the main session, naming the agent. See
 [Sub-agents ask in the main session](./approval.md#sub-agents-ask-in-the-main-session).
 
 ## Platform backends
@@ -233,11 +235,12 @@ proxy does. The question is the command's own, with the host:
   network access was denied.
 
 The question belongs to the command that opened the connection when exactly
-one command is running. With none running (a server started in the
-background, say), it names no command, and is asked only while a turn runs.
-With several at once (a parallel batch), the host is refused without
-asking, since stopping one of them would be a guess. With nobody to ask
-(`koda exec`), it is refused. All of this is Codex's managed proxy's
+one command (`Bash`, `Monitor` or `Cargo`, a sub-agent's included) is
+running. With none running (a server started in the background, say), it
+names no command, and is asked only while a turn runs. With several at once
+(a parallel batch), the host is refused without asking, since stopping one
+of them would be a guess. With nobody to ask (`koda exec`), it is refused,
+and the command goes on without it. All of this is Codex's managed proxy's
 behaviour. A command that ends takes its question with it.
 
 The proxy matches hosts, not ports, as

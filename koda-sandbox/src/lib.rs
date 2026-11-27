@@ -298,7 +298,7 @@ impl SandboxRuntime for BwrapRuntime {
         let command = match try_build_kernel_enforced(&req) {
             Ok(Some(cmd)) => cmd,
             Ok(None) => {
-                if req.proxy_port.is_some() {
+                if req.proxy_port.is_some() && !req.policy.net.offline {
                     warn_proxy_unenforced_on_linux_once();
                 }
                 bwrap::build_command(req.command, req.project_root, req.policy)?
@@ -388,7 +388,8 @@ fn try_build_kernel_enforced(
     req: &SandboxTransformRequest<'_>,
 ) -> Result<Option<tokio::process::Command>> {
     use anyhow::Context as _;
-    let Some(port) = req.proxy_port else {
+    // Offline: no bridge, just a network namespace of its own.
+    let Some(port) = req.proxy_port.filter(|_| !req.policy.net.offline) else {
         return Ok(None);
     };
     let uds = bwrap_proxy::proxy_uds_path(std::process::id(), port);

@@ -2312,7 +2312,9 @@ impl HostSink {
         request: koda_core::network_approval::NetworkApproval,
     ) -> Result<ApprovalDecision, (RequestId, oneshot::Receiver<Answer>)> {
         if self.answers.is_some() {
-            return Ok(ApprovalDecision::Reject);
+            return Ok(ApprovalDecision::RejectAuto {
+                reason: "no one to ask about the host".into(),
+            });
         }
         let mut state = self.lock();
         // A connection no command can own is asked about only during a

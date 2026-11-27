@@ -175,6 +175,11 @@ fn build_command_inner(
         // `(allow file-read*)`. Same last-match-wins approach as
         // Gemini CLI's seatbeltArgsBuilder.ts.
         let mut profile = match k.proxy {
+            _ if k.policy.net.offline => build_profile_string_with_network(
+                &root,
+                home,
+                &network_offline_rules(k.policy.net.allow_local_binding),
+            ),
             Some((port, allow_local_binding, weaker_macos_isolation)) => {
                 build_proxied_profile_string_with_loopback(
                     &root,
@@ -364,6 +369,21 @@ pub(crate) fn build_profile_string(root: &str, home: &str) -> String {
 /// allowed.
 pub(crate) fn network_open_rules() -> String {
     "(allow network*)\n".to_string()
+}
+
+/// Network rules for a policy that's [offline](crate::NetPolicy::offline):
+/// the proxied rules with no proxy to reach, so no TCP leaves the machine.
+pub fn network_offline_rules(allow_local_binding: bool) -> String {
+    let mut rules = String::new();
+    rules.push_str("(allow network-outbound (remote unix-socket))\n");
+    rules.push_str("(allow network-inbound (local ip \"localhost:*\"))\n");
+    rules.push_str("(allow network-bind (local ip \"localhost:*\"))\n");
+    if allow_local_binding {
+        rules.push_str("(allow network-bind (local ip \"*:*\"))\n");
+        rules.push_str("(allow network-inbound (local ip \"*:*\"))\n");
+        rules.push_str("(allow network-outbound (remote ip \"localhost:*\"))\n");
+    }
+    rules
 }
 
 /// Network rules for the Phase 3a proxied mode.

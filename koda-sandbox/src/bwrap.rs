@@ -89,6 +89,10 @@ pub fn build_command(
     }
     apply_policy_overlay(&mut cmd, policy)?;
     apply_server_socket_masks(&mut cmd, &home);
+    // A network namespace of its own with no bridge out: loopback only.
+    if policy.net.offline {
+        cmd.args(["--unshare-net"]);
+    }
     cmd.args(["--", "sh", "-c", command])
         .current_dir(project_root);
     // #1228: scrub the LLM-bound shell's env down to the allowlist.

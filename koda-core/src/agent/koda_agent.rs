@@ -76,7 +76,7 @@ pub struct KodaAgent {
 /// Code's plan mode tells its model.
 const PLAN_MODE_NOTE: &str = "\n## Read-only session\n\n\
      This session is read-only (plan mode). You can read files, search, run commands that \
-     only read, and use tools that only read. Anything that would change a file, run another \
+     only read (they have no network), and use tools that only read. Anything that would change a file, run another \
      command or act somewhere else is refused. Don't try it: do what you can by reading, and \
      say in your answer what you would change or do.\n";
 
@@ -88,8 +88,8 @@ const PLAN_MODE_HEADING: &str = "\n## Read-only session";
 /// `<proposed_plan>` block, which the TUI offers to implement.
 const PLAN_MODE_INTERACTIVE_NOTE: &str = "\n## Read-only session (plan mode)\n\n\
      You are in plan mode until the user leaves it. Plan the work with the user; don't do it. \
-     You can read files, search, run commands that only read and use tools that only \
-     read. Anything that would change a file, run another command or act somewhere else is refused. Don't try \
+     You can read files, search, run commands that only read (they have no network) and \
+     use tools that only read. Anything that would change a file, run another command or act somewhere else is refused. Don't try \
      it, even when asked to do the work: a request to do something is, here, a request to \
      plan it.\n\n\
      First explore: find out what you can from the project rather than asking. Then ask \
