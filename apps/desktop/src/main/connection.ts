@@ -197,9 +197,9 @@ export class Connection extends EventEmitter {
     return this.client.request(method, params);
   }
 
-  /** Whether `id` is a request the server sent and nobody has answered. */
-  isOpenRequest(id: RpcId): boolean {
-    return this.client?.openServerRequests.has(id) ?? false;
+  /** The request `id` the server sent, while nobody has answered it. */
+  openRequest(id: RpcId): { method: string; params: Record<string, unknown> } | undefined {
+    return this.client?.openServerRequests.get(id);
   }
 
   respond(id: RpcId, result: unknown) {

@@ -340,7 +340,7 @@ button {
   color: #2563eb;
 }
 /* The prompt box */
-.composer {
+.bottom {
   border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent);
   padding: 10px 24px 16px;
 }
@@ -389,4 +389,57 @@ button {
 .views button[aria-pressed='true'] {
   background: color-mix(in srgb, currentColor 16%, transparent);
   font-weight: 600;
+}
+/* What Koda waits on you for */
+.requests {
+  margin-bottom: 10px;
+}
+.request-card {
+  border: 1px solid color-mix(in srgb, var(--problem) 60%, transparent);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.request-head {
+  margin-bottom: 6px;
+}
+.request-head code {
+  font-size: 13px;
+}
+.request-agent {
+  font-weight: 600;
+  color: #9333ea;
+  margin-bottom: 4px;
+}
+.request-warning {
+  color: var(--problem);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.actions {
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 8px;
+}
+.actions.column {
+  flex-direction: column;
+  align-items: stretch;
+}
+.actions input,
+.actions textarea {
+  flex: 1;
+  font: inherit;
+  padding: 6px 8px;
+}
+button.primary {
+  font-weight: 600;
+}
+.form {
+  display: grid;
+  gap: 8px;
+}
+.form label {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px;
+  align-items: center;
 }

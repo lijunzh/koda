@@ -132,6 +132,6 @@ describe('Connection', () => {
     const { conn } = connection([{ status: 'failed', message: 'x' }]);
     await conn.open();
     await expect(conn.request('session/list', {})).rejects.toThrow(/not connected/);
-    expect(conn.isOpenRequest(1)).toBe(false);
+    expect(conn.openRequest(1)).toBeUndefined();
   });
 });

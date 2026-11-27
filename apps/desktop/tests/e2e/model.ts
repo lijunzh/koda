@@ -14,6 +14,8 @@ export interface Model {
   url: string;
   /** Requests answered so far. */
   calls(): number;
+  /** The bodies of the requests, in order. */
+  bodies(): string[];
   close(): void;
 }
 
@@ -21,13 +23,17 @@ const line = (chunk: object) => `data: ${JSON.stringify(chunk)}\n\n`;
 
 export async function scriptedModel(replies: Reply[]): Promise<Model> {
   let calls = 0;
+  const bodies: string[] = [];
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) {
       res.writeHead(404).end();
       return;
     }
-    req.resume();
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => (body += chunk));
     req.on('end', async () => {
+      bodies.push(body);
       const reply = replies[calls++] ?? { text: 'All done.' };
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if ('tool' in reply) {
@@ -61,7 +67,7 @@ export async function scriptedModel(replies: Reply[]): Promise<Model> {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
-  return { url: `http://127.0.0.1:${port}/v1`, calls: () => calls, close: () => server.close() };
+  return { url: `http://127.0.0.1:${port}/v1`, calls: () => calls, bodies: () => bodies.slice(), close: () => server.close() };
 }
 
 /** A Koda config under `home` that runs new sessions on `model`. */

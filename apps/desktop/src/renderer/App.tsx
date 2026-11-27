@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call, type RpcMessage, type ServerStatus } from './bridge';
+import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
 import { SessionView } from './SessionView';
 import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
@@ -24,6 +25,7 @@ export function App() {
   const [selected, setSelected] = useState<Selected | null>(null);
   const [transcript, setTranscript] = useState<TranscriptState | null>(null);
   const [view, setView] = useState<View>('normal');
+  const [pending, setPending] = useState<readonly Pending[]>([]);
   const selectedId = useRef<string | null>(null);
   /** Events from before the open session's snapshot came, kept to apply after it. */
   const early = useRef<RpcMessage[]>([]);
@@ -54,6 +56,7 @@ export function App() {
       const batch = queued;
       queued = [];
       setSessions((state) => withMessages(state, batch));
+      setPending((state) => withRequests(state, batch));
       setTranscript((state) => {
         if (state) return withEvents(state, batch);
         // The open session's snapshot hasn't come yet: keep its events for it.
@@ -80,9 +83,11 @@ export function App() {
   }, []);
 
   const connected = status?.state === 'connected';
-  // The list, afresh each time the app (re)connects.
+  // The list, afresh each time the app (re)connects; requests from before are
+  // gone with the connection, and opening a session sends its own again.
   useEffect(() => {
     if (!connected) return;
+    setPending([]);
     void call('session/list', { limit: PAGE, sortKey: 'updated_at' }).then((page) =>
       setSessions((state) => withPage(state, page, true)),
     );
@@ -156,6 +161,11 @@ export function App() {
           transcript={transcript}
           view={view}
           onView={setView}
+          requests={selected ? forSession([...pending], selected.id) : []}
+          onAnswer={async (id, result) => {
+            await window.koda.respond(id, result);
+            setPending((state) => without(state, id));
+          }}
         />
       </div>
     </div>
