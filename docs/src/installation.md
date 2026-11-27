@@ -35,9 +35,10 @@ cd koda && cargo build --release -p koda-cli
 
 - **Linux: bubblewrap,** for the [sandbox](./sandbox.md) every command runs
   in: `apt install bubblewrap`, `dnf install bubblewrap` or `pacman -S
-  bubblewrap`. Without it Koda won't start in Auto, its default [trust
-  mode](./approval.md); `koda --mode safe` runs without a kernel sandbox,
-  asking before every change. macOS has its sandbox built in.
+  bubblewrap`. Without it nothing contains a command, so Koda asks before
+  every command and edit, even in Auto, its default [trust
+  mode](./approval.md#what-asks-in-auto), and Plan refuses commands. macOS
+  has its sandbox built in.
 - **Poppler, to read PDFs** (optional): `brew install poppler` on macOS,
   `apt install poppler-utils` on Debian and Ubuntu. Without it a short PDF
   still reaches a Claude model whole; see [PDFs](./attachments.md#pdfs).

@@ -3089,7 +3089,7 @@
           ]
         },
         "setupHint": {
-          "description": "What to do about it, when it doesn't: how to install or enable the\nbackend, or to use Safe mode. For a person, a few lines.",
+          "description": "What to do about it, when it doesn't: how to install or enable the\nbackend. For a person, a few lines.",
           "type": [
             "string",
             "null"
@@ -5138,21 +5138,16 @@
       ]
     },
     "TrustMode": {
-      "description": "What Koda may do without asking: Koda's one trust mode, used by the\nengine, `config.toml`'s `mode` and the protocol alike, as Codex keeps\nits approval policy in `codex-protocol`.\n\nOrdered `Plan < Safe < Auto`, so [`TrustMode::clamp`] keeps a sub-agent\nfrom exceeding the session that started it.\n\n```\nuse koda_protocol::state::TrustMode;\n\nassert_eq!(TrustMode::Safe.as_str(), \"safe\");\nassert_eq!(TrustMode::Safe.next(), TrustMode::Auto);\nassert_eq!(TrustMode::clamp(TrustMode::Plan, TrustMode::Auto), TrustMode::Plan);\n```",
+      "description": "What Koda may do without asking: Koda's one trust mode, used by the\nengine, `config.toml`'s `mode` and the protocol alike, as Codex keeps\nits approval policy in `codex-protocol`.\n\nAs Codex's sandbox modes: Plan runs every command in a read-only\nsandbox, Auto in one that can write the project. What needs more asks to\nleave the sandbox. Ordered `Plan < Auto`, so [`TrustMode::clamp`] keeps\na sub-agent from exceeding the session that started it.\n\n```\nuse koda_protocol::state::TrustMode;\n\nassert_eq!(TrustMode::Auto.as_str(), \"auto\");\nassert_eq!(TrustMode::Auto.next(), TrustMode::Plan);\nassert_eq!(TrustMode::clamp(TrustMode::Plan, TrustMode::Auto), TrustMode::Plan);\n```",
       "oneOf": [
         {
           "const": "plan",
-          "description": "Read only: reads, searches and read-only commands run; anything else\nis refused. For sub-agents and `koda exec` runs that should only\nlook.",
-          "type": "string"
-        },
-        {
-          "const": "safe",
-          "description": "Every action with a side effect asks first.",
+          "description": "Read only: every command runs in a read-only sandbox, and edits are\nrefused. For planning, read-only sub-agents and `koda exec` runs that\nshould only look.",
           "type": "string"
         },
         {
           "const": "auto",
-          "description": "Mutating actions run without asking, contained by the sandbox;\ndestructive actions and writes outside the project still ask.",
+          "description": "Commands run without asking in a sandbox that can write the project;\na command that would leave it, a dangerous one, or a file outside the\nproject asks first.",
           "type": "string"
         }
       ]

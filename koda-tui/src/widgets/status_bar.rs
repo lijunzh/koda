@@ -54,8 +54,7 @@ pub struct StatusBar<'a> {
     /// code paths that don't yet pass it). When `Some(true)` shows
     /// a green 🛡 "sandboxed" pill; `Some(false)` shows a yellow
     /// ⚠ "unsandboxed" pill so users on systems without kernel
-    /// sandbox can see at a glance why Auto mode refuses (and why
-    /// Safe is the only available top-level mode there). Sourced
+    /// sandbox can see at a glance why every change asks. Sourced
     /// from the host's `state/read` in `tui_viewport`.
     sandbox_available: Option<bool>,
 }
@@ -117,12 +116,8 @@ impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // **#1232 §8a**: trust mode is the single most-safety-relevant
         // piece of state in the entire UI — the user must never be
-        // unsure whether they're in Safe (confirm every mutation) or
-        // Auto (auto-approve in-project mutations). Pre-fix the bar
-        // showed lowercase ` safe ` / ` auto ` in plain colored text;
-        // the prompt indicator showed a tiny `🔒>`. Easy to miss
-        // both. Bug-review session that opened #1232: "User wasn't
-        // sure whether they were in Safe or Auto."
+        // unsure which mode they're in. Pre-fix the bar showed the
+        // mode in lowercase plain colored text; easy to miss.
         //
         // The new badge is icon + UPPERCASE + bold for every mode.
         // Auto used to render as a black-on-green inverted badge for
@@ -137,13 +132,10 @@ impl Widget for StatusBar<'_> {
         //
         // Color/icon choices match the prompt indicator in
         // `tui_viewport.rs` so users see the SAME color for the SAME
-        // mode across both surfaces (pre-#1243 Safe was Cyan in the
-        // prompt and Yellow in the bar — confusing inconsistency).
-        // Drive-by: the dead `"strict"` arm is gone (TrustMode never
-        // emits that label; only `plan`/`safe`/`auto`).
+        // mode across both surfaces. TrustMode emits only `plan` and
+        // `auto`.
         let (mode_icon, mode_fg, mode_bg) = match self.mode_label {
             "plan" => ("\u{1f4cb}", Color::Cyan, None),
-            "safe" => ("\u{1f512}", Color::Yellow, None),
             "auto" => ("\u{26a1}", Color::Green, None),
             // Defensive default for any future mode label that gets added
             // to `TrustMode` without updating this match. Renders as a
@@ -176,7 +168,7 @@ impl Widget for StatusBar<'_> {
 
         // Segment order (#1194/#1195 follow-up): mode → model → context.
         // Mode is FIRST because it's the most-frequently-changing piece
-        // (Shift+Tab cycles Plan/Safe/Auto on demand) and has a distinct
+        // (Shift+Tab switches Plan and Auto on demand) and has a distinct
         // color, so eye-anchoring it leftmost matches user attention.
         // Model is second; context bar last because it's the widest
         // segment and naturally tail-anchors the always-on cluster.
@@ -197,7 +189,7 @@ impl Widget for StatusBar<'_> {
         // black-on-green badge — hardcoded bg colors clash with
         // user color schemes). Green → healthy, yellow → attention.
         // We deliberately don't go red for unsandboxed: it's a
-        // legitimate state for Safe/Plan, not an error.
+        // legitimate state (every change asks), not an error.
         if let Some(available) = self.sandbox_available {
             let (icon, label, color) = if available {
                 ("\u{1f6e1}", "sandboxed", Color::Green)
@@ -319,14 +311,15 @@ mod tests {
     fn long_non_ascii_model_name_does_not_panic() {
         for padding in ["", "x", "xx"] {
             let model = format!("{padding}{}", "模".repeat(20));
-            let text = render_bar(StatusBar::new(&model, "safe", 50), 120);
+            let text = render_bar(StatusBar::new(&model, "auto", 50), 120);
             assert!(text.contains('…'), "{text}");
         }
     }
 
     #[test]
     fn mcp_indicator_hidden_when_no_servers() {
-        let bar = StatusBar::new("gpt-4", "safe", 50);
+        // Plan's badge: Auto's is a ⚡ too.
+        let bar = StatusBar::new("gpt-4", "plan", 50);
         let text = render_bar(bar, 120);
         // No MCP info → no lightning bolt indicator.
         assert!(
@@ -337,7 +330,7 @@ mod tests {
 
     #[test]
     fn mcp_indicator_shows_connected_count() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_mcp_info(McpStatusBarInfo {
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_mcp_info(McpStatusBarInfo {
             connected: 2,
             failed: 0,
             total: 3,
@@ -348,7 +341,8 @@ mod tests {
 
     /// Find the fg color of the ⚡ MCP indicator in a rendered buffer.
     fn mcp_indicator_color(info: McpStatusBarInfo) -> Color {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_mcp_info(info);
+        // Plan's badge: Auto's is a ⚡ too.
+        let bar = StatusBar::new("gpt-4", "plan", 50).with_mcp_info(info);
         let area = Rect::new(0, 0, 120, 1);
         let mut buf = Buffer::empty(area);
         bar.render(area, &mut buf);
@@ -415,7 +409,7 @@ mod tests {
     /// (vim editing disabled). PR 3 of #1178.
     #[test]
     fn vim_segment_hidden_when_label_is_none() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_vim_label(None);
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_vim_label(None);
         let out = render_bar(bar, 200);
         assert!(
             !out.contains("VIM"),
@@ -428,7 +422,7 @@ mod tests {
     /// when the textarea is in a vim mode.
     #[test]
     fn vim_segment_renders_label_when_some() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_vim_label(Some("NORMAL"));
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_vim_label(Some("NORMAL"));
         let out = render_bar(bar, 200);
         assert!(
             out.contains("VIM:NORMAL"),
@@ -466,7 +460,7 @@ mod tests {
             .find(needle)
             .unwrap_or_else(|| panic!("needle {needle:?} not found in: {row}"));
         // Convert byte offset back to cell column. ASCII-only labels
-        // ("AUTO", "SAFE", "PLAN") so byte offset == column for the
+        // ("AUTO", "PLAN") so byte offset == column for the
         // labels we test here. The icon is BMP-or-above and lives at
         // a SEPARATE position; tests below only sniff the labels.
         let cell = buf.cell((pos as u16, 0)).expect("cell in bounds");
@@ -499,25 +493,6 @@ mod tests {
     }
 
     #[test]
-    fn safe_badge_is_bold_yellow_text_no_background() {
-        // Safe is the opt-in conservative mode (post-#1241 Auto is
-        // the default) — visible (bold yellow) but matches Plan/Auto
-        // styling: bold colored text on the user's own background,
-        // no fill.
-        // Yellow matches the prompt indicator in `tui_viewport.rs`
-        // (post-fix); pre-fix Safe was Cyan in the prompt, Yellow in
-        // the bar — confusing inconsistency this test pins gone.
-        let bar = StatusBar::new("gpt-4", "safe", 50);
-        let (fg, bg, modifier) = cell_style_at(bar, "SAFE", 200);
-        assert_eq!(fg, Color::Yellow, "Safe badge fg must be yellow");
-        assert_eq!(bg, Color::Reset, "Safe badge must have NO background fill");
-        assert!(
-            modifier.contains(Modifier::BOLD),
-            "Safe badge must be bold; got modifier: {modifier:?}"
-        );
-    }
-
-    #[test]
     fn plan_badge_is_bold_cyan_text_no_background() {
         // Plan is read-only — calm but visible. Bold cyan, no bg.
         // Pre-fix Plan was DarkGray in the prompt indicator, which
@@ -535,11 +510,11 @@ mod tests {
     #[test]
     fn mode_label_renders_uppercase_for_every_known_mode() {
         // Every supported mode label must render UPPERCASE. Pre-fix
-        // they were lowercase (`safe` / `auto` / `plan`), which read
+        // they were lowercase (`auto` / `plan`), which read
         // as ordinary status text instead of a foregrounded mode
         // indicator. The uppercasing is the cheap-but-loud half of
         // "don't let the user be unsure which mode they're in."
-        for label in ["plan", "safe", "auto"] {
+        for label in ["plan", "auto"] {
             let bar = StatusBar::new("gpt-4", label, 50);
             let text = render_bar(bar, 200);
             let upper = label.to_ascii_uppercase();
@@ -564,7 +539,6 @@ mod tests {
         // catching.
         let cases = [
             ("plan", '\u{1f4cb}'), // 📋
-            ("safe", '\u{1f512}'), // 🔒
             ("auto", '\u{26a1}'),  // ⚡
         ];
         for (label, expected_icon) in cases {
@@ -599,7 +573,7 @@ mod tests {
         // wire up sandbox status) must NOT render a sandbox segment.
         // This is the back-compat pin: adding the indicator can't
         // churn the rendered bar for unaware callers.
-        let bar = StatusBar::new("gpt-4", "safe", 50);
+        let bar = StatusBar::new("gpt-4", "auto", 50);
         let text = render_bar(bar, 120);
         assert!(
             !text.contains("sandboxed") && !text.contains("unsandboxed"),
@@ -623,7 +597,7 @@ mod tests {
 
     #[test]
     fn sandbox_segment_renders_unsandboxed_when_unavailable() {
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_sandbox_status(Some(false));
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_sandbox_status(Some(false));
         let text = render_bar(bar, 200);
         assert!(
             text.contains("unsandboxed"),
@@ -652,7 +626,7 @@ mod tests {
         // Yellow (not red) because unsandboxed is a legitimate state
         // for Safe/Plan — the human is the primary boundary there,
         // sandbox is defense-in-depth. Red would falsely imply error.
-        let bar = StatusBar::new("gpt-4", "safe", 50).with_sandbox_status(Some(false));
+        let bar = StatusBar::new("gpt-4", "auto", 50).with_sandbox_status(Some(false));
         let (fg, bg, modifier) = cell_style_at(bar, "\u{26a0}", 200);
         assert_eq!(fg, Color::Yellow, "sandbox-unavailable fg must be yellow");
         assert_eq!(bg, Color::Reset, "sandbox-unavailable must have no bg");

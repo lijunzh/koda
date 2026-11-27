@@ -461,7 +461,7 @@ fn show_help(buffer: &mut ScrollBuffer) {
         ("↑ / ↓", "Cycle through input history"),
         ("Ctrl+R", "Reverse history search"),
         ("Tab", "Autocomplete @file path or /command"),
-        ("Shift+Tab", "Cycle the mode: Safe, Auto, Plan"),
+        ("Shift+Tab", "Switch the mode: Auto, Plan"),
     ];
     for (key, desc) in input_keys {
         tui_output::emit_line(

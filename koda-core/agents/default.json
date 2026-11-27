@@ -5,5 +5,5 @@
     "allowed_tools": [],
     "model": null,
     "base_url": null,
-    "trust": "safe"
+    "trust": "auto"
 }

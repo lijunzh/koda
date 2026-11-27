@@ -19,8 +19,14 @@ const WAIT: Duration = Duration::from_secs(30);
 
 // ── The model ───────────────────────────────────────────────────────────
 
+/// A command that writes `path` and asks to run outside the sandbox: one
+/// Auto asks about.
 fn write_file(id: &str, path: &str) -> ResponseTemplate {
-    tool_call(id, "Write", json!({"file_path": path, "content": "hi"}))
+    tool_call(
+        id,
+        "Bash",
+        json!({"command": format!("printf hi > {path}"), "outside_sandbox": true, "reason": "test"}),
+    )
 }
 
 /// Wait until the model has had `n` calls.
@@ -51,16 +57,13 @@ struct Wire {
     _dir: tempfile::TempDir,
 }
 
-fn config(server: &FakeLlmServer, safe: bool) -> KodaConfig {
+fn config(server: &FakeLlmServer) -> KodaConfig {
     let mut config = KodaConfig::default_for_testing(ProviderType::LMStudio);
     config.base_url = server.url();
     config.model = "stub".to_string();
     config.model_settings.model = "stub".to_string();
     config.max_context_tokens = 100_000;
     config.model_settings.max_context_tokens = 100_000;
-    if safe {
-        config.trust = koda_core::trust::TrustMode::Auto;
-    }
     config
 }
 
@@ -272,7 +275,7 @@ fn count(lines: &[Value], method: &str) -> usize {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_approval_is_answered_on_stdin_and_the_tool_runs_once() {
     let server = model(vec![write_file("call_1", "a.txt"), text("Written.")]).await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.turn("Write a file").await;
 
     let id = wire.approval().await;
@@ -296,7 +299,7 @@ async fn an_approval_is_answered_on_stdin_and_the_tool_runs_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_interrupt_at_an_approval_settles_the_turn_once() {
     let server = model(vec![write_file("call_1", "a.txt")]).await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let turn = wire.turn("Write a file").await;
     let id = wire.approval().await;
 
@@ -342,7 +345,7 @@ async fn an_interrupt_at_an_approval_settles_the_turn_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_ids_are_refused_and_unblock_nothing() {
     let server = model(vec![write_file("call_1", "a.txt"), text("Done.")]).await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.turn("Write a file").await;
     let id = wire.approval().await;
 
@@ -390,7 +393,7 @@ async fn stale_ids_are_refused_and_unblock_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_prompt_while_busy_is_refused_and_a_steer_is_taken() {
     let server = model(vec![write_file("call_1", "a.txt"), text("Done.")]).await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let turn = wire.turn("Write a file").await;
     let id = wire.approval().await;
 
@@ -438,7 +441,7 @@ async fn a_prompt_while_busy_is_refused_and_a_steer_is_taken() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bad_lines_and_unknown_methods_fail_explicitly() {
     let server = model(vec![]).await;
-    let mut wire = Wire::spawn(config(&server, false), 64 * 1024);
+    let mut wire = Wire::spawn(config(&server), 64 * 1024);
 
     let error = wire.call("state/read", json!({})).await.unwrap_err();
     assert_eq!(error["code"], -32600);
@@ -492,7 +495,7 @@ async fn bad_lines_and_unknown_methods_fail_explicitly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eof_at_an_approval_ends_the_connection() {
     let server = model(vec![write_file("call_1", "a.txt")]).await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.turn("Write a file").await;
     wire.approval().await;
 
@@ -525,7 +528,7 @@ async fn eof_at_an_approval_ends_the_connection() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_broken_stdout_ends_the_connection() {
     let server = model(vec![text("Hello.")]).await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     drop(wire.output.take());
     // Something to write. The connection may have ended already: the
     // notifications after `session/start`'s answer can meet the broken
@@ -550,7 +553,7 @@ async fn a_slow_reader_loses_nothing() {
     let refs: Vec<&str> = pieces.iter().map(String::as_str).collect();
     let server = model(vec![text_in(&refs)]).await;
     // A 4 KiB pipe to stdout fills after a few dozen lines.
-    let mut wire = Wire::spawn(config(&server, false), 4 * 1024);
+    let mut wire = Wire::spawn(config(&server), 4 * 1024);
     let init = wire
         .send_request(
             "initialize",
@@ -592,7 +595,7 @@ async fn a_slow_reader_loses_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_character_split_across_reads_arrives_whole() {
     let server = model(vec![text("Bien.")]).await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let session = wire.session.clone();
     let line = json!({"jsonrpc": "2.0", "id": 100, "method": "turn/start",
                       "params": {"sessionId": session, "input": [{"type": "text", "text": "héllo 日本語"}]}})
@@ -627,7 +630,7 @@ async fn a_turn_failing_after_partial_output_ends_once() {
         ResponseTemplate::new(400).set_body_string("boom"),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.turn("Run something").await;
     let lines = wire.until_method("turn/completed").await;
     let turn = turn_completed(&lines);
@@ -683,7 +686,7 @@ async fn a_goal_goes_on_until_the_model_completes_it() {
         text("Done: the goal is complete."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let goal = wire
         .set_goal(json!({"objective": "Ship the <release>"}))
         .await;
@@ -728,7 +731,7 @@ async fn a_goal_goes_on_until_the_model_completes_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_goal_turn_blocks_the_goal() {
     let server = model(vec![ResponseTemplate::new(400).set_body_string("boom")]).await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.set_goal(json!({"objective": "Ship it"})).await;
     let lines = wire
         .until(|l| {
@@ -753,7 +756,7 @@ async fn an_interrupt_waits_for_the_user_and_a_pause_stops_the_goal() {
         write_file("call_2", "b.txt"),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let session = wire.session.clone();
     wire.set_goal(json!({"objective": "Write the files"})).await;
 
@@ -806,7 +809,7 @@ async fn resuming_after_an_interrupt_goes_on_with_the_goal() {
         text("Done."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, true)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let session = wire.session.clone();
     wire.set_goal(json!({"objective": "Write the files"})).await;
     let started = wire.until_method("turn/started").await;
@@ -839,7 +842,7 @@ async fn reaching_the_budget_wraps_up_the_turn_and_stops_the_goal() {
         text("Wrapping up."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.set_goal(json!({"objective": "Ship it", "tokenBudget": 100}))
         .await;
     let lines = wire
@@ -882,7 +885,7 @@ async fn a_goal_the_model_creates_goes_on_after_the_turn() {
         text("All fixed."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.turn("Make it your goal to fix the tests").await;
     let lines = wire
         .until(|l| {
@@ -928,7 +931,7 @@ async fn the_evaluator_decides_when_a_goal_is_met() {
         text(r#"Checking. {"ok": true, "reason": "The tests pass."}"#),
     ])
     .await;
-    let mut wire = Wire::open(judged(config(&server, false))).await;
+    let mut wire = Wire::open(judged(config(&server))).await;
     wire.set_goal(json!({"objective": "Make the tests pass"}))
         .await;
 
@@ -996,7 +999,7 @@ async fn a_goal_the_evaluator_finds_impossible_is_blocked() {
         text(r#"{"ok": false, "reason": "The service doesn't exist.", "impossible": true}"#),
     ])
     .await;
-    let mut wire = Wire::open(judged(config(&server, false))).await;
+    let mut wire = Wire::open(judged(config(&server))).await;
     wire.set_goal(json!({"objective": "Call the service"}))
         .await;
     let lines = wire
@@ -1020,7 +1023,7 @@ async fn an_unreadable_check_counts_as_not_yet() {
         text(r#"{"ok": true, "reason": "Done."}"#),
     ])
     .await;
-    let mut wire = Wire::open(judged(config(&server, false))).await;
+    let mut wire = Wire::open(judged(config(&server))).await;
     wire.set_goal(json!({"objective": "Finish"})).await;
     wire.until(|l| {
         l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
@@ -1049,7 +1052,7 @@ async fn a_background_command_that_exits_wakes_the_session() {
         text("The tests finished."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     let started = wire.turn("Run the tests in the background").await;
     let first = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&first)["id"], started.as_str());
@@ -1098,7 +1101,7 @@ async fn a_goal_waits_for_its_background_command() {
         text("Goal complete."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.set_goal(json!({"objective": "Build it"})).await;
     wire.until_method("turn/completed").await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1136,7 +1139,7 @@ async fn a_goal_checks_in_on_a_command_that_keeps_it_waiting() {
         text("Still running; waiting."),
     ])
     .await;
-    let mut config = config(&server, false);
+    let mut config = config(&server);
     config.goal_checkin = Some(Duration::from_millis(200));
     let mut wire = Wire::open(config).await;
     wire.set_goal(json!({"objective": "Ship it"})).await;
@@ -1167,7 +1170,7 @@ async fn the_evaluator_waits_for_background_work() {
         text(r#"{"ok": true, "reason": "The tests pass."}"#),
     ])
     .await;
-    let mut wire = Wire::open(judged(config(&server, false))).await;
+    let mut wire = Wire::open(judged(config(&server))).await;
     wire.set_goal(json!({"objective": "Make the tests pass"}))
         .await;
     wire.until(|l| {
@@ -1196,7 +1199,7 @@ async fn asking_for_the_goal_between_turns_doesnt_stop_it() {
         text("Goal complete."),
     ])
     .await;
-    let mut wire = Wire::open(config(&server, false)).await;
+    let mut wire = Wire::open(config(&server)).await;
     wire.set_goal(json!({"objective": "Build it"})).await;
     wire.until_method("turn/completed").await;
     assert_eq!(wire.goal().await["status"], "active");

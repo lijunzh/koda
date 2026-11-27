@@ -86,11 +86,13 @@ async fn run(
     .await
     .expect("the turn did not end")
     .unwrap();
+    let events = user.events.events();
     assert!(
         user.answers.lock().unwrap().is_empty(),
-        "fewer prompts than scripted"
+        "fewer prompts than scripted: {:#?}",
+        calls(&events).1
     );
-    user.events.events()
+    events
 }
 
 /// A result: the call's id, how it ended, and what the model read.
@@ -133,23 +135,36 @@ fn write(path: &str) -> MockResponse {
     MockResponse::tool_call("Write", json!({"file_path": path, "content": "x"}))
 }
 
+/// A command asking to leave the sandbox, which asks first in Auto.
+fn outside(command: &str) -> MockResponse {
+    MockResponse::tool_call(
+        "Bash",
+        json!({"command": command, "outside_sandbox": true, "reason": "test"}),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_refused_call_ends_declined_and_its_approval_names_it() {
     let events = run(
         TrustMode::Auto,
         vec![
-            write("a.txt"),
-            MockResponse::tool_call("Bash", json!({"command": "touch b.txt"})),
+            outside("touch a.txt"),
+            outside("touch b.txt"),
             MockResponse::Text("done".into()),
         ],
         vec![ApprovalDecision::Reject, ApprovalDecision::Approve],
     )
     .await;
 
-    let (write_id, outcome, output) = ended_once(&events, "Write");
+    // Each started call has exactly one result.
+    ended_once(&events, "Bash");
+    let (started, ended) = calls(&events);
+    assert_eq!(started.len(), 2, "{started:?}");
+    let result = |id: &str| ended.iter().find(|(r, ..)| r == id).unwrap().clone();
+    let (refused_id, outcome, output) = result(&started[0].0);
     assert_eq!(outcome, ToolOutcome::Declined);
     assert_eq!(output, "User rejected this action.");
-    let (_, outcome, _) = ended_once(&events, "Bash");
+    let (_, outcome, _) = result(&started[1].0);
     assert_eq!(outcome, ToolOutcome::Success);
 
     let asked: Vec<&str> = events
@@ -160,7 +175,7 @@ async fn a_refused_call_ends_declined_and_its_approval_names_it() {
         })
         .collect();
     assert_eq!(asked.len(), 2);
-    assert_eq!(asked[0], write_id);
+    assert_eq!(asked[0], refused_id);
 }
 
 /// A command's result says its exit code and how long it ran, as Codex's
@@ -171,32 +186,30 @@ async fn a_command_reports_its_exit_code_and_duration() {
     let events = run(
         TrustMode::Auto,
         vec![
-            write("a.txt"),
+            outside("touch a.txt"),
             MockResponse::tool_call("Bash", json!({"command": "exit 3"})),
             MockResponse::Text("done".into()),
         ],
-        vec![ApprovalDecision::Reject, ApprovalDecision::Approve],
+        vec![ApprovalDecision::Reject],
     )
     .await;
-    let ran = |tool: &str| {
+    let (started, _) = calls(&events);
+    let ran = |call: usize| {
+        let id = &started[call].0;
         events.iter().find_map(|e| match e {
             EngineEvent::ToolCallResult {
-                name,
+                id: result,
                 exit_code,
                 duration_ms,
                 ..
-            } if name == tool => Some((*exit_code, *duration_ms)),
+            } if result == id => Some((*exit_code, *duration_ms)),
             _ => None,
         })
     };
-    let (exit_code, duration_ms) = ran("Bash").expect("Bash ended");
+    let (exit_code, duration_ms) = ran(1).expect("the command ended");
     assert_eq!(exit_code, Some(3));
     assert!(duration_ms.is_some());
-    assert_eq!(
-        ran("Write"),
-        Some((None, None)),
-        "the refused Write never ran"
-    );
+    assert_eq!(ran(0), Some((None, None)), "the refused command never ran");
 }
 
 /// An edit that runs without asking still says what it changes when it
@@ -310,7 +323,7 @@ async fn a_sub_agent_s_calls_end_too() {
             "name": "helper",
             "system_prompt": "You help.",
             "allowed_tools": [],
-            "trust": "safe",
+            "trust": "auto",
             "provider": "lmstudio",
             "model": "stub",
             "base_url": server.url()

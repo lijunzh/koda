@@ -1597,10 +1597,8 @@ mod tests {
 
     // xargs classification (#968)
 
-    /// `xargs <cmd>` runs `<cmd>` as a subprocess. It must NOT auto-approve in
-    /// Safe mode, regardless of which inner command is invoked. Removing
-    /// `xargs` from READ_ONLY_PREFIXES makes any pipeline with an `xargs`
-    /// segment fall through to LocalMutation.
+    /// `xargs <cmd>` runs `<cmd>` as a subprocess, so the dangerous check
+    /// reads the command it runs.
     #[test]
     fn test_classify_xargs_by_the_command_it_runs() {
         // xargs runs its inner command: a forced `rm` inside it asks, as it

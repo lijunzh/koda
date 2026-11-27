@@ -171,10 +171,15 @@ async fn finish(turn: impl Future<Output = anyhow::Result<()>>) {
         .unwrap();
 }
 
+/// A call that asks first in Auto: a command asking to leave the sandbox.
 fn write() -> MockResponse {
     MockResponse::tool_call(
-        "Write",
-        serde_json::json!({"file_path": "a.txt", "content": "x"}),
+        "Bash",
+        serde_json::json!({
+            "command": "printf x > a.txt",
+            "outside_sandbox": true,
+            "reason": "test",
+        }),
     )
 }
 

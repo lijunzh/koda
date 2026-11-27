@@ -39,7 +39,7 @@ koda/
 │   │   ├── sub_agent_dispatch.rs # Sub-agent invocation dispatch
 │   │   ├── tool_dispatch.rs# Tool dispatch — routes tool calls to the registry
 │   │   ├── tool_normalize.rs # Tool name normalization (snake_case → PascalCase)
-│   │   ├── trust.rs        # TrustMode (Plan/Safe/Auto), ToolApproval, check_tool()
+│   │   ├── trust.rs        # TrustMode (Plan/Auto), ToolApproval, check_tool()
 │   │   ├── truncate.rs     # Token-safe output truncation
 │   │   ├── turn_context.rs # TurnContext and ToolExecutionContext bundles
 │   │   ├── version.rs      # Background version checker (queries crates.io)

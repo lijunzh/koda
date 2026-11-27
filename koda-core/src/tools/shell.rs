@@ -433,8 +433,8 @@ pub async fn run_shell_command(
             // change which lines we already collected).
             // A command run outside the sandbox can't hit a sandbox denial;
             // an "Operation not permitted" there is the OS's own. Nor can one
-            // run where no sandbox backend exists (Safe mode falls back to
-            // running unsandboxed).
+            // run where no sandbox backend exists (every command asks, and
+            // runs unsandboxed).
             if !outside_sandbox && crate::sandbox::is_available() {
                 // A sub-agent, or a run whose client answers approvals itself
                 // (headless), is refused anything outside the sandbox. With
@@ -3505,7 +3505,7 @@ mod tests {
         );
         assert_eq!(
             tool.classify(&serde_json::json!({"command": "ls", "outside_sandbox": false})),
-            ToolEffect::ReadOnly
+            ToolEffect::LocalMutation
         );
     }
 
@@ -3641,10 +3641,10 @@ mod tests {
     #[test]
     fn bash_classify_is_input_aware() {
         let t = BashTool;
-        // Read-only command → ReadOnly.
+        // Anything else is a change the sandbox holds.
         assert_eq!(
             t.classify(&serde_json::json!({"command": "echo hi"})),
-            ToolEffect::ReadOnly,
+            ToolEffect::LocalMutation,
         );
         // Plainly destructive → Destructive.
         assert_eq!(

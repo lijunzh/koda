@@ -8,7 +8,7 @@
 //! ## Public API
 //!
 //! - [`build`](crate::sandbox::build) — main entry point used by `tools/shell.rs`
-//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs` to reject Auto when the sandbox is unavailable
+//! - [`is_available`](crate::sandbox::is_available) — used by `trust.rs`: with no sandbox, Auto asks before every change and Plan refuses commands
 //! - [`is_fully_denied`](crate::sandbox::is_fully_denied) — used by `tools/mod.rs` for in-process Read/Edit
 //!   parity with the kernel sandbox (#882, #898)
 //!
@@ -69,16 +69,14 @@ pub fn dependency_report() -> DependencyReport {
 /// Platform-specific install hint for an unavailable sandbox backend.
 ///
 /// Returns a multi-line string describing how to install/enable the
-/// named backend, or how to bypass via `--mode safe` when no install
-/// path exists. Pure formatter — takes a backend identifier (from
+/// named backend, or what Koda does without one when no install path
+/// exists. Pure formatter — takes a backend identifier (from
 /// [`DependencyReport::backend`]) and returns text. No I/O, no
 /// platform probing.
 ///
-/// Used by [`crate::trust::require_sandbox_for_auto`]'s caller in
-/// `koda-cli` to attach actionable setup instructions to the Auto
-/// refusal error (#1259 follow-up: replaced the dedicated
-/// `koda doctor` subcommand with inline error enrichment because
-/// the doctor's only substantive output was sandbox readiness).
+/// The host puts it in `state/read`'s sandbox report, which the TUI and
+/// `/feedback` show (#1259 follow-up: replaced the dedicated `koda doctor`
+/// subcommand, whose only substantive output was sandbox readiness).
 ///
 /// Kept tiny on purpose: the real install instructions live in
 /// `docs/src/sandbox.md` — this is the one-line nudge so a user
@@ -91,7 +89,7 @@ pub fn dependency_report() -> DependencyReport {
 ///
 /// let hint = setup_hint("bwrap");
 /// assert!(hint.contains("apt install bubblewrap"));
-/// assert!(hint.contains("--mode safe"));
+/// assert!(hint.contains("asks before every"));
 /// ```
 pub fn setup_hint(backend: &str) -> String {
     match backend {
@@ -99,17 +97,17 @@ pub fn setup_hint(backend: &str) -> String {
              Debian/Ubuntu:  sudo apt install bubblewrap\n\
              Fedora/RHEL:    sudo dnf install bubblewrap\n\
              Arch:           sudo pacman -S bubblewrap\n\
-           Or run with `--mode safe` to keep the human in the approval loop.\n"
+           Until then Koda asks before every command and edit.\n"
             .to_string(),
         "seatbelt" => "  Seatbelt is built into macOS. If it's reporting unavailable,\n\
            the `sandbox-exec` binary is missing from /usr/bin \u{2014} file an issue.\n\
-           Workaround: run with `--mode safe`.\n"
+           Until then Koda asks before every command and edit.\n"
             .to_string(),
         // `none` backend = unknown platform (Windows pre-sandbox-port,
-        // exotic Unixes). No install path; only escape is `--mode safe`.
+        // exotic Unixes). No install path: Koda asks before every change.
         _ => format!(
             "  No kernel sandbox backend exists for this platform ({}).\n\
-           Run with `--mode safe` to keep the human in the approval loop.\n",
+           Koda asks before every command and edit.\n",
             std::env::consts::OS
         ),
     }
@@ -1483,7 +1481,7 @@ print(\"connected\")'";
             None,
             None,
         )
-        .expect("build must succeed (Safe mode falls back if sandbox unavailable)");
+        .expect("build must succeed (it runs unsandboxed if the sandbox is unavailable)");
 
         let out = cmd.output().await.expect("spawn ok");
         assert!(out.status.success(), "child should succeed: {out:?}");
@@ -1781,11 +1779,16 @@ print(\"connected\")'";
         let policy = policy_for_agent(crate::trust::TrustMode::Auto, &worktree);
 
         // The control: the sandbox runs, and the temp root is writable.
-        let probe = git_dir.join("objects/probe");
+        let probe = parent.join("probe");
         let script = format!("touch work.txt {}", probe.display());
         let wrote = sandboxed(script, &worktree, &policy).await;
         assert!(wrote.status.success(), "{wrote:?}");
         assert!(worktree.join("work.txt").exists() && probe.exists());
+
+        // The whole repository is read-only, as a project's own `.git` is.
+        let objects = git_dir.join("objects/probe");
+        let wrote = sandboxed(format!("touch {}", objects.display()), &worktree, &policy).await;
+        assert!(!wrote.status.success() && !objects.exists(), "{wrote:?}");
 
         for target in [
             git_dir.join("config"),
@@ -1825,9 +1828,9 @@ print(\"connected\")'";
 
         let policy = policy_for_agent(crate::trust::TrustMode::Auto, &worktree);
 
-        // The control: this directory is writable, so only the policy stops
+        // The control: the temp root is writable, so only the policy stops
         // these, and `spare` is there to move over the target.
-        let spare = linked.join("spare");
+        let spare = parent.join("spare");
         let script = format!("echo bad > {}", spare.display());
         let wrote = sandboxed(script, &worktree, &policy).await;
         assert!(wrote.status.success(), "{wrote:?}");
@@ -1995,7 +1998,8 @@ print(\"connected\")'";
         // build_command_inner are last-match-overridden by the overlay's
         // allow_write, neutralizing the entire #1073 protection.
         // strict_default() sets allow_git_config = false, so every trust
-        // mode must seed the deny pair.
+        // mode must seed the deny: the whole `.git`, as Codex keeps it
+        // read-only.
         let dir = tempfile::tempdir().unwrap();
         let canonical = dir.path().canonicalize().unwrap();
         for mode in [crate::trust::TrustMode::Plan, crate::trust::TrustMode::Auto] {
@@ -2011,12 +2015,8 @@ print(\"connected\")'";
                 .map(|p| p.as_path())
                 .collect();
             assert!(
-                denies.contains(&canonical.join(".git/hooks").as_path()),
-                "{mode:?}: deny_write_within_allow must contain .git/hooks, got {denies:?}"
-            );
-            assert!(
-                denies.contains(&canonical.join(".git/config").as_path()),
-                "{mode:?}: deny_write_within_allow must contain .git/config, got {denies:?}"
+                denies.contains(&canonical.join(".git").as_path()),
+                "{mode:?}: deny_write_within_allow must contain .git, got {denies:?}"
             );
         }
     }

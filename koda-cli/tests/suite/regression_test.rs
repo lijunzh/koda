@@ -101,7 +101,7 @@ mod event_loop_structure {
 /// `cycle_trust` and `set_trust` mutate the `SharedTrustMode` atomic
 /// but never the `KodaConfig.trust` field. Pre-fix, sub_agent_dispatch
 /// passed `parent_config.trust` as the parent side of the clamp, so a
-/// user who started in Auto and hit `/safe` would still get sub-agents
+/// user who started in Auto and switched to Plan would still get sub-agents
 /// clamped against Auto \u{2014} the child could run with broader privileges
 /// than the parent's *current* mode. Real escalation.
 ///

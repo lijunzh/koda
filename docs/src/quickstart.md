@@ -46,7 +46,7 @@ to hand it over directly: `@src/db.rs why is this query slow?`
 
 ## 4. Plan a change
 
-For anything bigger than a small fix, plan first. `Shift+Tab` cycles the
+For anything bigger than a small fix, plan first. `Shift+Tab` switches the
 trust mode to **Plan**, or type:
 
 ```text
@@ -57,26 +57,26 @@ In Plan the model can only look. It explores, asks you what it can't find
 out, and proposes a plan, drawn as a framed **Proposed plan**. Koda then asks
 **Implement this plan?**:
 
-- **in Safe:** each change asks you first.
-- **in Auto:** changes inside the project run without asking, in the sandbox.
+- **Yes, implement it:** switches to Auto and starts on the plan.
 - **No, keep planning:** answer with what to change, and it revises.
 
 ## 5. Let it make the change
 
-Pick one. In **Safe**, each edit and command shows what it will do and waits:
+In **Auto**, edits and commands run without asking, inside the
+[sandbox](./sandbox.md). Koda asks before anything destructive (`rm -rf`,
+`git push --force`), a command that needs to leave the sandbox (`git commit`,
+since the sandbox keeps `.git` read-only), and a file outside the project.
+The prompt shows what will run and waits:
 
 | Key | Does |
 |---|---|
 | `y` | Run this one |
-| `s` | Run it, and don't ask again this session for the same file or command |
+| `s` | Run it, and don't ask again this session for the same kind of call (`git commit`, say) |
 | `n` | Don't run it; the model tries something else |
 | `f` | Don't run it, and tell the model why |
 | `Esc` | Stop the turn |
 
-In **Auto**, edits and builds inside the project just run; Koda still asks
-before anything destructive (`rm -rf`, `git push --force`) or outside the
-project. The model usually builds and tests what it changed; if it doesn't,
-ask it to.
+The model usually builds and tests what it changed; if it doesn't, ask it to.
 
 ## 6. Review it
 

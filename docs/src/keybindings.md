@@ -8,7 +8,7 @@
 | `Alt+Enter` | Insert newline (multi-line input) |
 | `Tab` | Autocomplete slash commands and `@file` paths; during a turn, with nothing to complete, queue the message for after the turn |
 | `Alt+Up` | During a turn, with the input box empty: take the message queued last back into it |
-| `Shift+Tab` | Cycle the mode: Safe, Auto, Plan (Auto only with the sandbox) |
+| `Shift+Tab` | Switch the mode: Auto ↔ Plan |
 | `↑ / ↓` | Cycle through input history |
 | `Ctrl+R` | Reverse history search |
 | `Ctrl+O` | Every step in full (each call, its output, the thinking), or folded again (works mid-turn); see [What a turn shows](./tui.md#what-a-turn-shows) |
@@ -61,9 +61,8 @@ These keys appear when the agent asks to execute a tool:
 | Key | Action |
 |-----|--------|
 | `y` | Approve this action |
-| `s` | Approve, and don't ask again this session for the same command or file (local changes only) |
+| `s` | Approve, and don't ask again this session for the same kind of call ([what it covers](./approval.md#allow-for-this-session)) |
 | `n` | Reject this action |
-| `a` | Approve and switch to auto mode (no more confirmations this session) |
 | `f` | Reject and type written feedback explaining why |
 | `Esc` / `Ctrl+C` | Stop the turn; the action does not run |
 
@@ -89,7 +88,7 @@ composer behaves like a single-buffer vi.
 
 **Caveat:** Vim mode is per-session and the slash command toggles it
 on/off; it does not persist across koda restarts. The setting also does
-not affect Approval-prompt keys above (those remain `y`/`s`/`n`/`a`/`f`/`Esc`).
+not affect Approval-prompt keys above (those remain `y`/`s`/`n`/`f`/`Esc`).
 
 ## Composer key hints
 

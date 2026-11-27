@@ -48,19 +48,18 @@ Options:
           [alias: --effort]
 
       --mode <MODE>
-          What Koda may do without asking: auto (the default), safe or plan.
+          What Koda may do without asking: auto (the default) or plan.
           
-          auto: changes run without asking, inside the sandbox. Destructive commands (such as rm -rf
-          or git push --force) and writes outside the project still ask. Auto needs the sandbox;
-          where there is none, use safe.
+          auto: commands run without asking, inside the sandbox. A command that needs to leave the
+          sandbox, a dangerous one (such as rm -rf or git push --force) and a file outside the
+          project ask first. With no sandbox on this machine, every command asks.
           
-          safe: every change asks first.
-          
-          plan: read only. Koda looks around, proposes a plan, and asks before carrying it out.
+          plan: read only. Commands run in a read-only sandbox; Koda looks around, proposes a plan,
+          and asks before carrying it out.
           
           config.toml's `mode` sets the default.
           
-          [possible values: auto, safe, plan]
+          [possible values: auto, plan]
 
   -i, --image <FILE>
           Attach images to the first prompt (repeatable, or comma-separated)

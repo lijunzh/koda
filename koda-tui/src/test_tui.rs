@@ -68,18 +68,6 @@ impl TestTui {
         Self::start_in(server, tempfile::tempdir().unwrap()).await
     }
 
-    /// A TUI in Safe mode, its model answering with `replies`: Safe asks
-    /// before each change, which the approval tests need.
-    pub async fn start_safe(replies: Vec<ResponseTemplate>) -> Self {
-        let server = koda_test_utils::openai::model(replies).await;
-        Self::start_safe_on(server).await
-    }
-
-    /// A TUI in Safe mode whose model is `server`.
-    pub async fn start_safe_on(server: FakeLlmServer) -> Self {
-        Self::start_with(server, tempfile::tempdir().unwrap(), "mode = \"safe\"\n").await
-    }
-
     /// A TUI in `project`, which the test has prepared (an agent file, say).
     pub async fn start_in(server: FakeLlmServer, project: tempfile::TempDir) -> Self {
         Self::start_with(server, project, "").await

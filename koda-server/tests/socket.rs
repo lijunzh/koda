@@ -15,7 +15,7 @@ use koda_core::config::{KodaConfig, ProviderType};
 use koda_server::socket::{Options, ServeError, serve_with_config};
 use koda_server::stdio::ServeArgs;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
-use koda_test_utils::openai::{model, text, usage};
+use koda_test_utils::openai::{model, text, tool_call, usage};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -25,30 +25,14 @@ use tokio::task::JoinHandle;
 
 const WAIT: Duration = Duration::from_secs(30);
 
+/// A command that writes `path` and asks to run outside the sandbox: one
+/// Auto asks about.
 fn write_file(id: &str, path: &str) -> ResponseTemplate {
-    let args = json!({"file_path": path, "content": "hi"});
-    let chunks = [
-        json!({"choices": [{"delta": {"tool_calls": [{
-            "index": 0,
-            "id": id,
-            "type": "function",
-            "function": {"name": "Write", "arguments": args.to_string()},
-        }]}}]}),
-        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}}),
-    ];
-    let mut body: String = chunks.iter().map(|c| format!("data: {c}\n\n")).collect();
-    body.push_str("data: [DONE]\n\n");
-    ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_string(body)
-}
-
-/// [`config`] in Safe mode, where a write waits for an approval.
-fn safe(server: &FakeLlmServer) -> KodaConfig {
-    let mut config = config(server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    config
+    tool_call(
+        id,
+        "Bash",
+        json!({"command": format!("printf hi > {path}"), "outside_sandbox": true, "reason": "test"}),
+    )
 }
 
 fn config(server: &FakeLlmServer) -> KodaConfig {
@@ -406,6 +390,19 @@ impl Client {
         }
     }
 
+    /// Lines up to and including the first `pick` matches.
+    async fn until(&mut self, pick: impl Fn(&Value) -> bool) -> Vec<Value> {
+        let mut seen = Vec::new();
+        loop {
+            let line = self.read().await.expect("the socket closed");
+            let done = pick(&line);
+            seen.push(line);
+            if done {
+                return seen;
+            }
+        }
+    }
+
     /// The lines set aside so far, taken.
     fn seen(&mut self) -> Vec<Value> {
         self.pending.drain(..).collect()
@@ -743,7 +740,7 @@ async fn the_socket_is_private_to_its_owner() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_approval_waits_for_a_client_that_attaches() {
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
     first
@@ -820,7 +817,7 @@ fn is_broadcast(line: &Value) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
     first
@@ -883,7 +880,7 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
     // What its turns run with, as `session/settings/updated` says it.
     let settings = &joined["session"]["settings"];
     assert_eq!(settings["model"], "stub", "{joined}");
-    assert_eq!(settings["mode"], "safe", "{joined}");
+    assert_eq!(settings["mode"], "auto", "{joined}");
 
     // Then what it wasn't there to hear (the token counts, on this turn),
     // the approval still waiting, and once that is answered, the call's
@@ -925,7 +922,7 @@ async fn a_client_that_joins_mid_turn_gets_the_turn_as_it_stands() {
 #[tokio::test(flavor = "multi_thread")]
 async fn reading_a_session_mid_turn_has_its_open_items() {
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
     first
@@ -982,7 +979,7 @@ async fn reading_a_session_mid_turn_has_its_open_items() {
 #[tokio::test(flavor = "multi_thread")]
 async fn every_client_hears_what_a_session_is_doing() {
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let koda = Server::start(safe(&server), Duration::from_millis(300)).await;
+    let koda = Server::start(config(&server), Duration::from_millis(300)).await;
     let mut owner = Client::ready(&koda).await;
     let mut watcher = Client::ready(&koda).await;
     let session = owner.start_session().await;
@@ -1044,10 +1041,10 @@ async fn every_client_hears_what_a_session_is_doing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sessions_requests_take_effect_in_the_order_sent() {
     let server = model(vec![]).await;
-    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut client = Client::ready(&koda).await;
     let session = client.start_session().await;
-    let modes = ["plan", "safe", "plan", "safe", "plan", "safe", "plan"];
+    let modes = ["plan", "auto", "plan", "auto", "plan", "auto", "plan"];
     let mut sent = Vec::new();
     for mode in modes {
         sent.push(
@@ -1083,7 +1080,7 @@ async fn a_sessions_requests_take_effect_in_the_order_sent() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_mode_change_on_turn_start_is_said() {
     let server = model(vec![text("ok")]).await;
-    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut client = Client::ready(&koda).await;
     let session = client.start_session().await;
     client
@@ -1111,7 +1108,7 @@ async fn a_mode_change_on_turn_start_is_said() {
 async fn an_approval_nobody_answers_is_refused_after_the_wait() {
     let server = model(vec![write_file("w1", "a.txt"), text("Not written.")]).await;
     let koda = Server::start_waiting(
-        safe(&server),
+        config(&server),
         Duration::from_secs(60),
         Duration::from_millis(500),
     )
@@ -1247,7 +1244,7 @@ async fn a_client_runs_a_turn_over_the_socket() {
     use koda_server::events::Outgoing;
     use koda_server::protocol::{ServerNotification, ServerRequest, methods};
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut connected = koda_server::socket::connect(&koda.socket).await.unwrap();
     let handle = connected.requests.clone();
     let info = handle
@@ -1406,7 +1403,7 @@ async fn a_newer_koda_replaces_a_server_whose_clients_are_idle() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_newer_koda_waits_for_running_turns_when_asked() {
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let mut koda = Server::start(safe(&server), Duration::from_secs(60)).await;
+    let mut koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut other = Client::ready(&koda).await;
     let session = other.start_session().await;
     other
@@ -1494,7 +1491,7 @@ async fn a_newer_koda_waits_for_running_turns_when_asked() {
 async fn a_newer_koda_can_stop_running_turns() {
     let dir = tempfile::tempdir().unwrap();
     let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
-    let mut koda = Server::start_in(dir.path(), safe(&server), Duration::from_secs(60)).await;
+    let mut koda = Server::start_in(dir.path(), config(&server), Duration::from_secs(60)).await;
     let mut other = Client::ready(&koda).await;
     let session = other.start_session().await;
     other
@@ -1521,7 +1518,7 @@ async fn a_newer_koda_can_stop_running_turns() {
         .unwrap()
         .unwrap();
 
-    let koda = Server::start_in(dir.path(), safe(&server), Duration::from_secs(60)).await;
+    let koda = Server::start_in(dir.path(), config(&server), Duration::from_secs(60)).await;
     let mut reader = Client::ready(&koda).await;
     let read = reader
         .request(
@@ -1544,18 +1541,29 @@ async fn a_newer_koda_can_stop_running_turns() {
 async fn a_client_that_leaves_while_opening_a_session_doesnt_keep_it() {
     let server = model(vec![]).await;
     let mut koda = Server::start(config(&server), Duration::from_millis(300)).await;
+    // Hears what every client hears: when the session opens and closes.
+    let mut watcher = Client::ready(&koda).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
+    let closed = |l: &Value| {
+        l["method"] == "session/status/changed"
+            && session_of(l) == Some(session.as_str())
+            && l["params"]["status"]["type"] == "notLoaded"
+    };
     drop(first);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    watcher.until(closed).await;
 
-    // It opens the stored session and hangs up before the answer.
+    // It opens the stored session and hangs up before the answer. The
+    // session opens with nobody, and closes by the idle rule.
     let mut leaver = Client::ready(&koda).await;
     leaver
         .send_request("session/resume", json!({"sessionId": session}))
         .await;
     drop(leaver);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    watcher
+        .until(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str()))
+        .await;
+    watcher.until(closed).await;
 
     let mut next = Client::ready(&koda).await;
     let opened = next
@@ -1565,13 +1573,20 @@ async fn a_client_that_leaves_while_opening_a_session_doesnt_keep_it() {
     assert_eq!(opened["session"]["id"], session.as_str());
     drop(next);
 
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    let mut asking = Client::ready(&koda).await;
-    let idle = asking
-        .request("serve/stop", json!({"ifIdle": true}))
-        .await
-        .unwrap();
-    assert_eq!(idle["stopped"], true, "{idle}");
+    // Asked only if idle, it says no while something holds it and changes
+    // nothing, so asking again is a wait.
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let idle = watcher
+            .request("serve/stop", json!({"ifIdle": true}))
+            .await
+            .unwrap();
+        if idle["stopped"] == true {
+            break;
+        }
+        assert!(Instant::now() < deadline, "still held: {idle}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     tokio::time::timeout(WAIT, &mut koda.served)
         .await
         .expect("koda serve didn't stop")

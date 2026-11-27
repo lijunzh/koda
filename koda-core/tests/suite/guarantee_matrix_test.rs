@@ -1,239 +1,283 @@
-//! Guarantee matrix verification tests (#307, #293 Phase E, updated #855).
+//! Guarantee matrix verification tests (#307, #293 Phase E, #855, the Safe
+//! removal).
 //!
-//! Tests every row × column in the TrustMode guarantee matrix.
-//! Each test verifies the ToolApproval returned by check_tool() for
-//! a specific (action, mode) pair.
+//! One table: every action (row) × trust mode (column, Auto and Plan), and
+//! the [`ToolApproval`] `check_tool()` returns for it. Approvals follow
+//! Codex's sandbox: in Auto what the kernel sandbox contains runs without
+//! asking, and only leaving the sandbox, a destructive command or a file
+//! outside the project asks. Plan runs commands in a read-only sandbox and
+//! refuses edits.
 //!
-//! Matrix rows (actions):
-//!  1. Read files inside project
-//!  2. Read files outside project
-//!  3. Write files inside project
-//!  4. Write files outside project
-//!  5. Delete files
-//!  6. Safe bash (git status, grep)
-//!  7. Bash with write side-effect (echo > file)
-//!  8. Destructive bash (rm -rf, git push --force)
-//!  9. Bash with path escape (cd /etc)
-//! 10. Sub-agent invocation (InvokeAgent)
-//! 11. MemoryWrite
-//! 12. WebFetch (GET)
-//! 13. gh issue create (LocalMutation bash)
-//! 14. Cargo tool (LocalMutation, every subcommand)
-//!
-//! Columns: Auto, Safe
-//!
-//! Key design change in #855: Auto mode auto-approves destructive ops
-//! (sandbox enforces the perimeter). Only outside-project writes and
-//! path escapes still need confirmation in Auto mode.
+//! Without a kernel sandbox, Auto asks before every change and Plan refuses
+//! every command (#860); [`Exp::Contained`] and [`Exp::Sandboxed`] name
+//! those cells.
 
 use koda_core::trust::{ToolApproval, TrustMode, check_tool, derive_child_trust};
+use serde_json::json;
 use std::path::Path;
 
 fn root() -> &'static Path {
     Path::new("/home/user/project")
 }
 
-/// Expected Auto-mode approval for mutation/destructive ops.
-/// When sandbox is available, Auto auto-approves. Without sandbox,
-/// mutations downgrade to NeedsConfirmation (#860).
-fn auto_mutation_expected() -> ToolApproval {
-    if koda_core::sandbox::is_available() {
-        ToolApproval::AutoApprove
-    } else {
-        ToolApproval::NeedsConfirmation
+/// What a cell of the matrix expects.
+#[derive(Debug, Clone, Copy)]
+enum Exp {
+    /// Runs without asking.
+    Run,
+    /// Asks first.
+    Ask,
+    /// Refused.
+    Block,
+    /// An Auto change the sandbox contains: runs, or asks with no sandbox.
+    Contained,
+    /// A Plan command in the read-only sandbox: runs, or is refused with no
+    /// sandbox.
+    Sandboxed,
+}
+
+impl Exp {
+    fn approval(self) -> ToolApproval {
+        let sandbox = koda_core::sandbox::is_available();
+        match self {
+            Exp::Run => ToolApproval::AutoApprove,
+            Exp::Ask => ToolApproval::NeedsConfirmation,
+            Exp::Block => ToolApproval::Blocked,
+            Exp::Contained if sandbox => ToolApproval::AutoApprove,
+            Exp::Contained => ToolApproval::NeedsConfirmation,
+            Exp::Sandboxed if sandbox => ToolApproval::AutoApprove,
+            Exp::Sandboxed => ToolApproval::Blocked,
+        }
     }
 }
 
-/// Helper: check a tool in both modes and return (auto, confirm).
-fn check_both(tool: &str, args: &serde_json::Value) -> (ToolApproval, ToolApproval) {
-    let auto = check_tool(tool, args, TrustMode::Auto, Some(root()));
-    let confirm = check_tool(tool, args, TrustMode::Auto, Some(root()));
-    (auto, confirm)
+use Exp::{Ask, Block, Contained, Run, Sandboxed};
+
+/// `(action, tool, args, Auto, Plan)`.
+fn matrix() -> Vec<(&'static str, &'static str, serde_json::Value, Exp, Exp)> {
+    vec![
+        // Read-only tools run everywhere. Path scoping of a read outside the
+        // project is enforced at execution time by safe_resolve_path.
+        (
+            "read inside project",
+            "Read",
+            json!({"path": "src/main.rs"}),
+            Run,
+            Run,
+        ),
+        (
+            "read outside project",
+            "Read",
+            json!({"path": "/etc/passwd"}),
+            Run,
+            Run,
+        ),
+        (
+            "write inside project",
+            "Write",
+            json!({"path": "src/main.rs"}),
+            Contained,
+            Block,
+        ),
+        (
+            "edit inside project",
+            "Edit",
+            json!({"path": "src/main.rs"}),
+            Contained,
+            Block,
+        ),
+        (
+            "write outside project",
+            "Write",
+            json!({"path": "/etc/hosts"}),
+            Ask,
+            Block,
+        ),
+        (
+            "edit escaping with ..",
+            "Edit",
+            json!({"path": "../../../etc/passwd"}),
+            Ask,
+            Block,
+        ),
+        // Every command is a change to the classifier now; the sandbox holds
+        // it, so it runs (read-only in Plan).
+        (
+            "read-only bash",
+            "Bash",
+            json!({"command": "git status"}),
+            Contained,
+            Sandboxed,
+        ),
+        (
+            "bash writing a file",
+            "Bash",
+            json!({"command": "echo hello > output.txt"}),
+            Contained,
+            Sandboxed,
+        ),
+        (
+            "plain rm",
+            "Bash",
+            json!({"command": "rm a.txt"}),
+            Contained,
+            Sandboxed,
+        ),
+        (
+            "sed -i",
+            "Bash",
+            json!({"command": "sed -i s/a/b/ a.txt"}),
+            Contained,
+            Sandboxed,
+        ),
+        (
+            "gh issue create",
+            "Bash",
+            json!({"command": "gh issue create --title 'bug'"}),
+            Contained,
+            Sandboxed,
+        ),
+        // #1250: the sandbox can't undo these, so Auto asks.
+        (
+            "forced rm",
+            "Bash",
+            json!({"command": "rm -rf build"}),
+            Ask,
+            Block,
+        ),
+        (
+            "force push",
+            "Bash",
+            json!({"command": "git push --force"}),
+            Ask,
+            Block,
+        ),
+        (
+            "hard reset",
+            "Bash",
+            json!({"command": "git reset --hard"}),
+            Ask,
+            Block,
+        ),
+        // Leaving the sandbox asks whatever the command does.
+        (
+            "bash outside the sandbox",
+            "Bash",
+            json!({"command": "git status", "outside_sandbox": true, "reason": "r"}),
+            Ask,
+            Block,
+        ),
+        // The outside-project floor (#218) asks in Auto; Plan's read-only
+        // sandbox holds the command, so it runs there. /tmp is exempt (#560).
+        (
+            "bash path escape",
+            "Bash",
+            json!({"command": "cd /etc && ls"}),
+            Ask,
+            Sandboxed,
+        ),
+        (
+            "invoke a sub-agent",
+            "InvokeAgent",
+            json!({"agent_name": "reviewer", "prompt": "review"}),
+            Run,
+            Run,
+        ),
+        (
+            "memory write",
+            "MemoryWrite",
+            json!({"content": "remember this"}),
+            Contained,
+            Block,
+        ),
+        // A fetch asks in Plan, as Claude Code asks; a preapproved
+        // documentation site is read-only.
+        (
+            "web fetch",
+            "WebFetch",
+            json!({"url": "https://example.com", "prompt": "q"}),
+            Contained,
+            Ask,
+        ),
+        (
+            "web fetch, docs site",
+            "WebFetch",
+            json!({"url": "https://docs.python.org/3/", "prompt": "q"}),
+            Run,
+            Run,
+        ),
+        // Every Cargo subcommand runs code (build scripts, proc macros,
+        // tests), so it is a change like `cargo build` through Bash.
+        (
+            "cargo check",
+            "Cargo",
+            json!({"subcommand": "check"}),
+            Contained,
+            Block,
+        ),
+        (
+            "cargo clippy",
+            "Cargo",
+            json!({"subcommand": "clippy"}),
+            Contained,
+            Block,
+        ),
+        (
+            "cargo test",
+            "Cargo",
+            json!({"subcommand": "test"}),
+            Contained,
+            Block,
+        ),
+        (
+            "cargo build",
+            "Cargo",
+            json!({"subcommand": "build"}),
+            Contained,
+            Block,
+        ),
+    ]
 }
 
-// ── Row 1: Read files inside project ──
-
 #[test]
-fn matrix_read_inside_project() {
-    let args = serde_json::json!({"path": "src/main.rs"});
-    let (auto, confirm) = check_both("Read", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Row 2: Read files outside project ──
-// Note: Read is ReadOnly → auto-approved in check_tool.
-// Path scoping is enforced at execution time by safe_resolve_path.
-
-#[test]
-fn matrix_read_outside_project() {
-    let args = serde_json::json!({"path": "/etc/passwd"});
-    let (auto, confirm) = check_both("Read", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Row 3: Write files inside project ──
-
-#[test]
-fn matrix_write_inside_project() {
-    let args = serde_json::json!({"path": "src/main.rs"});
-    let (auto, confirm) = check_both("Write", &args);
-    assert_eq!(auto, auto_mutation_expected());
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 4: Write files outside project ──
-
-#[test]
-fn matrix_write_outside_project() {
-    let args = serde_json::json!({"path": "/etc/hosts"});
-    let (auto, confirm) = check_both("Write", &args);
-    assert_eq!(auto, ToolApproval::NeedsConfirmation);
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 5: Delete files (through Bash, as in Codex and Claude Code) ──
-
-#[test]
-fn matrix_delete_files() {
-    let args = serde_json::json!({"command": "rm -rf build"});
-    let (auto, confirm) = check_both("Bash", &args);
-    // #1250: Destructive ops require human confirmation in BOTH Auto and Safe
-    // at top-level. The user said YOLO for normal work, not for a forced
-    // `rm`. (Sub-agents block destructive entirely — see trust.rs tests.)
-    assert_eq!(auto, ToolApproval::NeedsConfirmation);
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 6: Safe bash (read-only commands) ──
-
-#[test]
-fn matrix_safe_bash() {
-    let args = serde_json::json!({"command": "git status"});
-    let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Row 7: Bash with write side-effect ──
-
-#[test]
-fn matrix_bash_write_side_effect() {
-    let args = serde_json::json!({"command": "echo hello > output.txt"});
-    let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, auto_mutation_expected());
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 8: Destructive bash ──
-
-#[test]
-fn matrix_destructive_bash() {
-    let args = serde_json::json!({"command": "rm -rf target/"});
-    let (auto, confirm) = check_both("Bash", &args);
-    // #1250: Destructive ops require human confirmation in BOTH Auto and Safe
-    // at top-level. The user said YOLO for normal work, not for `rm -rf`.
-    // (Sub-agents block destructive entirely — see trust.rs tests.)
-    assert_eq!(auto, ToolApproval::NeedsConfirmation);
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 9: Bash with path escape ──
-
-#[test]
-fn matrix_bash_path_escape() {
-    // /etc is still blocked; /tmp is now allowed (#560)
-    let args = serde_json::json!({"command": "cd /etc && ls"});
-    let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, ToolApproval::NeedsConfirmation);
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 10: Sub-agent invocation ──
-
-#[test]
-fn matrix_invoke_agent() {
-    let args = serde_json::json!({"agent_name": "reviewer", "prompt": "review"});
-    let (auto, confirm) = check_both("InvokeAgent", &args);
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Row 11: MemoryWrite ──
-
-#[test]
-fn matrix_memory_write() {
-    let args = serde_json::json!({"content": "remember this"});
-    let (auto, confirm) = check_both("MemoryWrite", &args);
-    assert_eq!(auto, auto_mutation_expected());
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 12: WebFetch (GET) ──
-//
-// A remote action, as Claude Code asks before a fetch: Safe asks, Auto
-// doesn't. A preapproved documentation site is read-only.
-
-#[test]
-fn matrix_web_fetch() {
-    let args = serde_json::json!({"url": "https://example.com", "prompt": "q"});
-    let (auto, confirm) = check_both("WebFetch", &args);
-    assert_eq!(auto, auto_mutation_expected());
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-    let docs = serde_json::json!({"url": "https://docs.python.org/3/", "prompt": "q"});
-    let (auto, confirm) = check_both("WebFetch", &docs);
-    assert_eq!(auto, ToolApproval::AutoApprove);
-    assert_eq!(confirm, ToolApproval::AutoApprove);
-}
-
-// ── Row 13: gh issue create (LocalMutation bash) ──
-
-#[test]
-fn matrix_gh_issue_create() {
-    let args = serde_json::json!({"command": "gh issue create --title 'bug'"});
-    let (auto, confirm) = check_both("Bash", &args);
-    assert_eq!(auto, auto_mutation_expected());
-    assert_eq!(confirm, ToolApproval::NeedsConfirmation);
-}
-
-// ── Row 14: Cargo tool ──
-
-#[test]
-fn matrix_cargo_tool() {
-    // Every subcommand executes code (build scripts, proc macros, tests),
-    // so Cargo is a LocalMutation like `cargo build` through Bash: auto in
-    // Auto (sandbox permitting), prompt in Safe.
-    for sub in ["check", "clippy", "test", "build"] {
-        let args = serde_json::json!({"subcommand": sub});
-        let (auto, confirm) = check_both("Cargo", &args);
-        assert_eq!(auto, auto_mutation_expected(), "{sub}");
-        assert_eq!(confirm, ToolApproval::NeedsConfirmation, "{sub}");
+fn guarantee_matrix() {
+    let mut wrong = Vec::new();
+    for (action, tool, args, auto, plan) in matrix() {
+        for (mode, exp) in [(TrustMode::Auto, auto), (TrustMode::Plan, plan)] {
+            let got = check_tool(tool, &args, mode, Some(root()));
+            if got != exp.approval() {
+                wrong.push(format!(
+                    "{action} in {mode:?}: got {got:?}, expected {:?} ({exp:?})",
+                    exp.approval()
+                ));
+            }
+        }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 // ── B19 regression: child trust clamped to parent *runtime* mode (#1022) ──
 //
 // Before #1022 B19 the dispatch used `parent_config.trust` (startup value)
-// as the ceiling. A user who started in Auto and hit `/safe` would still
-// spawn sub-agents at Auto because the config field was never mutated —
+// as the ceiling. A user who started in Auto and switched to Plan would
+// still spawn sub-agents at Auto because the config field was never mutated —
 // only the SharedTrustMode atomic was. This test pins the correct contract:
 // `derive_child_trust` must receive the live *runtime* mode, and when that
 // runtime mode is stricter than what the child declared, the child is clamped.
 
 #[test]
 fn b19_child_trust_clamped_to_parent_runtime_not_startup_config() {
-    // Simulates: parent started Auto, user ran /safe → runtime = Safe.
+    // Simulates: parent started Auto, user switched to Plan → runtime = Plan.
     let parent_startup_trust = TrustMode::Auto; // stale config field (pre-fix ceiling)
-    let parent_runtime_mode = TrustMode::Auto; // live atomic (post-fix ceiling)
+    let parent_runtime_mode = TrustMode::Plan; // live atomic (post-fix ceiling)
 
     // Named child declares Auto (wants broad permissions).
     let child_declared = TrustMode::Auto;
 
-    // Post-fix: runtime mode is the ceiling → child clamped to Safe.
+    // Post-fix: runtime mode is the ceiling → child clamped to Plan.
     assert_eq!(
         derive_child_trust(parent_runtime_mode, child_declared),
-        TrustMode::Auto,
+        TrustMode::Plan,
         "B19: child must be clamped to parent's runtime trust, not startup config trust",
     );
 
@@ -245,9 +289,9 @@ fn b19_child_trust_clamped_to_parent_runtime_not_startup_config() {
         "pre-fix behaviour: startup config (Auto) failed to clamp child — child got Auto",
     );
 
-    // Sanity: if runtime is already Auto, child declaring Auto stays Auto.
+    // A child declaring Plan stays Plan under an Auto parent.
     assert_eq!(
-        derive_child_trust(TrustMode::Auto, TrustMode::Auto),
-        TrustMode::Auto,
+        derive_child_trust(TrustMode::Auto, TrustMode::Plan),
+        TrustMode::Plan,
     );
 }

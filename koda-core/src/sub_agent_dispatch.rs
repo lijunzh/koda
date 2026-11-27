@@ -629,7 +629,7 @@ fn run_sub_agent<'a>(
         let provider = crate::providers::create_provider(&sub_config.provider_settings());
         // A sub-agent writes in the project, like the main agent and like
         // Claude Code's and Codex's sub-agents, so its edits land where the user
-        // expects; in Safe mode it asks for them as the main agent does. An
+        // expects; what would ask for the main agent asks for it too. An
         // agent that asks for a worktree (`isolation`) gets one instead. Where a
         // worktree is needed and can't be had, the sub-agent doesn't start: the
         // project is no substitute.

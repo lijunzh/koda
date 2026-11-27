@@ -160,7 +160,7 @@ separate "strict mode", "yolo mode" or per-tool toggles.
   auto-approve for mutations and block for destructive ops
   (`check_tool_for_sub_agent`). `TrustMode::clamp()` keeps a child from weakening
   its parent.
-- **Agent configs** declare `"trust": "plan" | "safe" | "auto"` (`config.rs`).
+- **Agent configs** declare `"trust": "plan" | "auto"` (`config.rs`).
   Legacy `write_access: bool` still loads with a warning.
 - **Folder scoping:** `is_outside_project()` (`trust.rs`), `lint_bash_paths()`
   (`bash_path_lint.rs`), startup warning when project_root == $HOME

@@ -1,6 +1,8 @@
-//! A yes "for this session" (`s` at the prompt) stops the prompt for the same
-//! command or file, and only for local changes: destructive calls keep asking,
-//! and a new session starts with nothing allowed.
+//! A yes "for this session" (`s` at the prompt) to a command leaving the
+//! sandbox covers later commands starting with its `prefix_rule`, as a Codex
+//! exec-policy prefix rule does: not another prefix, not a dangerous command
+//! under the same prefix, and not a new session. Destructive calls keep
+//! asking.
 
 use koda_core::engine::{ApprovalDecision, EngineCommand, EngineEvent, EngineSink};
 use koda_core::providers::LlmProvider;
@@ -106,45 +108,66 @@ async fn run(env: &Env, session: &mut KodaSession, answers: Vec<ApprovalDecision
     prompts
 }
 
-fn write(path: &str, content: &str) -> MockResponse {
-    MockResponse::tool_call("Write", json!({"file_path": path, "content": content}))
-}
-
 fn bash(command: &str) -> MockResponse {
     MockResponse::tool_call("Bash", json!({"command": command}))
+}
+
+/// `command` asking to leave the sandbox, offering `prefix_rule` for the
+/// session (none: no "this session" option).
+fn outside(command: &str, prefix_rule: &[&str]) -> MockResponse {
+    let mut args = json!({"command": command, "outside_sandbox": true, "reason": "test"});
+    if !prefix_rule.is_empty() {
+        args["prefix_rule"] = json!(prefix_rule);
+    }
+    MockResponse::tool_call("Bash", args)
 }
 
 fn done() -> MockResponse {
     MockResponse::Text("done".into())
 }
 
+fn git(env: &Env, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(&env.root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A repo the commands can commit to outside the sandbox.
+fn init_repo(env: &Env) {
+    git(env, &["init", "-q"]);
+    git(env, &["config", "user.name", "t"]);
+    git(env, &["config", "user.email", "t@t"]);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_session_yes_covers_the_same_file_and_command_only() {
+async fn a_session_yes_covers_commands_with_the_same_prefix_only() {
     let env = Env::new().await;
+    init_repo(&env);
     let mut session = session(
         &env,
         vec![
-            write("a.txt", "one"),
-            // The same file again: allowed, whatever the arguments.
-            MockResponse::tool_call(
-                "Write",
-                json!({"file_path": "a.txt", "content": "two", "overwrite": true}),
-            ),
-            // Another file asks.
-            write("b.txt", "one"),
-            bash("touch c.txt"),
-            bash("touch c.txt"),
-            // A different command asks.
-            bash("touch d.txt"),
+            outside("git commit --allow-empty -m one", &["git", "commit"]),
+            // The same prefix: covered, whatever follows it.
+            outside("git commit --allow-empty -m x", &["git", "commit"]),
+            // Another prefix asks.
+            outside("git push origin main", &["git", "push"]),
+            // A prefix too broad to allow offers no "this session".
+            outside("git status", &["git"]),
+            // No prefix offered: no "this session" either.
+            outside("git log", &[]),
             done(),
         ],
     )
     .await;
-    use ApprovalDecision::{Approve, ApproveForSession};
+    use ApprovalDecision::{ApproveForSession, Reject};
     let prompts = run(
         &env,
         &mut session,
-        vec![ApproveForSession, Approve, ApproveForSession, Approve],
+        vec![ApproveForSession, Reject, Reject, Reject],
     )
     .await;
 
@@ -155,24 +178,55 @@ async fn a_session_yes_covers_the_same_file_and_command_only() {
     assert_eq!(
         shown,
         [
-            ("Write", true),
-            ("Write", true),
             ("Bash", true),
-            ("Bash", true)
+            ("Bash", true),
+            ("Bash", false),
+            ("Bash", false)
         ]
     );
-    assert!(prompts[1].1.contains("b.txt"), "{prompts:?}");
-    assert!(prompts[3].1.contains("d.txt"), "{prompts:?}");
+    assert!(prompts[1].1.contains("git push"), "{prompts:?}");
     assert_eq!(
-        std::fs::read_to_string(env.root.join("a.txt")).unwrap(),
-        "two"
+        git(&env, &["rev-list", "--count", "HEAD"]),
+        "2",
+        "both commits ran outside the sandbox"
     );
-    assert!(env.root.join("c.txt").exists());
 
     // A new session starts with nothing allowed.
-    let mut next = self::session(&env, vec![bash("touch c.txt"), done()]).await;
-    let prompts = run(&env, &mut next, vec![Approve]).await;
+    let mut next = self::session(
+        &env,
+        vec![
+            outside("git commit --allow-empty -m y", &["git", "commit"]),
+            done(),
+        ],
+    )
+    .await;
+    let prompts = run(&env, &mut next, vec![Reject]).await;
     assert_eq!(prompts.len(), 1, "a new session should ask again");
+}
+
+/// An allowed prefix never covers a command dangerous in itself:
+/// `git push --force` under an allowed `git push` asks again, whether or not
+/// the model offers the same prefix for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_allowed_prefix_does_not_cover_a_destructive_command() {
+    let env = Env::new().await;
+    init_repo(&env);
+    let mut session = session(
+        &env,
+        vec![
+            outside("git push origin main", &["git", "push"]),
+            outside("git push --force origin main", &[]),
+            outside("git push --force origin main", &["git", "push"]),
+            done(),
+        ],
+    )
+    .await;
+    // The first push fails, as the repo has no remote; the others never run.
+    use ApprovalDecision::{ApproveForSession, Reject};
+    let prompts = run(&env, &mut session, vec![ApproveForSession, Reject, Reject]).await;
+    assert_eq!(prompts.len(), 3, "{prompts:?}");
+    assert!(prompts[1].1.contains("--force"), "{prompts:?}");
+    assert!(prompts[2].1.contains("--force"), "{prompts:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -48,9 +48,9 @@ commands and keys.
 
 - **Tools for a codebase:** read (text, images, PDFs, notebooks), search,
   edit, shell commands, the web, sub-agents, a todo list and memory.
-- **Trust modes:** Auto (the default) runs changes inside the sandbox and asks
-  before destructive or outside-project actions; Safe asks before every
-  change; Plan only looks. `Shift+Tab` cycles them.
+- **Trust modes:** Auto (the default) runs everything inside the sandbox and
+  asks before destructive commands, leaving the sandbox, or touching files
+  outside the project; Plan only looks. `Shift+Tab` switches between them.
 - **A kernel sandbox for every command:** Seatbelt on macOS, bubblewrap on
   Linux. Writes stay in the project and temporary folders, credential folders
   are blocked, and the network goes through Koda's proxy.

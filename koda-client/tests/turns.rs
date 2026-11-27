@@ -36,6 +36,16 @@ const WAIT: Duration = Duration::from_secs(30);
 
 // ── The model ───────────────────────────────────────────────────────────
 
+/// A command that writes `path` and asks to run outside the sandbox: one
+/// Auto asks about before it runs.
+fn asked_write(id: &str, path: &str) -> ResponseTemplate {
+    tool_call(
+        id,
+        "Bash",
+        json!({"command": format!("printf hi > {path}"), "outside_sandbox": true, "reason": "test"}),
+    )
+}
+
 // ── The client ──────────────────────────────────────────────────────────
 
 struct Koda {
@@ -319,7 +329,7 @@ async fn a_host_starts_from_the_config_and_this_runs_values() {
         "model_context_window=100000".to_string(),
         "model_max_output_tokens=321".to_string(),
         "model_temperature=0.25".to_string(),
-        "mode=safe".to_string(),
+        "mode=plan".to_string(),
     ];
     let config_file = koda_client::ConfigFile::in_dir(&dir.path().join("config")).with_overrides(
         flags
@@ -346,7 +356,7 @@ async fn a_host_starts_from_the_config_and_this_runs_values() {
     assert_eq!(started.session.model_provider.as_deref(), Some("lm-studio"));
     assert_eq!(started.session.model.as_deref(), Some("stub"));
     assert_eq!(started.session.context_window, Some(100_000));
-    assert_eq!(started.session.mode, Some(TrustMode::Auto));
+    assert_eq!(started.session.mode, Some(TrustMode::Plan));
     let mut koda = Koda {
         client,
         session: started.session.id.clone(),
@@ -465,29 +475,19 @@ async fn an_interrupt_stops_the_turn_and_is_answered_once_it_has() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn approvals_are_answered_through_the_client() {
     let server = model(vec![
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "yes.txt", "content": "hi"}),
-        ),
-        tool_call(
-            "call_2",
-            "Write",
-            json!({"file_path": "no.txt", "content": "hi"}),
-        ),
+        asked_write("call_1", "yes.txt"),
+        asked_write("call_2", "no.txt"),
         text("Done."),
     ])
     .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let mut koda = Koda::start(config(&server)).await;
     koda.turn("Write two files").await;
 
     let first = koda.request().await;
     let ServerRequest::ToolCallApproval { id, params } = &first else {
         panic!("expected an approval, got {first:?}");
     };
-    assert_eq!(params.tool, "Write");
+    assert_eq!(params.tool, "Bash");
     assert_eq!(params.session_id, koda.session);
     koda.answer(id, json!({"decision": "accept"})).await;
 
@@ -517,18 +517,8 @@ async fn approvals_are_answered_through_the_client() {
 /// failed": the model is told why, and the client sees it on the tool call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_malformed_approval_is_refused_as_a_failed_request() {
-    let server = model(vec![
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "maybe.txt", "content": "hi"}),
-        ),
-        text("Done."),
-    ])
-    .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let server = model(vec![asked_write("call_1", "maybe.txt"), text("Done.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
     koda.turn("Write a file").await;
 
     let request = koda.request().await;
@@ -554,17 +544,11 @@ async fn a_malformed_approval_is_refused_as_a_failed_request() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelling_an_approval_stops_the_turn() {
     let server = model(vec![
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "maybe.txt", "content": "hi"}),
-        ),
+        asked_write("call_1", "maybe.txt"),
         text("Never sent."),
     ])
     .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let mut koda = Koda::start(config(&server)).await;
     koda.turn("Write a file").await;
 
     let request = koda.request().await;
@@ -699,18 +683,8 @@ async fn a_steer_reaches_the_model_as_a_user_message() {
 /// out with the next turn, and a second turn is refused while it runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_interrupt_at_an_approval_closes_what_the_turn_left_open() {
-    let server = model(vec![
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "a.txt", "content": "hi"}),
-        ),
-        text("Next turn."),
-    ])
-    .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let server = model(vec![asked_write("call_1", "a.txt"), text("Next turn.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
     let turn_id = koda.turn("Write a file").await;
 
     let request = koda.request().await;
@@ -789,15 +763,8 @@ async fn requests_without_a_running_turn_or_session_are_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_stops_a_turn_that_waits_on_the_client() {
-    let server = model(vec![tool_call(
-        "call_1",
-        "Write",
-        json!({"file_path": "a.txt", "content": "hi"}),
-    )])
-    .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let server = model(vec![asked_write("call_1", "a.txt")]).await;
+    let mut koda = Koda::start(config(&server)).await;
     koda.turn("Write a file").await;
     koda.request().await;
 
@@ -1093,16 +1060,10 @@ async fn turns_are_listed_a_page_at_a_time() {
         text("One."),
         text("Two."),
         text("Three."),
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "a.txt", "content": "hi"}),
-        ),
+        asked_write("call_1", "a.txt"),
     ])
     .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let mut koda = Koda::start(config(&server)).await;
     let mut done = Vec::new();
     for prompt in ["first", "second", "third"] {
         done.push(koda.turn(prompt).await);
@@ -1601,10 +1562,10 @@ async fn sessions_are_listed_newest_first_with_their_first_prompt() {
     assert!(refused.message.contains("no session"), "{refused:?}");
 }
 
-/// The host enforces the mode rules whichever client asks, as Codex's
-/// server owns a thread's sandbox policy: on a machine without a sandbox,
-/// Auto is refused with what to do about it, at `session/start` and at
-/// `session/settings/update`. Plan is open to every session, as Codex's
+/// The host's mode rules whichever client asks, as Codex's server owns a
+/// thread's sandbox policy: on a machine without a sandbox, `state/read`
+/// says so with what to do about it, and a session still opens in Auto,
+/// since Koda's sandbox is best-effort. Plan is open to every session, as Codex's
 /// and Claude Code's plan modes are: one a person answers, and one nobody
 /// does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1614,32 +1575,27 @@ async fn the_host_enforces_the_mode_rules() {
     let server = model(vec![]).await;
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("project")).unwrap();
-    let start = |trust: koda_core::trust::TrustMode| {
-        let mut config = config(&server);
-        config.trust = trust;
-        InProcessClient::start_with_sandbox(
-            StartArgs {
-                config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
-                home: dir.path().join("config"),
-                project_root: dir.path().join("project"),
-                client_info: ClientInfo {
-                    name: "turns-test".to_string(),
-                    version: "0".to_string(),
-                    title: None,
-                },
+    let mut client = InProcessClient::start_with_sandbox(
+        StartArgs {
+            config_file: koda_client::ConfigFile::in_dir(&dir.path().join("config")),
+            home: dir.path().join("config"),
+            project_root: dir.path().join("project"),
+            client_info: ClientInfo {
+                name: "turns-test".to_string(),
+                version: "0".to_string(),
+                title: None,
             },
-            config,
-            SandboxState {
-                backend: "bwrap".to_string(),
-                available: false,
-                reason: Some("bwrap isn't installed".to_string()),
-                setup_hint: Some("Install bubblewrap".to_string()),
-            },
-        )
-    };
-
-    // Auto, asked for at the start, is refused before a session exists.
-    let client = start(koda_core::trust::TrustMode::Auto).await.unwrap();
+        },
+        config(&server),
+        SandboxState {
+            backend: "bwrap".to_string(),
+            available: false,
+            reason: Some("bwrap isn't installed".to_string()),
+            setup_hint: Some("Install bubblewrap".to_string()),
+        },
+    )
+    .await
+    .unwrap();
     let state = client
         .request::<methods::StateRead>(StateReadParams {})
         .await
@@ -1649,23 +1605,8 @@ async fn the_host_enforces_the_mode_rules() {
         state.sandbox.setup_hint.as_deref(),
         Some("Install bubblewrap")
     );
-    let refused = server_error(
-        client
-            .request::<methods::SessionStart>(SessionStartParams::default())
-            .await,
-    );
-    assert!(
-        refused.message.contains("Auto mode requires"),
-        "{refused:?}"
-    );
-    assert!(
-        refused.message.contains("Install bubblewrap"),
-        "{refused:?}"
-    );
-    client.shutdown().await;
 
-    // In Safe it opens, and can't be switched to Auto.
-    let mut client = start(koda_core::trust::TrustMode::Auto).await.unwrap();
+    // Auto opens without the sandbox.
     let opened = client
         .request::<methods::SessionStart>(SessionStartParams::default())
         .await
@@ -1677,15 +1618,6 @@ async fn the_host_enforces_the_mode_rules() {
         mode: Some(mode),
         ..Default::default()
     };
-    let refused = server_error(
-        client
-            .request::<methods::SessionSettingsUpdate>(update(TrustMode::Auto))
-            .await,
-    );
-    assert!(
-        refused.message.contains("Auto mode requires"),
-        "{refused:?}"
-    );
     // Plan, for a session a person answers, is Plan, with no warning.
     while client.try_next_event().is_some() {}
     client
@@ -2193,13 +2125,13 @@ async fn a_settings_update_reaches_the_next_turn() {
     koda.turn("first").await;
     koda.until("turn/completed").await;
 
-    koda.update(Some("other-model"), Some(TrustMode::Auto))
+    koda.update(Some("other-model"), Some(TrustMode::Plan))
         .await
         .unwrap();
     let settings = koda.settings_updated().await;
     assert_eq!(settings.model, "other-model");
     assert_eq!(settings.model_provider, "lm-studio");
-    assert_eq!(settings.mode, TrustMode::Auto);
+    assert_eq!(settings.mode, TrustMode::Plan);
 
     koda.turn("second").await;
     koda.until("turn/completed").await;
@@ -2211,7 +2143,7 @@ async fn a_settings_update_reaches_the_next_turn() {
     use koda_state::session_store::SessionStore;
     let stored = db.get_session(&koda.session).await.unwrap().unwrap();
     assert_eq!(stored.model.as_deref(), Some("other-model"));
-    assert_eq!(stored.mode.as_deref(), Some("safe"));
+    assert_eq!(stored.mode.as_deref(), Some("plan"));
     koda.client.shutdown().await;
 }
 
@@ -2997,18 +2929,8 @@ async fn a_reload_brings_an_open_session_in_line_with_the_stored_servers() {
 /// keeps its servers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reload_during_a_turn_waits_for_it_to_end() {
-    let server = model(vec![
-        tool_call(
-            "call_1",
-            "Write",
-            json!({"file_path": "a.txt", "content": "hi"}),
-        ),
-        text("Done."),
-    ])
-    .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let server = model(vec![asked_write("call_1", "a.txt"), text("Done.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
     koda.turn("write a file").await;
     let ServerRequest::ToolCallApproval { id, .. } = koda.request().await else {
         panic!("expected an approval");
@@ -3223,16 +3145,8 @@ async fn background_processes_are_listed_and_stopped_through_the_client() {
         text("Started."),
     ])
     .await;
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start(config).await;
+    let mut koda = Koda::start(config(&server)).await;
     koda.turn("Start two sleeps in the background").await;
-    for _ in 0..2 {
-        let ServerRequest::ToolCallApproval { id, .. } = koda.request().await else {
-            panic!("expected an approval");
-        };
-        koda.answer(&id, json!({"decision": "accept"})).await;
-    }
     let messages = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
 
@@ -3432,10 +3346,11 @@ async fn skills_list_names_each_skill_its_scope_and_the_files_that_failed() {
 
 // ── What a client renders from (6h-a) ───────────────────────────────────
 
-/// An edit's approval carries its diff in Codex's `changes` shape, and so
-/// does the call's item.
+/// An edit's call item carries its diff in Codex's `changes` shape, and a
+/// new file's carries its content. In Auto neither asks first: inside the
+/// project, and in a temp folder, the file tools run without asking.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_edits_approval_carries_its_diff() {
+async fn an_edits_item_carries_its_diff() {
     use koda_client::protocol::item::PatchChangeKind;
     let server = model(vec![
         // Koda edits only a file the model has read.
@@ -3456,16 +3371,28 @@ async fn an_edits_approval_carries_its_diff() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("project")).unwrap();
     std::fs::write(dir.path().join("project/a.txt"), "one\ntwo\n").unwrap();
-    let mut config = config(&server);
-    config.trust = koda_core::trust::TrustMode::Auto;
-    let mut koda = Koda::start_in(config, dir).await;
+    let mut koda = Koda::start_in(config(&server), dir).await;
     koda.turn("Edit a.txt and write new.txt").await;
-    let edit = koda.request().await;
-    let ServerRequest::ToolCallApproval { id, params } = &edit else {
-        panic!("expected an approval, got {edit:?}");
+    let messages = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
+    assert!(
+        !messages.iter().any(|m| matches!(m, Outgoing::Request(_))),
+        "{}",
+        names(&messages)
+    );
+
+    let changes_of = |call: &str| {
+        completed(&messages)
+            .into_iter()
+            .find_map(|item| match item {
+                Item::ToolCall { id, changes, .. } if id == call => Some(changes.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no {call}: {}", names(&messages)))
     };
-    assert_eq!(params.changes.len(), 1, "{params:?}");
-    let change = &params.changes[0];
+    let edited = changes_of("call_e");
+    assert_eq!(edited.len(), 1, "{edited:?}");
+    let change = &edited[0];
     assert_eq!(change.path, "a.txt");
     assert_eq!(change.kind, PatchChangeKind::Update { move_path: None });
     assert!(
@@ -3474,37 +3401,9 @@ async fn an_edits_approval_carries_its_diff() {
         change.diff
     );
     assert!(change.diff.contains("\n-two\n+three\n"), "{}", change.diff);
-    let edit_changes = params.changes.clone();
-    koda.answer(id, json!({"decision": "accept"})).await;
-
-    // The edit completes before the write is asked about.
-    let mut messages = Vec::new();
-    let write = loop {
-        let message = tokio::time::timeout(WAIT, koda.client.next_event())
-            .await
-            .unwrap()
-            .unwrap();
-        match message {
-            Outgoing::Request(request) => break request,
-            other => messages.push(other),
-        }
-    };
-    let ServerRequest::ToolCallApproval { id, params } = &write else {
-        panic!("expected an approval, got {write:?}");
-    };
-    assert_eq!(params.changes[0].kind, PatchChangeKind::Add);
-    assert_eq!(params.changes[0].diff, "fresh\n");
-    koda.answer(id, json!({"decision": "accept"})).await;
-    koda.until("turn/completed").await;
-
-    let edited = completed(&messages)
-        .into_iter()
-        .find_map(|item| match item {
-            Item::ToolCall { id, changes, .. } if id == "call_e" => Some(changes.clone()),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(edited, edit_changes);
+    let written = changes_of("call_w");
+    assert_eq!(written[0].kind, PatchChangeKind::Add);
+    assert_eq!(written[0].diff, "fresh\n");
     assert_eq!(
         std::fs::read_to_string(koda.project.join("a.txt")).unwrap(),
         "one\nthree\n"
@@ -3620,7 +3519,7 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
         .request::<methods::SessionSettingsUpdate>(
             koda_client::protocol::session::SessionSettingsUpdateParams {
                 session_id: koda.session.clone(),
-                mode: Some(koda_client::protocol::state::TrustMode::Auto),
+                mode: Some(koda_client::protocol::state::TrustMode::Plan),
                 ..Default::default()
             },
         )
@@ -3639,7 +3538,7 @@ async fn usage_is_split_by_agent_and_restored_on_resume() {
     let mine = listed.iter().find(|s| s.id == koda.session).unwrap();
     assert_eq!(
         mine.mode,
-        Some(koda_client::protocol::state::TrustMode::Auto),
+        Some(koda_client::protocol::state::TrustMode::Plan),
         "the mode it last ran in"
     );
 

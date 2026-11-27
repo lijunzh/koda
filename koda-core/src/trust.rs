@@ -503,12 +503,25 @@ impl SessionAllows {
         effect: ToolEffect,
         project_root: &Path,
     ) -> bool {
+        let leaving = tool_name == "Bash" && crate::tools::shell::wants_outside_sandbox(args);
+        if leaving {
+            // Checked first: the call's own `prefix_rule` can name a prefix
+            // already allowed (`git push` for `git push --force`).
+            let inside = {
+                let mut inside = args.clone();
+                inside["outside_sandbox"] = serde_json::Value::Bool(false);
+                inside
+            };
+            if resolve_tool_effect(tool_name, &inside) == ToolEffect::Destructive {
+                return false;
+            }
+        }
         if session_allow_key(tool_name, args, effect, project_root)
             .is_some_and(|key| self.contains(&key))
         {
             return true;
         }
-        if tool_name != "Bash" || !crate::tools::shell::wants_outside_sandbox(args) {
+        if !leaving {
             return false;
         }
         let Some(argv) = args
@@ -518,14 +531,6 @@ impl SessionAllows {
         else {
             return false;
         };
-        let inside = {
-            let mut inside = args.clone();
-            inside["outside_sandbox"] = serde_json::Value::Bool(false);
-            inside
-        };
-        if resolve_tool_effect(tool_name, &inside) == ToolEffect::Destructive {
-            return false;
-        }
         let Ok(keys) = self.0.lock() else {
             return false;
         };
@@ -1009,12 +1014,27 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_blocks_bash() {
+    fn plan_runs_bash_in_its_read_only_sandbox_and_refuses_the_dangerous() {
+        // Plan's sandbox keeps the project read-only, so a command runs
+        // there without asking, as in Codex's read-only mode; with no
+        // sandbox to hold it, or when it's destructive, it's refused.
         let args = serde_json::json!({"command": "cargo test"});
-        assert_eq!(
-            check_tool("Bash", &args, TrustMode::Plan, None),
-            ToolApproval::Blocked,
-        );
+        let expected = if crate::sandbox::is_available() {
+            ToolApproval::AutoApprove
+        } else {
+            ToolApproval::Blocked
+        };
+        assert_eq!(check_tool("Bash", &args, TrustMode::Plan, None), expected);
+        for args in [
+            serde_json::json!({"command": "rm -rf target"}),
+            serde_json::json!({"command": "ls", "outside_sandbox": true, "reason": "x"}),
+        ] {
+            assert_eq!(
+                check_tool("Bash", &args, TrustMode::Plan, None),
+                ToolApproval::Blocked,
+                "{args}"
+            );
+        }
     }
 
     #[test]
@@ -1245,6 +1265,13 @@ mod tests {
             !covers("git push --force origin main"),
             "dangerous in itself"
         );
+        // Not when the call names the allowed prefix as its own either.
+        let mut forced = call("git push --force origin main");
+        forced["prefix_rule"] = serde_json::json!(["git", "push"]);
+        assert!(
+            !allows.covers("Bash", &forced, resolve_tool_effect("Bash", &forced), root),
+            "dangerous under its own prefix_rule"
+        );
         assert!(!covers("git checkout main"), "another prefix");
         assert!(
             !covers("git commit -m one && git push"),
@@ -1285,7 +1312,11 @@ mod tests {
             None
         );
         // Read-only calls don't ask; remote actions (MCP tools) always do.
-        assert_eq!(bash("ls"), None);
+        let read = serde_json::json!({"file_path": "src/lib.rs"});
+        assert_eq!(
+            session_allow_key("Read", &read, ToolEffect::ReadOnly, root),
+            None
+        );
         let args = serde_json::json!({"issue": 1});
         assert_eq!(
             session_allow_key("tracker__close", &args, ToolEffect::RemoteAction, root),

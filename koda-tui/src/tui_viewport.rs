@@ -171,8 +171,7 @@ pub(crate) fn draw_viewport(
         PromptMode::Chat => {
             // **#1232 §8a**: keep prompt indicator colors in lock-step
             // with the status-bar mode badge so users see the SAME
-            // color for the SAME mode in both surfaces. Pre-fix Safe
-            // was Cyan here but Yellow in the bar — confusing.
+            // color for the SAME mode in both surfaces.
             // Plan was DarkGray here, which actively HID the indicator
             // (DarkGray on the default dark terminal background blends
             // into nothing); now Cyan so users can see they're in a
@@ -299,8 +298,7 @@ pub(crate) fn draw_viewport(
     let mut sb = StatusBar::new(model, crate::mode::label(mode), context_left)
         // #860 visibility companion: surface the host's sandbox state
         // next to the trust badge so users on unsandboxed systems can see
-        // at a glance why Auto refuses (and why Safe is their only
-        // top-level option there).
+        // at a glance why every change asks there.
         .with_sandbox_status(Some(sandbox_available));
     if elapsed_secs > 0 {
         sb = sb.with_elapsed(elapsed_secs);

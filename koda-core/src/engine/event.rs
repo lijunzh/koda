@@ -316,7 +316,7 @@ pub enum EngineEvent {
         options: Vec<String>,
     },
 
-    /// An action was blocked by safe mode (shown but not executed).
+    /// An action was refused by the mode, Plan's read-only rule (shown but not executed).
     ActionBlocked {
         /// The tool call that was blocked.
         tool_call_id: String,

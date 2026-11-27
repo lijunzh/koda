@@ -1,7 +1,7 @@
 //! Plan mode in the TUI, as Codex's and Claude Code's: `/plan` and
 //! Shift+Tab enter it, the model plans with the user and proposes a plan
 //! in a `<proposed_plan>` block, and the TUI then asks whether to
-//! implement it in Safe or Auto, or to keep planning. The host keeps Plan
+//! implement it in Auto or to keep planning. The host keeps Plan
 //! read-only: a call that would change anything is refused.
 
 use super::{CommandOutcome, TuiContext};

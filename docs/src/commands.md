@@ -269,7 +269,7 @@ coding agents, as Codex's `/init` and Claude Code's do. If the project has an
 
 Enters Plan mode, as Codex's `/plan` does; with a prompt, sends it too.
 The model explores, asks what it can't find out, and proposes a plan;
-Koda then asks whether to implement it in Safe or Auto, or to keep
+Koda then asks whether to implement it, which switches to Auto, or to keep
 planning. Nothing changes in Plan. `Shift+Tab` leaves it. See
 [Planning before changing anything](./approval.md#planning-before-changing-anything).
 

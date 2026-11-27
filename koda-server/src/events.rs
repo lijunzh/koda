@@ -1700,6 +1700,58 @@ mod tests {
         }
     }
 
+    /// An edit's approval carries the diff, as Codex's file-change approval
+    /// does: the person sees what would change before saying yes. In Auto
+    /// with a sandbox only an edit of Koda's own settings asks, which a
+    /// test can't arrange per process, so this is tested here.
+    #[test]
+    fn an_edits_approval_carries_its_diff() {
+        use koda_core::preview::{DiffPreview, UnifiedDiffPreview};
+        let mut p = EventProjector::new("s1");
+        let preview = DiffPreview::UnifiedDiff(UnifiedDiffPreview {
+            path: "config.toml".into(),
+            old_content: "model = \"a\"\n".into(),
+            new_content: "model = \"b\"\n".into(),
+            hunks: Vec::new(),
+            truncated: true,
+        });
+        let lines = run(
+            &mut p,
+            vec![
+                (
+                    None,
+                    EngineEvent::TurnStart {
+                        turn_id: "t1".into(),
+                    },
+                ),
+                (None, start("e1", "Edit")),
+                (
+                    None,
+                    EngineEvent::ApprovalRequest {
+                        id: "engine-a".into(),
+                        tool_call_id: "e1".into(),
+                        tool_name: "Edit".into(),
+                        detail: "config.toml".into(),
+                        command: None,
+                        preview: Some(preview),
+                        effect: koda_core::tools::ToolEffect::LocalMutation,
+                        allow_for_session: true,
+                    },
+                ),
+            ],
+        );
+        let request = &lines[2];
+        assert_eq!(request["method"], "item/toolCall/requestApproval");
+        assert_eq!(request["params"]["allowForSession"], true);
+        let change = &request["params"]["changes"][0];
+        assert_eq!(change["path"], "config.toml");
+        let diff = change["diff"].as_str().unwrap();
+        assert!(
+            diff.contains("-model = \"a\"") && diff.contains("+model = \"b\""),
+            "{diff}"
+        );
+    }
+
     #[test]
     fn an_approval_is_a_request_resolved_by_id_and_a_refusal_keeps_its_detail() {
         let mut p = EventProjector::new("s1");

@@ -9,7 +9,7 @@ protocol to a host in their own process.
 
 ```bash
 koda serve --stdio
-koda serve --stdio -c mode=safe --project-root ~/src/app
+koda serve --stdio -c mode=plan --project-root ~/src/app
 ```
 
 Each message is one line of JSON-RPC 2.0, with `"jsonrpc": "2.0"`, each way.

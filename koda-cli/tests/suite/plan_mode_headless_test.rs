@@ -1,5 +1,6 @@
-//! `koda exec --mode plan` is a read-only run: tools that read run, and
-//! everything else is refused without asking anyone.
+//! `koda exec --mode plan` is a read-only run: tools that read run, Bash runs
+//! in a read-only sandbox, and everything else is refused without asking
+//! anyone.
 //!
 //! Runs the `koda` binary headless against a local model stub whose first
 //! reply calls a file write, a shell write and two MCP tools, one of them
@@ -105,7 +106,6 @@ async fn plan_runs_reads_and_refuses_the_rest() {
     .expect("failed to run koda");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
-    assert!(!stderr.contains("Falling back to Safe"), "stderr: {stderr}");
 
     assert!(!project.join("written.txt").exists(), "Write ran");
     assert!(!project.join("touched.txt").exists(), "touch ran");
@@ -129,10 +129,15 @@ async fn plan_runs_reads_and_refuses_the_rest() {
         "read-only MCP tool didn't run: {after}"
     );
     assert!(!after.contains("send-ran"), "unmarked MCP tool ran");
-    // Write, Bash and mail__send each come back refused.
+    // Bash ran, and the read-only sandbox stopped its write.
+    assert!(
+        after.contains("touch: touched.txt: Operation not permitted"),
+        "Bash wasn't stopped at the kernel: {after}"
+    );
+    // Write and mail__send each come back refused.
     assert_eq!(
         after.matches("[plan mode] Not run").count(),
-        3,
-        "expected three refusals: {after}"
+        2,
+        "expected two refusals: {after}"
     );
 }

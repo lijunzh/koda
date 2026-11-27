@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Safe mode.** Koda now decides what runs without asking the way Codex does, from the kernel sandbox rather than a list of commands. There are two modes, Auto (the default) and Plan; `Shift+Tab` switches between them. `--mode`, `mode` in `config.toml` and an agent's `trust` take `auto` or `plan`; `mode = "safe"` gets a message saying so, an agent declaring `"safe"` runs in Plan with a warning, and a session stored in Safe reopens in Auto. `/safe`, the Plan dialog's "Implement it in Safe" and the `a` approval key (approve and switch to Auto) are gone.
+- **The read-only command list.** About 110 command prefixes with flag rules decided which commands Safe and Plan let run; the 2026-11-26 test review found it rated `git branch -D main`, `sed --in-place` and `awk 'BEGIN{system(…)}'` read-only. Codex retired its own list in August. The sandbox now decides what a command can change.
+
+### Changed
+
+- **Auto asks only when the sandbox can't hold a call,** as Codex's `OnRequest`: a destructive command, a command asking to leave the sandbox (`outside_sandbox`) and a file outside the project. Everything else runs in the sandbox without asking. On a machine with no sandbox, Auto asks before every command and edit, as Claude Code does with its sandbox off, where it used to refuse to start.
+- **Plan runs every command in its read-only sandbox,** as Codex's read-only mode, not only those the list called read-only. Edits, destructive commands and leaving the sandbox are still refused.
+- **`.git` is read-only in the sandbox,** as in Codex's workspace-write sandbox: `git status`, `log` and `diff` run, while `git add`, `commit` and `checkout` ask to leave the sandbox. That also keeps hooks and `config`, which git runs outside the sandbox, out of a command's reach.
+- **"This session" on a request to leave the sandbox covers its prefix,** as Codex's `prefix_rule`: the model proposes one (`["git", "commit"]`), and a yes for the session covers every later `git commit` that leaves the sandbox. A prefix that would cover any program (`bash`, `python -c`, `sudo`, `git` alone; Codex's banned list) isn't offered, and a later command that would be destructive still asks.
+- **The dangerous-command check sees through more spellings:** `/bin/rm -rf`, `git -C dir push --force`, `git -c k=v reset --hard`, `trap 'rm -rf x' EXIT` and a shell reading a script from stdin, and it adds `git push --force-with-lease`, `+refspec`, `--delete`, `:branch` and `--mirror`.
+
 ### Added
 
 - **A `Bash` call says what its command does, as Codex's `commandActions`:** each `toolCall` item for `Bash` carries one entry per command in it, from its start: `read` (with the file's `name` and `path`), `listFiles`, `search` (with the `query` and `path`) or `unknown`. The reading is Codex's own parser (`parse_command`), carried in `koda-command` with Koda's scanner in place of tree-sitter; all of Codex's tests for it pass. The TUI uses it: a lookup row counts `cat a.rs && rg GUI` as a read and a search rather than a command, and the status line says `Reading Cargo.toml` or `Searching for "GUI"` rather than `Running a command`. For showing only: approvals still go by Koda's command classification.

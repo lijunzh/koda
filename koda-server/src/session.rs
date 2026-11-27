@@ -2483,9 +2483,9 @@ fn engine_command(kind: RequestKind, id: String, result: Answer) -> EngineComman
 
 /// Koda's own answer to a request when nobody is there to ask
 /// ([`ApprovalPolicy::Never`]), with the engine's id for it: approve what the
-/// mode let through to an approval, refuse destructive actions and anything
-/// outside the sandbox, answer a question with nothing, go on at the loop
-/// cap. What `koda exec` has always done.
+/// mode let through to an approval, refuse destructive actions, anything
+/// outside the sandbox, and any command or edit on a machine with no
+/// sandbox; answer a question with nothing, go on at the loop cap.
 fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
     let command = match event {
         EngineEvent::ApprovalRequest {
@@ -2514,6 +2514,20 @@ fn policy_answer(event: &EngineEvent) -> Option<(String, EngineCommand)> {
                          approve). Adapt your plan: avoid this kind of action for the \
                          rest of this session, or ask the operator to re-run \
                          interactively."
+                    ),
+                }
+            } else if !koda_core::sandbox::is_available()
+                && matches!(tool_name.as_str(), "Bash" | "Monitor" | "Write" | "Edit")
+            {
+                // With no kernel sandbox, every command and edit asks, and
+                // nobody here can answer: running them unsandboxed and
+                // unwatched is what Auto used to refuse to start for.
+                ApprovalDecision::RejectAuto {
+                    reason: format!(
+                        "'{tool_name}' auto-rejected: this machine has no kernel sandbox, \
+                         so every change needs a person's yes, and headless mode has \
+                         none. Read and report instead, or tell the operator to install \
+                         the sandbox or run interactively."
                     ),
                 }
             } else {
@@ -2811,7 +2825,8 @@ mod tests {
     }
 
     /// With nobody to ask (`koda exec`), Koda answers a sub-agent as it does
-    /// the main agent: changes go ahead, destructive actions are refused.
+    /// the main agent: changes go ahead where the sandbox holds them, and are
+    /// refused on a machine with none; destructive actions are refused.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn with_nobody_to_ask_a_sub_agent_gets_the_policy_answer() {
         use koda_core::approval_flow::Approver;
@@ -2820,12 +2835,18 @@ mod tests {
         let approver = HostApprover {
             sink: Arc::downgrade(&sink),
         };
-        assert_eq!(
-            approver
-                .approve(agent_request(None, ToolEffect::LocalMutation))
-                .await,
-            Some(ApprovalDecision::Approve)
-        );
+        let write = approver
+            .approve(agent_request(None, ToolEffect::LocalMutation))
+            .await;
+        if koda_core::sandbox::is_available() {
+            assert_eq!(write, Some(ApprovalDecision::Approve));
+        } else {
+            assert!(
+                matches!(&write, Some(ApprovalDecision::RejectAuto { reason })
+                    if reason.contains("no kernel sandbox")),
+                "{write:?}"
+            );
+        }
         assert!(matches!(
             approver
                 .approve(agent_request(None, ToolEffect::Destructive))

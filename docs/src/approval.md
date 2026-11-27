@@ -1,34 +1,26 @@
 # Trust modes
 
-Koda has **one** permission knob — **`TrustMode`** — that controls
-whether tool calls execute, get a confirmation prompt, or get blocked
-outright. Toggle with `Shift+Tab` in the TUI; the current mode is
-shown as a **color-coded badge** in the status bar.
+Koda decides what runs without asking the way Codex does: from the kernel
+sandbox. A command that stays inside the sandbox runs; one that needs more
+asks to leave it, and you decide. The **trust mode** picks the sandbox:
+`Shift+Tab` in the TUI switches between the two, and the status bar shows
+the current one as a colour-coded badge.
 
-## Mental model in one paragraph
+## The two modes
 
-The trust mode is the **single mechanism** for tool gating. Every
-permission decision in Koda — whether the master agent can write to
-disk, whether a sub-agent can call `Bash`, whether `rm -rf` is
-auto-approved — derives from `(trust_mode, tool_effect)`. The kernel
-sandbox (macOS seatbelt / Linux bwrap) is the **always-on safety
-floor** underneath; the trust mode only decides whether you see a
-confirmation prompt before each mutation. There are no separate
-"strict mode," "yolo mode," or per-tool toggles to keep in your head.
+| Mode | Badge | What runs without asking |
+|------|-------|--------------------------|
+| **Auto** | ⚡ **AUTO** (bold green) | Everything inside the workspace-write sandbox: the project and scratch directories are writable, `.git` and credential files are read-only, and the network goes through Koda's proxy. A destructive command, a command that asks to leave the sandbox, and a path outside the project ask first. **The default.** |
+| **Plan** | 📋 PLAN (cyan) | Reads, searches and shell commands, in the read-only sandbox: a command can look at anything and change nothing. Edits are refused, and so is a destructive command or one asking to leave the sandbox. |
 
-## The three modes
-
-| Mode | Badge | Mental model |
-|------|-------|---------------|
-| **Plan** | 📋 PLAN (cyan) | "Investigation only — no side effects." Read tools auto-approve; mutating and destructive tools are **blocked** (not just confirmed). Use for code review, exploration, and dry runs. |
-| **Safe** | 🔒 SAFE (yellow) | "Confirm every side effect." Read tools auto-approve; everything that mutates state asks first. Use it when you want a person to approve each change; a headless run in Safe refuses every change, since no one can approve it. |
-| **Auto** | ⚡ **AUTO** (bold green) | "Trust the sandbox." Read and mutating ops auto-approve within the sandbox; destructive ops (`rm -rf`, `git reset --hard`, `git push --force`) still ask. Outside-project writes still ask. **The default:** the kernel sandbox, the outside-project floor and the destructive backstop together are a solid baseline without asking about every edit. Auto requires the kernel sandbox; on unsandboxed platforms koda refuses to start. |
-
-`Shift+Tab` cycles Safe, Auto and Plan; without the kernel sandbox it
-skips Auto and says why. `--mode` and `mode` in `config.toml` choose the
-mode a session starts in, Plan included. Headless runs that should only
-look use `koda exec --mode plan "..."` (see
+`--mode` and `mode` in `config.toml` choose the mode a session starts in.
+Headless runs that should only look use `koda exec --mode plan "..."` (see
 [Headless mode](./headless.md#read-only-runs)).
+
+Until 0.8.0 there was a third mode, Safe, which asked before every change.
+It is gone, as Codex has none: the sandbox, not a list of commands, decides
+what a command can do. A config with `mode = "safe"` gets a message saying so,
+and a session stored in Safe reopens in Auto.
 
 ## Planning before changing anything
 
@@ -41,55 +33,52 @@ can't find out, and then propose a plan in a `<proposed_plan>` block,
 which the TUI draws as a framed **Proposed plan**. Koda then asks
 **Implement this plan?**:
 
-- **Yes, implement it in Safe**: switches to Safe and sends
-  "Implement the plan." Each change asks first.
-- **Yes, implement it in Auto**: the same in Auto, offered when the
-  kernel sandbox is available.
+- **Yes, implement it**: switches to Auto and sends "Implement the plan."
 - **No, keep planning**: stays in Plan. Typing a reply does the same.
 
-Plan stays read-only throughout: the host refuses any call that would
-change something, and a `Bash` command runs with the project read-only in
-the kernel sandbox, so a command wrongly judged read-only still can't
-write there. A session left in Plan reopens in Plan.
+Plan stays read-only throughout: the host refuses any edit, and every `Bash`
+command runs with the project read-only in the kernel sandbox. A session left
+in Plan reopens in Plan.
 
-All three badges share the same icon + UPPERCASE + bold styling so
-the trust mode is unmissable in the status bar regardless of which
-mode you're in.
+## What asks in Auto
 
-## Trust mode × tool effect matrix (top-level / master agent)
+| Call | Auto | Plan |
+|------|------|------|
+| Read, search, a command inside the sandbox | ✅ runs | ✅ runs (read-only sandbox) |
+| Edit, Write | ✅ runs | ❌ refused |
+| A destructive command (`rm -rf`, `git push --force`, …) | ⏸ asks | ❌ refused |
+| A command asking to leave the sandbox (`outside_sandbox`) | ⏸ asks | ❌ refused |
+| A command naming a path outside the project (`cd ~`, `> ../x`) | ⏸ asks | ✅ runs (read-only sandbox) |
+| Edit or Write in a temp directory (`/tmp`, `$TMPDIR`) | ✅ runs | ❌ refused |
+| Edit or Write of Koda's own settings (`~/.config/koda`) | ⏸ asks | ❌ refused |
+| Edit or Write anywhere else outside the project | ❌ refused | ❌ refused |
 
-The master agent — i.e. you talking to Koda directly — uses this matrix:
+**Leaving the sandbox.** A Bash call with `outside_sandbox: true` runs without
+the kernel sandbox; the model makes one when the sandbox blocks something you
+need, and the prompt shows its reason. The commonest is git: the sandbox keeps
+`.git` read-only, as Codex's does, so `git add`, `git commit` and
+`git checkout` fail inside it, and the model asks to run them outside. With
+the request it can propose a `prefix_rule`, such as `["git", "commit"]`, which
+your "this session" answer covers (below). See
+[Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox).
 
-| Tool effect              | Plan      | Safe        | Auto        |
-|--------------------------|-----------|-------------|-------------|
-| `ReadOnly`               | ✅ auto   | ✅ auto     | ✅ auto     |
-| `LocalMutation` (Write/Edit/MemoryWrite) | ❌ deny | ⏸ confirm | ✅ auto |
-| `RemoteAction`           | ❌ deny   | ⏸ confirm   | ✅ auto     |
-| `Destructive` (`rm -rf`, force-push, …) | ❌ deny | ⏸ confirm | ⏸ confirm |
-| Outside-project write    | ❌ deny   | ⏸ confirm   | ⏸ confirm   |
-| Bash outside the sandbox | ❌ deny   | ⏸ confirm   | ⏸ confirm   |
+**Which commands are destructive** follows Codex: a forced `rm` (`rm -f`,
+`rm -rf`, `rm --force`) is the one local file operation that asks, even
+behind `env`, `sudo`, `xargs` or `trap`, inside `sh -c`, `eval` or
+`find -exec`, or spelled `/bin/rm`. Koda adds what the sandbox can't contain
+or what loses work for good: `git reset --hard`, `git clean -f`, force pushes
+(`--force`, `--force-with-lease`, `+refspec`), deleting a remote branch
+(`--delete`, `:branch`, `--mirror`), `npm publish` and `cargo publish`, `gh`
+merges, deletes, `auth` and `api`, `sudo`, disk tools and reboots. Git's own
+options (`git -C dir`, `git -c key=value`) don't hide a command. Anything
+else, a plain `rm`, `sed -i` or `chmod` included, changes only what the
+sandbox lets it, so it runs without asking.
 
-**Bash outside the sandbox** is a Bash call with `outside_sandbox: true`,
-which the model makes when the sandbox blocks a command you need, such as a
-`git push` over SSH. It counts as `Destructive` whatever the command does, so
-you approve each one, in Auto too, and the prompt shows the model's reason.
-See [Sandbox](./sandbox.md#when-a-command-needs-to-leave-the-sandbox).
-
-**Why `Auto × Destructive` confirms:** the user
-said YOLO for normal work, not for `rm -rf`. Destructive ops by
-definition can't be undone by the sandbox alone (deleting a tracked
-file is "legal" inside the project root), so Auto keeps the prompt
-as a deliberate speed-bump.
-
-**Which Bash commands are `Destructive`** follows Codex: a forced `rm`
-(`rm -f`, `rm -rf`, `rm --force`) is the one local file operation that
-asks, even behind `env` or `xargs` or inside `sh -c`, `eval` or
-`find -exec`. Koda adds what the sandbox can't contain or what loses work
-for good: `git reset --hard`, `git clean -f`, `git push --force`,
-`npm publish` and `cargo publish`, `gh` merges, deletes, `auth` and `api`,
-`sudo`, disk tools and reboots. A plain `rm`, `chmod`, `sed -i`,
-`find -delete`, `kill` or an interpreter's `-c` changes files in the
-project, so in Auto it runs inside the sandbox without asking.
+**A machine with no sandbox.** Without a working kernel sandbox (no `bwrap` on
+Linux, say), nothing contains a command, so in Auto every command and every
+edit asks first, as Claude Code does with its sandbox off, and Plan refuses
+shell commands. The TUI status bar shows the sandbox state (🛡 sandboxed /
+⚠ unsandboxed) next to the badge, and `/feedback`'s diagnostics record it.
 
 ## Sub-agents ask in the main session
 
@@ -100,7 +89,7 @@ rules. What would ask for the main agent asks for a sub-agent too, blocking or
 
 ```
   🤖 task a1b2c3d4e5f6 asks
-  Write  a.txt
+  Bash  git commit -m "Fix the parser"
   [y] approve  [s] this session  [n] reject  [esc] reject
 ```
 
@@ -114,44 +103,30 @@ rules. What would ask for the main agent asks for a sub-agent too, blocking or
   request waits at the prompt. Several requests at once are shown one after
   another.
 - With nobody to ask (`koda exec`), Koda answers as it does for the main
-  agent: changes go ahead, destructive actions and leaving the sandbox are
-  refused.
+  agent: what the sandbox holds goes ahead, destructive actions and leaving
+  the sandbox are refused.
 
 Clients see a sub-agent's request as `item/toolCall/requestApproval` with an
 `agent` field (`name`, and a background agent's `id`); outside a turn its
 `turnId` is empty.
 
-Until 0.7.11 sub-agents couldn't ask: in Safe and Auto their edits ran without
-asking, destructive actions were blocked, and in Safe a writing sub-agent
-worked in a worktree of its own.
-
 ## Always-on safety floors
 
-These apply **regardless of the trust mode**:
+These apply in both modes:
 
 1. **Kernel sandbox** (macOS seatbelt / Linux bwrap) restricts file
-   writes to the project directory + scratch zones (`/tmp`,
-   `~/.cache`, `~/.cargo`, etc.) and protects credential dirs/files.
-   See [Sandbox](./sandbox.md).
-2. **Outside-project floor** — writes to paths outside the project
-   root always confirm (Safe + Auto) or deny (Plan), even if the
-   matrix would otherwise auto-approve.
-3. **Sandbox-unavailable refusal** — if the platform backend isn't
-   installed (e.g. `bwrap` missing on Linux), Auto mode **refuses to
-   start** with an actionable error that includes a platform-specific
-   install hint (e.g. `apt install bubblewrap`), and exit code 1. It
-   doesn't fall back to Safe: in a headless run, Safe would refuse
-   every change and stop the task halfway. Safe and Plan are
-   unaffected. The TUI status bar shows the current sandbox state
-   (🛡 sandboxed / ⚠ unsandboxed) next to the trust badge so you can
-   see at a glance why Auto refuses on your system, and `/feedback`'s
-   diagnostics record it for a bug report. Koda's host enforces this
-   rule whichever client asks for Auto.
-4. **Agent-file protection** — `.koda/agents/` and `.koda/skills/`
-   are write-protected in every mode to prevent prompt injection
-   from rewriting an agent's tools or system prompt mid-session.
-5. **Credential scrub** — sandboxed shell calls run with a fixed env
-   allowlist; secrets like `OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY`,
+   writes to the project directory and scratch zones (`/tmp`, `~/.cache`,
+   `~/.cargo`, etc.), keeps `.git` read-only, and protects credential
+   directories and files. See [Sandbox](./sandbox.md).
+2. **Outside-project floor:** Edit and Write work only in the project and
+   temp directories, and ask before changing Koda's own settings, which
+   decide what the next session runs; a command that names a path outside
+   the project asks first in Auto.
+3. **Agent-file protection:** `.koda/agents/` and `.koda/skills/` are
+   write-protected in every mode, so a prompt injection can't rewrite an
+   agent's tools or system prompt mid-session.
+4. **Credential scrub:** sandboxed shell calls run with a fixed environment
+   allowlist; secrets like `OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY` and
    `GITHUB_TOKEN` never reach the child process.
 
 ## Approval keys
@@ -161,9 +136,8 @@ When a confirmation prompt appears:
 | Key   | Effect                                                            |
 |-------|-------------------------------------------------------------------|
 | `y`   | Approve this one action                                           |
-| `s`   | Approve, and don't ask again this session for the same command or file |
+| `s`   | Approve, and don't ask again this session for the same kind of call |
 | `n`   | Reject this one action                                            |
-| `a`   | Approve **and** enable Auto mode for the rest of the session      |
 | `f`   | Reject and provide written feedback the model can act on          |
 | `Esc` / `Ctrl+C` | Stop the turn; the action does not run                |
 
@@ -172,17 +146,21 @@ stop it until your next prompt, and the model sees that you stopped the action.
 
 ### Allow for this session
 
-`s` is offered only for a local change inside the project. Destructive
-actions, leaving the sandbox, remote actions and anything outside the project
-ask every time. What `s` covers is what you saw:
+What `s` covers is what the prompt showed:
 
-- **Bash:** the exact command. `cargo test` doesn't cover `cargo test -p koda-core`.
-- **Edit and Write:** the file. Later edits to it don't ask, whatever they change.
-- **Other tools:** the exact arguments.
+- **A command leaving the sandbox:** its `prefix_rule`, as Codex's session
+  approval. A yes to `git commit -m "Fix"` with the prefix `git commit`
+  covers every later `git commit` that leaves the sandbox. A prefix that would
+  cover any program (`bash`, `python -c`, `sudo`, `git` alone and the like,
+  Codex's banned list) isn't offered, and a later command that would be
+  destructive still asks.
+- **A web page:** the site.
+- **On a machine with no sandbox:** the exact command, or the file for Edit and
+  Write.
 
-The allow lives in memory for this session only, as in Codex. Koda never
-writes it to a config file, so it behaves the same on every machine, and a new
-session or a restart asks again.
+Destructive actions and anything outside the project ask every time. The
+allow lives in memory for this session only, as in Codex. Koda never writes
+it to a config file, so a new session or a restart asks again.
 
 ## Per-agent trust declaration
 
@@ -192,30 +170,20 @@ Custom agents declare their trust mode in JSON via the `trust` field:
 { "name": "my-reviewer", "trust": "plan", "...": "..." }
 ```
 
-Valid values: `"plan"` | `"safe"` | `"auto"`. See [Custom agents](./agents.md)
-for the full per-agent shape.
-
-The legacy `write_access: bool` field is **deprecated** — pre-existing
-JSONs continue to work (a warning is logged at load), but new agents
-should use `trust:` directly. The new field is strictly more
-expressive: it captures *kernel sandbox bounds* + *per-tool approval
-rules* + *sub-agent context-sensitive defaults* in one declaration,
-where `write_access` only spoke to the second half.
+Valid values: `"plan"` | `"auto"`; an agent that names none runs in Auto.
+See [Custom agents](./agents.md) for the full per-agent shape.
 
 ## Headless mode
 
-In headless mode there is no human to prompt. Koda applies the
-headless policy documented in [Headless mode](./headless.md): read
-and safe in-project mutating tools approve, destructive Bash commands
-are rejected, and the sandbox enforces the perimeter.
-Auto still requires the kernel sandbox before headless execution can
-start.
+In headless mode there is no human to prompt. Koda applies the headless
+policy documented in [Headless mode](./headless.md): what the sandbox holds
+runs, destructive commands and leaving the sandbox are refused, and the
+sandbox enforces the perimeter.
 
 ## Reference
 
-- Master matrix: `koda_core::trust::check_tool`
+- The approval rules: `koda_core::trust::check_tool`
+- Session answers: `koda_core::trust::SessionAllows`
 - Sub-agent approvals: `koda_core::approval_flow::Approver`, answered by `koda-server`'s `HostApprover`
-- Sandbox-unavailable Auto refusal: `koda_core::trust::require_sandbox_for_auto`
-  + setup hints from `koda_core::sandbox::setup_hint`
-- Per-agent loader & deprecation warning: `koda_core::config::KodaConfig::load`
+- The dangerous-command list: `koda_command::bash_safety`
 - Status-bar badge rendering: `koda_tui::widgets::status_bar`

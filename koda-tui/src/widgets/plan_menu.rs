@@ -1,6 +1,6 @@
 //! The choice offered when a Plan turn ends with a proposed plan, as
-//! Codex's TUI asks "Implement this plan?": implement it in Safe or in
-//! Auto, or keep planning.
+//! Codex's TUI asks "Implement this plan?": implement it (in Auto) or
+//! keep planning.
 
 use super::dropdown::DropdownItem;
 use koda_client::protocol::state::TrustMode;
