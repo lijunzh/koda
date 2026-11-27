@@ -180,12 +180,15 @@ impl TestSink {
 
 impl EngineSink for TestSink {
     fn emit(&self, event: EngineEvent) {
-        // Best-effort broadcast first (cheap if no subscribers).
-        // Acquiring the lock briefly is fine because emit is always
-        // called from a tokio task, never from a sync hot loop.
+        // Record first, then broadcast: a waiter subscribes before it scans
+        // the record ([`Self::wait_for`]), so whenever it subscribes it
+        // finds the event in one or the other. Broadcasting first left a
+        // gap: a waiter subscribing after the broadcast check and scanning
+        // before the record missed the event for good.
+        self.events.lock().unwrap().push(event.clone());
         if let Some(tx) = self.broadcaster.lock().unwrap().as_ref() {
-            // Ignore the SendError on zero subscribers; storage path
-            // below is still authoritative.
+            // Ignore the SendError on zero subscribers; the record above
+            // is authoritative.
             let _ = tx.send(event.clone());
         }
         let cancel = self
@@ -195,7 +198,6 @@ impl EngineSink for TestSink {
             .as_ref()
             .filter(|on| (on.pred)(&event))
             .map(|on| on.cancel.clone());
-        self.events.lock().unwrap().push(event);
         if let Some(cancel) = cancel {
             cancel.cancel();
         }
@@ -205,6 +207,46 @@ impl EngineSink for TestSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A waiter that starts while an event is being emitted still finds it,
+    /// in the record or on the broadcast. `emit` used to check for
+    /// subscribers before recording the event, so a waiter that subscribed
+    /// in between, then scanned the record before the event reached it,
+    /// missed it and timed out (CI, 2026-11-27, under load). `cancel_when`'s
+    /// check runs inside `emit`, so a waiter started from it lands in that
+    /// gap every time.
+    #[test]
+    fn a_wait_that_starts_during_an_emit_still_sees_the_event() {
+        let sink = std::sync::Arc::new(TestSink::new());
+        let weak = std::sync::Arc::downgrade(&sink);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let record = std::sync::Arc::clone(&seen);
+        sink.cancel_when(tokio_util::sync::CancellationToken::new(), move |_| {
+            let sink = weak.upgrade().unwrap();
+            let found = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_time()
+                    .build()
+                    .unwrap()
+                    .block_on(sink.wait_for(std::time::Duration::from_millis(200), |e| {
+                        matches!(e, EngineEvent::Info { .. })
+                    }))
+                    .is_ok()
+            })
+            .join()
+            .unwrap();
+            *record.lock().unwrap() = Some(found);
+            false
+        });
+        sink.emit(EngineEvent::Info {
+            message: "now".into(),
+        });
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(true),
+            "a waiter that started during the emit missed its event"
+        );
+    }
 
     /// The token is cancelled by the time `emit` returns, before the engine
     /// could start the wait that follows the event.

@@ -279,9 +279,13 @@ pub struct SessionStartedNotification {
     pub koda_version: String,
 }
 
-/// `session/unsubscribe`: the client is done with a session. Its running
-/// turn, if any, stops, and the session is closed; `session/resume` with its
-/// id opens it again. Codex's `thread/unsubscribe`.
+/// `session/unsubscribe`: the client is done with a session, as Codex's
+/// `thread/unsubscribe`. On the shared server (`koda serve`) only this
+/// client stops hearing it: a running turn goes on, and the session closes
+/// after a minute with no client and no turn. On a host of one client
+/// (`koda serve --stdio`, in-process) it is the last client, so the session
+/// closes now and its running turn stops. `session/resume` with its id opens
+/// it again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionUnsubscribeParams {

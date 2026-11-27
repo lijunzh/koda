@@ -47,6 +47,9 @@ pub use koda_server::in_process::{RequestError, RequestHandle};
 pub use koda_server::socket;
 pub use koda_server::{builtin_skills, earlier_input_history, events, feedback, stdio};
 
+/// Making sure the shared server is up at this client's version.
+pub mod ensure;
+
 /// Getting back to the shared server after losing it, as Codex's TUI does.
 pub mod reconnect;
 

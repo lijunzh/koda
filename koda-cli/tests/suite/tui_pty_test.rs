@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::old_server::{OldServer, old_server};
+
 /// Text the composer shows when it is empty and the TUI is idle.
 const IDLE_HINT: &str = "Type a message";
 
@@ -2273,92 +2275,6 @@ async fn resuming_a_session_with_a_running_turn_follows_it() {
     }
 }
 
-/// How a fake server of another version answers `serve/stop`.
-#[derive(Clone, Copy, PartialEq)]
-enum OldServer {
-    /// Nothing is running: it stops.
-    Stops,
-    /// A server from before 0.7.13: it refuses while any window is open,
-    /// saying nothing of turns.
-    Refuses,
-    /// A turn is running in one session: asked only if idle it says so;
-    /// told to wait it drains for a moment; told to stop it stops.
-    Busy,
-}
-
-/// A server of version `version` on Koda's socket, as an update leaves one:
-/// it answers `initialize`, and `serve/stop` as `kind` says, keeping each
-/// `serve/stop` it was sent in `asked`.
-fn old_server(
-    socket: &Path,
-    version: &'static str,
-    kind: OldServer,
-    asked: Arc<Mutex<Vec<serde_json::Value>>>,
-) -> tokio::task::JoinHandle<()> {
-    std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
-    std::fs::set_permissions(
-        socket.parent().unwrap(),
-        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-    )
-    .unwrap();
-    let listener = tokio::net::UnixListener::bind(socket).unwrap();
-    let socket = socket.to_path_buf();
-    tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            let (input, mut output) = stream.into_split();
-            let mut lines = tokio::io::BufReader::new(input).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
-                let params = &request["params"];
-                let flag = |name: &str| params[name].as_bool().unwrap_or(false);
-                // `Some(delay)`: stop after answering, after `delay`.
-                let mut stop = None;
-                let result = match request["method"].as_str() {
-                    Some("initialize") => serde_json::json!({
-                        "serverInfo": {"name": "koda", "version": version},
-                    }),
-                    Some("serve/stop") => {
-                        asked.lock().unwrap().push(params.clone());
-                        match kind {
-                            OldServer::Stops => {
-                                stop = Some(Duration::ZERO);
-                                serde_json::json!({"stopped": true})
-                            }
-                            OldServer::Refuses => serde_json::json!(
-                                {"stopped": false, "reason": "session s1 is in use"}
-                            ),
-                            OldServer::Busy if flag("ifIdle") => serde_json::json!(
-                                {"stopped": false, "working": 1, "reason": "1 session(s) working"}
-                            ),
-                            OldServer::Busy if flag("afterTurns") => {
-                                stop = Some(Duration::from_millis(500));
-                                serde_json::json!({"stopped": false, "working": 1, "draining": true})
-                            }
-                            OldServer::Busy => {
-                                stop = Some(Duration::ZERO);
-                                serde_json::json!({"stopped": true, "working": 1})
-                            }
-                        }
-                    }
-                    _ => continue,
-                };
-                let answer =
-                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result});
-                let _ = output.write_all(format!("{answer}\n").as_bytes()).await;
-                if let Some(delay) = stop {
-                    tokio::time::sleep(delay).await;
-                    let _ = std::fs::remove_file(&socket);
-                    return;
-                }
-            }
-        }
-    })
-}
-
 /// Koda runs one version. A newer server isn't used or touched; an older
 /// one is replaced, at once when nothing runs in it, and after asking when
 /// a turn does: restarting now or waiting for it. A server from before
@@ -2420,12 +2336,15 @@ async fn only_a_server_of_this_version_is_used() {
     tui.wait_for_output(IDLE_HINT);
     tui.submit_and_finish("after restarting now", "All done.");
     let _ = busy.await;
+    // Asked if idle, then again once the user chose (a turn that finished
+    // meanwhile needs no stopping), then told to stop.
     let sent = now_asked.lock().unwrap().clone();
-    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert_eq!(sent.len(), 3, "{sent:?}");
     assert_eq!(sent[0]["ifIdle"], true, "{sent:?}");
+    assert_eq!(sent[1]["ifIdle"], true, "{sent:?}");
     assert!(sent[0]["forUpdate"].is_string(), "{sent:?}");
-    assert_eq!(sent[1]["ifIdle"], false, "{sent:?}");
-    assert_eq!(sent[1]["afterTurns"], false, "{sent:?}");
+    assert_eq!(sent[2]["ifIdle"], false, "{sent:?}");
+    assert_eq!(sent[2]["afterTurns"], false, "{sent:?}");
     tui.type_text("/exit\r");
     assert!(tui.exits());
     run_koda_serve_stop(home.path());
@@ -2443,7 +2362,10 @@ async fn only_a_server_of_this_version_is_used() {
     tui.wait_for_output("Waiting for the turns running in 1 session(s)");
     tui.wait_for_output(IDLE_HINT);
     let _ = busy.await;
-    assert_eq!(wait_asked.lock().unwrap()[1]["afterTurns"], true);
+    assert_eq!(
+        wait_asked.lock().unwrap().last().unwrap()["afterTurns"],
+        true
+    );
     tui.type_text("/exit\r");
     assert!(tui.exits());
     run_koda_serve_stop(home.path());

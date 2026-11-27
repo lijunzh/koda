@@ -12,6 +12,7 @@ mod log_database_test;
 mod mcp_cmd_test;
 mod mcp_config_flag_test;
 mod no_summary_compaction_test;
+mod old_server;
 mod openai_stream_failure_test;
 mod oss_test;
 mod own_kill_test;
