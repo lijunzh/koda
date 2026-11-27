@@ -31,7 +31,7 @@ use crate::defaults::{
 };
 use crate::policy::SandboxPolicy;
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 /// Build a `sandbox-exec` Command for the given command + project root.
@@ -204,6 +204,8 @@ fn build_command_inner(
             profile.push_str(&git_config_deny_rules(&root));
         }
         profile.push_str(&overlay);
+        // Last of the cached rules, so no allow above reopens them.
+        profile.push_str(&protected_ancestor_rules(&k.canonical_root, &k.policy));
         profile
     });
     // Outside the cache: a socket may be protected at any time.
@@ -630,6 +632,55 @@ pub(crate) fn git_config_deny_rules(root: &str) -> String {
     rules.push_str(&format!(
         "(deny file-write* (literal \"{root}/.git/config\"))\n"
     ));
+    rules
+}
+
+/// Deny removing or renaming each folder above a protected path in the
+/// project, up to the project itself, as Codex's profile protects the
+/// ancestors of its read-only paths.
+///
+/// The deny rules name paths, so `mv .git moved`, a write to
+/// `moved/hooks/pre-commit` and `mv moved .git` would plant a hook; so would
+/// moving `.git` aside and making a new one. A rename unlinks the folder from
+/// its old name, which `file-write-unlink` on the directory refuses. The
+/// project's own files and folders are unaffected.
+pub(crate) fn protected_ancestor_rules(root: &Path, policy: &SandboxPolicy) -> String {
+    let mut protected: Vec<PathBuf> = PROTECTED_PROJECT_SUBDIRS
+        .iter()
+        .map(|rel| root.join(rel))
+        .collect();
+    if !policy.fs.allow_git_config {
+        protected.extend([root.join(".git/hooks"), root.join(".git/config")]);
+    }
+    protected.extend(
+        policy
+            .fs
+            .deny_write_within_allow
+            .iter()
+            .map(|p| p.as_path().to_path_buf())
+            .filter(|p| p.starts_with(root)),
+    );
+    let mut ancestors = std::collections::BTreeSet::new();
+    for path in &protected {
+        for ancestor in path.ancestors().skip(1) {
+            if !ancestor.starts_with(root) {
+                break;
+            }
+            ancestors.insert(ancestor.to_path_buf());
+        }
+    }
+    let mut rules = String::from(
+        "; \u{2500}\u{2500} no moving a folder above a protected path \u{2500}\u{2500}\n",
+    );
+    for folder in ancestors {
+        let p = folder.to_string_lossy();
+        if validate_seatbelt_path(&p).is_err() {
+            continue;
+        }
+        rules.push_str(&format!(
+            "(deny file-write-unlink (require-all (vnode-type DIRECTORY) (literal \"{p}\")))\n"
+        ));
+    }
     rules
 }
 
