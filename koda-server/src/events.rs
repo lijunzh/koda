@@ -1077,30 +1077,35 @@ impl EventProjector {
             koda_sandbox::NetworkProtocol::Https => NetworkApprovalProtocol::Https,
             koda_sandbox::NetworkProtocol::Socks5Tcp => NetworkApprovalProtocol::Socks5Tcp,
         };
-        let params = ToolCallApprovalParams {
-            session_id: self.session_id.clone(),
-            turn_id: self.turn(),
-            item_id: request.tool_call_id,
-            tool: "Bash".to_string(),
-            detail: format!(
-                "Network access to {}:{} (not on the allow-list)",
-                request.host, request.port
-            ),
-            changes: Vec::new(),
-            command: Some(request.command),
-            cwd: None,
-            reason: None,
-            outside_sandbox: false,
-            background: false,
-            effect: effect_of(koda_core::tools::ToolEffect::RemoteAction),
-            allow_for_session: true,
-            session_prefix: None,
-            network_approval_context: Some(NetworkApprovalContext {
-                host: request.host,
-                protocol,
-            }),
-            agent: None,
-        };
+        let params =
+            ToolCallApprovalParams {
+                session_id: self.session_id.clone(),
+                turn_id: self.turn(),
+                // With no command running, the question names none, and its
+                // command is Codex's `network-access <target>`.
+                item_id: request.tool_call_id.unwrap_or_default(),
+                tool: "Bash".to_string(),
+                detail: format!(
+                    "Network access to {}:{} (not on the allow-list)",
+                    request.host, request.port
+                ),
+                changes: Vec::new(),
+                command: Some(request.command.unwrap_or_else(|| {
+                    format!("network-access {}:{}", request.host, request.port)
+                })),
+                cwd: None,
+                reason: None,
+                outside_sandbox: false,
+                background: false,
+                effect: effect_of(koda_core::tools::ToolEffect::RemoteAction),
+                allow_for_session: true,
+                session_prefix: None,
+                network_approval_context: Some(NetworkApprovalContext {
+                    host: request.host,
+                    protocol,
+                }),
+                agent: None,
+            };
         (id, params)
     }
 

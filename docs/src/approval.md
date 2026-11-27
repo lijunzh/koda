@@ -155,8 +155,8 @@ What `s` covers is what the prompt showed:
   Codex's banned list) isn't offered, and a later command that would be
   destructive still asks. The prompt shows what `s` covers:
   `` [s] `git commit …` this session ``.
-- **A host off the proxy's allow-list:** the host and port, for every later
-  command ([Sandbox](./sandbox.md#a-host-that-isnt-on-the-list)).
+- **A host off the proxy's allow-list:** the host, protocol and port, for
+  every later connection ([Sandbox](./sandbox.md#a-host-that-isnt-on-the-list)).
 - **A web page:** the site.
 - **On a machine with no sandbox:** the exact command, or the file for Edit and
   Write.

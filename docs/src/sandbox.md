@@ -225,16 +225,20 @@ proxy does. The question is the command's own, with the host:
   [y] approve  [s] docs.rs this session  [n] reject  [f] feedback  [esc] stop
 ```
 
-- **`y`** lets this command reach the host for as long as it runs (Codex's
-  covers one connection; a command like `npm install` opens many).
-- **`s`** lets every later command reach it, on that port, for the session.
-- **`n`** refuses it: the command sees the connection refused.
+- **`y`** lets this connection through. The next connection to the host
+  asks again; connections opened while the question is up share its answer.
+- **`s`** lets every later connection to the host, on that protocol and
+  port, through for the session.
+- **`n`** refuses it and stops the command, and the model is told the
+  network access was denied.
 
-Koda asks only when it can tell which command opened the connection: when
-exactly one command is running. With several at once (a parallel batch, or
-a background server still running), or with nobody to ask (`koda exec`, a
-sub-agent's command), the host is refused, as Codex refuses a connection it
-can't attribute. A command whose turn stops takes its question with it.
+The question belongs to the command that opened the connection when exactly
+one command is running. With none running (a server started in the
+background, say), it names no command, and is asked only while a turn runs.
+With several at once (a parallel batch), the host is refused without
+asking, since stopping one of them would be a guess. With nobody to ask
+(`koda exec`), it is refused. All of this is Codex's managed proxy's
+behaviour. A command that ends takes its question with it.
 
 The proxy matches hosts, not ports, as
 Anthropic's sandbox-runtime does for an entry without one: an allowed host

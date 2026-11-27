@@ -4602,7 +4602,8 @@ async fn local_site(body: &'static str) -> u16 {
 /// A sandboxed command reaching for a host that isn't on the proxy's
 /// allow-list asks, as Codex's managed proxy does: the request is the
 /// command's, with the host in `networkApprovalContext`. A yes lets the
-/// command through; a no refuses the connection.
+/// connection through; a no refuses it and stops the command, and the model
+/// is told why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unlisted_host_asks_and_the_answer_decides() {
     if !koda_core::sandbox::is_available() {
@@ -4641,9 +4642,24 @@ async fn an_unlisted_host_asks_and_the_answer_decides() {
 
         let messages = koda.until("turn/completed").await;
         assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
-        let told = chat_requests(&server).await[1]["messages"].to_string();
-        assert!(told.contains("done"), "{told}");
+        // What the command's result told the model.
+        let told = chat_requests(&server).await[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .map(|m| m["content"].to_string())
+            .collect::<String>();
         assert_eq!(told.contains("network-ok"), reached, "{decision}: {told}");
+        if reached {
+            assert!(told.contains("done"), "{told}");
+        } else {
+            assert!(
+                told.contains("denied network access to 127.0.0.1"),
+                "the model hears the command was stopped: {told}"
+            );
+            assert!(!told.contains("done"), "the command went on: {told}");
+        }
         koda.client.shutdown().await;
     }
 }

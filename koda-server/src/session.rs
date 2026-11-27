@@ -2305,7 +2305,8 @@ impl HostSink {
 
     /// Ask the client whether a command may reach a host off the proxy's
     /// allow-list: refused at once when Koda answers its own requests, as
-    /// a headless run can't ask anyone.
+    /// a headless run can't ask anyone, and for a connection no command
+    /// owns while no turn runs.
     fn ask_for_network(
         &self,
         request: koda_core::network_approval::NetworkApproval,
@@ -2313,8 +2314,13 @@ impl HostSink {
         if self.answers.is_some() {
             return Ok(ApprovalDecision::Reject);
         }
-        let (reply, answer) = oneshot::channel();
         let mut state = self.lock();
+        // A connection no command can own is asked about only during a
+        // turn, as Codex refuses one with no active turn.
+        if request.tool_call_id.is_none() && !state.turn_running {
+            return Ok(ApprovalDecision::Reject);
+        }
+        let (reply, answer) = oneshot::channel();
         let (id, params) = state.projector.network_approval(request);
         state.agent_approvals.insert(id.clone(), reply);
         self.send(
@@ -2865,6 +2871,52 @@ mod tests {
             "{resolved:?}"
         );
         assert!(sink.lock().agent_approvals.is_empty());
+    }
+
+    /// A host no running command reached for is asked about only during a
+    /// turn, as Codex refuses one with no active turn; with a turn running
+    /// the question goes to the client, naming no command.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unowned_host_is_asked_about_only_during_a_turn() {
+        use koda_core::approval_flow::Approver;
+        let request = || koda_core::network_approval::NetworkApproval {
+            tool_call_id: None,
+            command: None,
+            host: "example.com".into(),
+            port: 443,
+            protocol: koda_sandbox::NetworkProtocol::Https,
+        };
+        let (sink, mut events) = sink(None);
+        let sink = Arc::new(sink);
+        let approver = HostApprover {
+            sink: Arc::downgrade(&sink),
+        };
+        assert_eq!(
+            approver.approve_network(request()).await,
+            Some(ApprovalDecision::Reject)
+        );
+        assert!(drain(&mut events).is_empty(), "nothing asked while idle");
+
+        sink.emit(EngineEvent::TurnStart {
+            turn_id: "t1".into(),
+        });
+        let asking = tokio::spawn(async move { approver.approve_network(request()).await });
+        let asked = loop {
+            let message = events.recv().await.unwrap();
+            if let Outgoing::Request(ServerRequest::ToolCallApproval { params, .. }) = message {
+                break params;
+            }
+        };
+        assert_eq!(asked.item_id, "");
+        assert_eq!(
+            asked.command.as_deref(),
+            Some("network-access example.com:443")
+        );
+        assert_eq!(
+            asked.network_approval_context.map(|n| n.host).as_deref(),
+            Some("example.com")
+        );
+        asking.abort();
     }
 
     /// With nobody to ask (`koda exec`), Koda answers a sub-agent as it does

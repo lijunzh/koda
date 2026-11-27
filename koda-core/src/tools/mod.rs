@@ -812,15 +812,29 @@ impl ToolRegistry {
                 shell_search: self.shell_search(),
             };
             // A sandboxed command reaches the network through the proxy,
-            // which asks about an unlisted host for the one command running.
-            let _running =
+            // which asks about an unlisted host for the one command running;
+            // a no stops the command (dropping it kills its processes), as
+            // Codex cancels the execution.
+            let running =
                 (name == "Bash" && proxy_port.is_some() && !shell::wants_outside_sandbox(&args))
                     .then(|| {
                         let command = args.get("command").and_then(Value::as_str).unwrap_or("");
                         let call_id = sink_for_streaming.map_or("", |(_, id)| id);
                         self.network.register(call_id, command)
                     });
-            let result = tool.execute(&ctx, &args).await;
+            let result = match &running {
+                Some(running) => tokio::select! {
+                    result = tool.execute(&ctx, &args) => result,
+                    told = running.refused() => ToolResult {
+                        output: told,
+                        success: false,
+                        full_output: None,
+                        images: Vec::new(),
+                        exit_code: None,
+                    },
+                },
+                None => tool.execute(&ctx, &args).await,
+            };
             // Post-execution registry-level recording. Lives here
             // (not on the per-tool struct) because it touches
             // registry state. Each `name == "X"` arm is a sticky

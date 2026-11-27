@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
-- **A host that isn't on the proxy's allow-list asks, as Codex's managed proxy does,** instead of failing. The question is the command's own approval request, with the host in `networkApprovalContext` (Codex's field): `y` lets the command reach it while it runs, `s` allows the host for the session, `n` refuses it. Koda asks only when it can tell which command opened the connection (exactly one running) and someone can answer; otherwise the host is refused, as before.
+- **A host that isn't on the proxy's allow-list asks, as Codex's managed proxy does,** instead of failing. The question carries the host in `networkApprovalContext` (Codex's field) and belongs to the command that opened the connection: `y` lets the connection through (the next one asks again), `s` allows the host, protocol and port for the session, `n` refuses it and stops the command. With no command running it names none and is asked only during a turn; with several running, or nobody to ask, the host is refused.
 - **`[s]` says what it covers:** `` [s] `git commit …` this session `` for a command leaving the sandbox (the request's new `sessionPrefix`), `[s] docs.rs this session` for a host.
 
 ### Fixed
