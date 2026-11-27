@@ -138,6 +138,10 @@ async function main() {
     socket: process.env.KODA_SOCKET || undefined,
   });
   connection = conn;
+  // App tests end by stopping the server; closing the connection first keeps
+  // the app from reconnecting and starting another, which `koda serve --stop`
+  // would then wait on.
+  if (TEST) (globalThis as { kodaTestConnection?: Connection }).kodaTestConnection = conn;
   conn.on('status', (status) => win?.webContents.send('koda:status', status));
   conn.on('messages', (batch) => win?.webContents.send('koda:messages', batch));
 
