@@ -30,9 +30,10 @@ fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
 
-/// The arguments of a `Write` of `name`.
-fn write_file(name: &str) -> Value {
-    json!({"file_path": name, "content": "x\n"})
+/// The arguments of a `Bash` call writing `name` that asks first: it asks to
+/// leave the sandbox, the call that asks in Auto.
+fn asked_write(name: &str) -> Value {
+    json!({"command": format!("printf 'x\\n' > {name}"), "outside_sandbox": true, "reason": "test"})
 }
 
 /// A plain JSON reply, for the calls Koda doesn't stream (sub-agents).

@@ -8,7 +8,7 @@ use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use koda_test_utils::openai::{text, tool_calls};
 use serde_json::{Value, json};
 
-use super::{assert_no_more_calls, assert_stopped, esc, json_reply, write_file};
+use super::{asked_write, assert_no_more_calls, assert_stopped, esc, json_reply};
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui};
 
 /// A sub-agent's reply, which doesn't stream, that calls one tool.
@@ -69,7 +69,7 @@ fn delegate(args: Value) -> ResponseTemplate {
 /// once the turn that started it has ended.
 async fn a_sub_agent_writes_a_file(background: bool) -> FakeLlmServer {
     let mut args = json!({"agent_name": "task", "prompt": "write a.txt"});
-    let mut write = sub_agent_call("Write", write_file("a.txt"));
+    let mut write = sub_agent_call("Bash", asked_write("a.txt"));
     if background {
         args["run_in_background"] = json!(true);
         write = write.set_delay(Duration::from_secs(1));
@@ -82,7 +82,7 @@ async fn a_sub_agent_writes_a_file(background: bool) -> FakeLlmServer {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn a_sub_agents_request_names_it_and_y_approves_it() {
-    let tui = TestTui::start_safe_on(a_sub_agent_writes_a_file(false).await).await;
+    let tui = TestTui::start_on(a_sub_agent_writes_a_file(false).await).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
         driver.wait_for_screen("task asks").await;
@@ -105,7 +105,7 @@ async fn a_sub_agents_request_names_it_and_y_approves_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn esc_refuses_a_sub_agents_call_and_the_turn_goes_on() {
-    let tui = TestTui::start_safe_on(a_sub_agent_writes_a_file(false).await).await;
+    let tui = TestTui::start_on(a_sub_agent_writes_a_file(false).await).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
         driver.wait_for_screen("task asks").await;
@@ -131,7 +131,7 @@ async fn esc_refuses_a_sub_agents_call_and_the_turn_goes_on() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn a_background_agent_asks_while_the_tui_is_idle() {
-    let tui = TestTui::start_safe_on(a_sub_agent_writes_a_file(true).await).await;
+    let tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
         driver.wait_for_screen("asks").await;
@@ -169,7 +169,7 @@ async fn esc_during_a_sub_agent_starts_no_other_turn() {
     )]);
     // Sub-agents call the model without streaming.
     let slow = json_reply("too late").set_delay(Duration::from_secs(10));
-    let tui = TestTui::start_safe(vec![invoke, slow]).await;
+    let tui = TestTui::start(vec![invoke, slow]).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
         let sent = driver.model_call(2).await;

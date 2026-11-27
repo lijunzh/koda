@@ -6,7 +6,7 @@ use crossterm::event::KeyCode;
 use koda_test_utils::openai::{text, tool_calls};
 use serde_json::json;
 
-use super::{STOPPED, assert_stopped, ctrl, esc, running, write_file};
+use super::{STOPPED, asked_write, assert_stopped, ctrl, esc, running};
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui, input_box};
 
 /// Esc at a question the model asked stops the turn; the half-typed answer
@@ -37,8 +37,8 @@ async fn esc_stops_the_turn_at_a_question() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn esc_stops_the_turn_while_typing_feedback() {
-    let tui = TestTui::start_safe(vec![
-        tool_calls(&[("call_1", "Write", write_file("a.txt"))]),
+    let tui = TestTui::start(vec![
+        tool_calls(&[("call_1", "Bash", asked_write("a.txt"))]),
         text("All done."),
     ])
     .await;
@@ -115,8 +115,8 @@ async fn tab_queues_text_for_after_the_turn() {
 #[serial_test::serial]
 async fn a_stop_hands_queued_text_back() {
     let reply =
-        tool_calls(&[("call_0", "Write", write_file("a.txt"))]).set_delay(Duration::from_secs(3));
-    let tui = TestTui::start_safe(vec![reply]).await;
+        tool_calls(&[("call_0", "Bash", asked_write("a.txt"))]).set_delay(Duration::from_secs(3));
+    let tui = TestTui::start(vec![reply]).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
         driver.model_call(1).await;
@@ -150,7 +150,7 @@ async fn stop_works_during_a_turn() {
         json!({"command": "sleep 36", "background": true}),
     )]);
     let slow = text("All done.").set_delay(Duration::from_secs(5));
-    let tui = TestTui::start_safe(vec![started, slow]).await;
+    let tui = TestTui::start(vec![started, slow]).await;
     tui.run(async |driver: Driver| {
         driver.submit("start it").await;
         driver.approve_until(|| running("sleep 36")).await;
