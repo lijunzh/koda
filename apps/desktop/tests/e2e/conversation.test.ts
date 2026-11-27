@@ -1,7 +1,7 @@
 // The conversation, driven as a user would against a real `koda serve` and
 // a scripted model: a prompt runs a turn whose lookups fold into one row and
-// whose answer streams in as Markdown; the finished turn folds; Stop ends a
-// running turn.
+// whose answer streams in as Markdown; the turn's steps stay once it's done,
+// as in Claude Code; Stop ends a running turn.
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -42,7 +42,7 @@ async function session(replies: Parameters<typeof scriptedModel>[0]) {
 }
 
 describe.skipIf(!koda)('the conversation', () => {
-  it('runs a turn: lookups fold to one row, the answer streams as Markdown, the finished turn folds', async () => {
+  it('runs a turn: lookups fold to one row, the answer streams as Markdown, the steps stay', async () => {
     const page = await session([
       { tool: 'Bash', args: { command: 'ls' } },
       { tool: 'Bash', args: { command: 'cat README.md' } },
@@ -59,16 +59,16 @@ describe.skipIf(!koda)('the conversation', () => {
     // The list names the session by its first prompt.
     await page.getByRole('navigation').getByRole('button', { name: /What is in this project\?/ }).waitFor();
 
-    // Done: the steps fold behind one line; opening it shows the lookups' row.
-    const worked = page.getByTestId('worked');
-    await worked.waitFor({ timeout: 30_000 });
-    expect(await worked.textContent()).toMatch(/Worked for .* · 2 tool calls/);
-    await worked.getByRole('button').click();
-    expect(await page.getByTestId('lookups').textContent()).toContain('Read 1 file, listed 1 directory');
+    // Done: the steps stay, as in Claude Code; the lookups are one row.
+    await expect.poll(() => page.getByTestId('lookups').textContent(), { timeout: 30_000 }).toContain('Read 1 file, listed 1 directory');
+    expect(await page.getByTestId('worked').count()).toBe(0);
 
-    // The full view shows each call.
-    await page.getByRole('button', { name: 'Show details' }).click();
+    // Verbose shows each call; Ctrl+O cycles Normal, Thinking, Verbose.
+    await page.getByRole('button', { name: 'Verbose' }).click();
     expect(await page.getByTestId('tool-call').count()).toBe(2);
+    await page.keyboard.press('Control+O');
+    expect(await page.getByRole('button', { name: 'Normal' }).getAttribute('aria-pressed')).toBe('true');
+    expect(await page.getByTestId('tool-call').count()).toBe(0);
   });
 
   it('stops a running turn', async () => {

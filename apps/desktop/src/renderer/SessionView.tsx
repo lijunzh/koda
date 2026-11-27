@@ -2,7 +2,10 @@ import type { Selected } from './App';
 import { Composer } from './Composer';
 import { type ListedSession, statusLabel, title } from './sessions';
 import { Conversation } from './Conversation';
-import { runningTurn, type TranscriptState, type View } from './transcript';
+import { runningTurn, type TranscriptState, type View, VIEWS } from './transcript';
+
+/** Claude Code's names for its desktop views. */
+const VIEW_NAMES: Record<View, string> = { normal: 'Normal', thinking: 'Thinking', verbose: 'Verbose' };
 
 interface Props {
   selected: Selected | null;
@@ -45,14 +48,13 @@ export function SessionView({ selected, listed, transcript, view, onView }: Prop
             {label && <span data-testid="session-status"> · {label}</span>}
           </p>
         </div>
-        <button
-          className="view-toggle"
-          aria-pressed={view === 'verbose'}
-          title="Show every step (Ctrl+O)"
-          onClick={() => onView(view === 'verbose' ? 'normal' : 'verbose')}
-        >
-          {view === 'verbose' ? 'Hide details' : 'Show details'}
-        </button>
+        <div className="views" role="group" aria-label="Transcript view (Ctrl+O)">
+          {VIEWS.map((v) => (
+            <button key={v} aria-pressed={view === v} onClick={() => onView(v)}>
+              {VIEW_NAMES[v]}
+            </button>
+          ))}
+        </div>
         <button className="delete" onClick={() => void window.koda.deleteSession(selected.id)}>
           Delete
         </button>

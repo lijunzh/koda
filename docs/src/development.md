@@ -411,17 +411,19 @@ npm start                 # build into out/ and open the app
   `electronApp.evaluate`.
 - **The conversation** (`src/renderer/transcript.ts`, pure functions):
   stored turns from `session/resume`, then live events (applied every 50 ms
-  so a fast stream doesn't redraw for every word), shown in rows by the
-  TUI's folding rules and in its words: thinking as `∴ Thought for 12s`,
-  lookups one after another as one row (`Read 3 files, searched 5
-  patterns`), other calls with their output folded to 5 lines, edits with
-  their diff, and a finished turn folded to `▸ Worked for …` before its
-  answer (on by default in the app). "Show details" or Ctrl+O shows every
-  step. A command counts as a lookup by its `commandActions`, whatever its
-  effect, as Codex's `Explored` cell. Markdown is react-markdown without raw
-  HTML; links open in the browser, images aren't loaded. The prompt box sends
-  text only (the relay refuses `mode`, `outputSchema` and non-text input
-  for now); Enter while a turn runs steers it, and Stop or Esc interrupts.
+  so a fast stream doesn't redraw for every word), shown in Claude Code's
+  desktop views, which Ctrl+O cycles: **Normal** (lookups one after another
+  as one row in the TUI's words, `Read 3 files, searched 5 patterns`; other
+  calls with their output folded to 5 lines; edits with their diff; no
+  thinking), **Thinking** (the same, with the model's thinking where it
+  came) and **Verbose** (every call and all its output). A finished turn's
+  steps stay, as in Claude Code; the app doesn't fold the turn as Codex's
+  TUI does. A command counts as a lookup by its `commandActions`, whatever
+  its effect, as Codex's `Explored` cell. Markdown is react-markdown without
+  raw HTML; links open in the browser, images aren't loaded. The prompt box
+  sends text only (the relay refuses `mode`, `outputSchema` and non-text
+  input for now); Enter while a turn runs steers it, and Stop or Esc
+  interrupts.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

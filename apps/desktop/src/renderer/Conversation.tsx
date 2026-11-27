@@ -1,6 +1,6 @@
-// The open session's conversation, in rows (`transcript.ts`): grouped and
-// folded in the normal view, everything in the full one. A click opens or
-// closes a folded row, as in the TUI.
+// The open session's conversation, in rows (`transcript.ts`), in Claude
+// Code's desktop views. A click opens or closes a folded row: a row of
+// lookups, or a command's longer output.
 import { memo, useLayoutEffect, useRef, useState } from 'react';
 import { DiffText, Markdown } from './Markdown';
 import { callTitle, type Row, shownOutput, type TranscriptState, turnRows, type View, workedFor } from './transcript';
@@ -37,7 +37,7 @@ export function Conversation({ transcript, view }: Props) {
     >
       {transcript.turns.map((turn) => (
         <section key={turn.id} className="turn">
-          {turnRows(turn, view, true).map((row) => (
+          {turnRows(turn, view).map((row) => (
             <RowView key={row.key} row={row} open={open} toggle={toggle} full={view === 'verbose'} />
           ))}
         </section>
@@ -69,12 +69,13 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
         </div>
       );
     case 'thought':
+      // Only the Thinking and Verbose views have these: the text is the point.
       return (
-        <div className="row thought">
-          <button className="fold" onClick={() => toggle(row.key)}>
+        <div className="row thought" data-testid="thought">
+          <div className="meta">
             ∴ {row.running ? 'Thinking…' : row.ms !== null ? `Thought for ${workedFor(row.ms)}` : 'Thought'}
-          </button>
-          {opened && <div className="thought-text">{row.text}</div>}
+          </div>
+          <div className="thought-text">{row.text}</div>
         </div>
       );
     case 'lookups':
@@ -86,11 +87,6 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
           </button>
           {opened && (
             <ul className="calls">
-              {row.thoughts.map((text, i) => (
-                <li key={`t${i}`} className="thought-text">
-                  {text}
-                </li>
-              ))}
               {row.calls.map((call) => (
                 <li key={call.id}>
                   <code>{callTitle(call)}</code>
@@ -104,21 +100,6 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
       return <ToolRow row={row} opened={opened} toggle={toggle} full={full} />;
     case 'compaction':
       return <div className="row note">{row.text}</div>;
-    case 'worked':
-      return (
-        <div className="row worked" data-testid="worked">
-          <button className="fold" onClick={() => toggle(row.key)}>
-            {opened ? '▾' : '▸'} {row.label}
-          </button>
-          {opened && (
-            <div className="worked-rows">
-              {row.rows.map((inner) => (
-                <RowView key={inner.key} row={inner} open={open} toggle={toggle} full={full} />
-              ))}
-            </div>
-          )}
-        </div>
-      );
     case 'note':
       return (
         <div className={`row note ${row.tone}`} data-testid="turn-note">

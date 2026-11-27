@@ -226,8 +226,6 @@ button {
   cursor: pointer;
   text-align: left;
 }
-.row.thought .fold,
-.row.worked .fold,
 .more-lines {
   color: var(--muted);
 }
@@ -238,10 +236,6 @@ button {
   border-left: 2px solid color-mix(in srgb, currentColor 20%, transparent);
   padding-left: 10px;
   margin: 4px 0;
-}
-.worked-rows {
-  border-left: 2px solid color-mix(in srgb, currentColor 15%, transparent);
-  padding-left: 12px;
 }
 .calls {
   list-style: none;
@@ -379,4 +373,21 @@ button {
   border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
   background: transparent;
   color: inherit;
+}
+.views {
+  display: flex;
+}
+.views button {
+  border-radius: 0;
+  margin-left: -1px;
+}
+.views button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.views button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.views button[aria-pressed='true'] {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  font-weight: 600;
 }

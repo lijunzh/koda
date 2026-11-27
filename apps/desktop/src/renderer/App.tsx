@@ -5,7 +5,7 @@ import { ServerLine } from './ServerLine';
 import { SessionView } from './SessionView';
 import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
 import { Sidebar } from './Sidebar';
-import { fromSession, type TranscriptState, type View, withEvents } from './transcript';
+import { fromSession, type TranscriptState, type View, VIEWS, withEvents } from './transcript';
 
 /** The open session: its id at once, the session once the server has opened it. */
 export interface Selected {
@@ -28,12 +28,12 @@ export function App() {
   /** Events from before the open session's snapshot came, kept to apply after it. */
   const early = useRef<RpcMessage[]>([]);
 
-  // Ctrl+O switches the normal and full views, as in the TUI and Claude Code.
+  // Ctrl+O cycles Normal, Thinking and Verbose, as in Claude Code's desktop app.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        setView((v) => (v === 'verbose' ? 'normal' : 'verbose'));
+        setView((v) => VIEWS[(VIEWS.indexOf(v) + 1) % VIEWS.length]);
       }
     };
     window.addEventListener('keydown', onKey);

@@ -44,7 +44,7 @@ const bash = (command: string, actions: object[], extra: object = {}) =>
 function turn(items: object[], extra: Partial<TurnView> = {}): TurnView {
   return { id: 't1', status: 'completed', startedAt: 0, durationMs: 125_000, error: null, items: items as TurnView['items'], ...extra };
 }
-const kinds = (rows: Row[]) => rows.map((r) => (r.kind === 'lookups' || r.kind === 'worked' ? `${r.kind}:${r.label}` : r.kind));
+const kinds = (rows: Row[]) => rows.map((r) => (r.kind === 'lookups' ? `${r.kind}:${r.label}` : r.kind));
 
 describe('rows', () => {
   it('folds lookups one after another into one row, counted as Claude Code words them', () => {
@@ -64,7 +64,6 @@ describe('rows', () => {
         { status: 'interrupted' },
       ),
       'normal',
-      true,
     );
     // `make` can't be read: its own row, ending the group.
     expect(kinds(rows)).toEqual(['user', 'lookups:Read 2 files, searched 1 pattern, listed 1 directory', 'tool', 'message', 'note']);
@@ -75,18 +74,16 @@ describe('rows', () => {
     const make = bash('make', [{ type: 'unknown', command: 'make' }], { effect: 'localMutation' });
     // Stored before 0.8.0: a read-only command the host couldn't read is a command in the row.
     const legacy = bash('jq . a.json', [], { effect: 'readOnly' });
-    const rows = turnRows(turn([user('a'), ls, legacy, make], { status: 'interrupted' }), 'normal', true);
+    const rows = turnRows(turn([user('a'), ls, legacy, make], { status: 'interrupted' }), 'normal');
     expect(kinds(rows)).toEqual(['user', 'lookups:Listed 1 directory, ran 1 command', 'tool', 'note']);
   });
 
-  it('ends a row at anything else shown, and keeps a thought between lookups inside it', () => {
+  it('ends a row at anything else shown; a progress note or an edit splits lookups', () => {
     const rows = turnRows(
       turn(
         [
           user('go'),
-          think('first', 2000),
           call('Read'),
-          think('between'),
           call('Read'),
           say('A progress note', 'commentary'),
           call('Read'),
@@ -96,81 +93,48 @@ describe('rows', () => {
         { status: 'interrupted' },
       ),
       'normal',
-      true,
     );
-    expect(kinds(rows)).toEqual([
-      'user',
-      'thought',
-      'lookups:Read 2 files',
-      'message',
-      'lookups:Read 1 file',
-      'tool',
-      'lookups:Read 1 file',
-      'note',
-    ]);
-    const thought = rows[1] as Extract<Row, { kind: 'thought' }>;
-    expect(thought.ms).toBe(2000);
-    expect((rows[2] as Extract<Row, { kind: 'lookups' }>).thoughts).toEqual(['between']);
+    expect(kinds(rows)).toEqual(['user', 'lookups:Read 2 files', 'message', 'lookups:Read 1 file', 'tool', 'lookups:Read 1 file', 'note']);
   });
 
-  it('adds up thoughts one after another, says a row is running, and counts failures', () => {
+  it("shows thinking in the Thinking view only, where it came; in Normal it doesn't split lookups", () => {
+    const items = [user('go'), think('first', 2000), call('Read'), think('between', 1000), call('Read'), say('Done.')];
+    expect(kinds(turnRows(turn(items), 'normal'))).toEqual(['user', 'lookups:Read 2 files', 'message']);
+    const thinking = turnRows(turn(items), 'thinking');
+    expect(kinds(thinking)).toEqual(['user', 'thought', 'lookups:Read 1 file', 'thought', 'lookups:Read 1 file', 'message']);
+    expect(thinking[1]).toMatchObject({ text: 'first', ms: 2000 });
+  });
+
+  it("keeps a finished turn's steps, as Claude Code does", () => {
+    const rows = turnRows(turn([user('fix it'), call('Read'), say('Looking', 'commentary'), call('Edit', { effect: 'localMutation' }), say('Fixed.', 'final_answer')]), 'normal');
+    expect(kinds(rows)).toEqual(['user', 'lookups:Read 1 file', 'message', 'tool', 'message']);
+  });
+
+  it('says a row is running, and counts failures', () => {
     const rows = turnRows(
-      turn(
-        [
-          user('go'),
-          think('a', 1000),
-          think('b', 2000),
-          call('Read', { status: 'failed' }),
-          call('Read', { status: 'inProgress' }),
-        ],
-        { status: 'inProgress' },
-      ),
+      turn([user('go'), call('Read', { status: 'failed' }), call('Read', { status: 'inProgress' })], { status: 'inProgress' }),
       'normal',
-      true,
     );
-    expect((rows[1] as Extract<Row, { kind: 'thought' }>).ms).toBe(3000);
-    const group = rows[2] as Extract<Row, { kind: 'lookups' }>;
+    const group = rows[1] as Extract<Row, { kind: 'lookups' }>;
     expect(group.label).toBe('Reading 2 files…');
     expect(group.failed).toBe(1);
   });
 
-  it('folds a finished turn to the prompt, one line and the answer', () => {
-    const edit = call('Edit', {
-      effect: 'localMutation',
-      changes: [{ path: 'a.rs', kind: { type: 'update' }, diff: '--- a/a.rs\n+++ b/a.rs\n@@\n-old\n+new\n+more' }],
-    });
-    const rows = turnRows(turn([user('fix it'), call('Read'), say('Looking', 'commentary'), edit, say('Fixed.', 'final_answer')]), 'normal', true);
-    expect(kinds(rows)).toEqual(['user', 'worked:Worked for 2m 5s · 2 tool calls · 1 file +2 −1', 'message']);
-    expect((rows[2] as Extract<Row, { kind: 'message' }>).text).toBe('Fixed.');
-    expect((rows[1] as Extract<Row, { kind: 'worked' }>).rows.map((r) => r.kind)).toEqual(['lookups', 'message', 'tool']);
-    // Not folded: when the user turns it off, when it stopped, or with nothing before the answer.
-    expect(kinds(turnRows(turn([user('a'), call('Read'), say('b')]), 'normal', false))).toEqual(['user', 'lookups:Read 1 file', 'message']);
-    expect(kinds(turnRows(turn([user('a'), call('Read'), say('b')], { status: 'interrupted' }), 'normal', true))).toEqual([
-      'user',
-      'lookups:Read 1 file',
-      'message',
-      'note',
-    ]);
-    expect(kinds(turnRows(turn([user('a'), say('b')]), 'normal', true))).toEqual(['user', 'message']);
-    // The answer, for a turn stored before messages had a phase, is the last message.
-    expect(kinds(turnRows(turn([user('a'), say('x'), call('Read'), say('y')]), 'normal', true))).toEqual(['user', 'worked:Worked for 2m 5s · 1 tool call', 'message']);
-  });
-
-  it('shows every item in the full view', () => {
-    const rows = turnRows(turn([user('a'), think('t'), call('Read'), call('Read'), say('b')]), 'verbose', true);
+  it('shows every item in the Verbose view', () => {
+    const rows = turnRows(turn([user('a'), think('t'), call('Read'), call('Read'), say('b')]), 'verbose');
     expect(kinds(rows)).toEqual(['user', 'thought', 'tool', 'tool', 'message']);
   });
 
   it("keeps a sub-agent's calls under its own", () => {
     const parent = call('InvokeAgent', { effect: 'localMutation', arguments: { agent_name: 'explore' } });
     const child = { ...call('Read'), parentItemId: parent.id };
-    const rows = turnRows(turn([user('a'), parent, child], { status: 'interrupted' }), 'normal', true);
+    const rows = turnRows(turn([user('a'), parent, child], { status: 'interrupted' }), 'normal');
     expect(kinds(rows)).toEqual(['user', 'tool', 'note']);
     expect((rows[1] as Extract<Row, { kind: 'tool' }>).children).toHaveLength(1);
   });
 
   it('says a turn failed, with its error', () => {
-    const rows = turnRows(turn([user('a')], { status: 'failed', error: 'rate limited' }), 'normal', true);
+    const rows = turnRows(turn([user('a')], { status: 'failed', error: 'rate limited' }), 'normal');
     expect(rows.at(-1)).toMatchObject({ kind: 'note', tone: 'error', text: 'rate limited' });
   });
 

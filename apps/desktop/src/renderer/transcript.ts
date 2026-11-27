@@ -1,21 +1,17 @@
 // A session's transcript: its turns as the server sends them (stored turns
-// from `session/resume`, then live events), and the rows the window shows.
-// The rows follow the TUI's folding rules and wording (koda-tui's
-// `tui_render.rs`, as Claude Code shows a turn):
+// from `session/resume`, then live events), and the rows the window shows,
+// in Claude Code's desktop app's three views (its docs: "Tool calls
+// collapsed into summaries, with full text responses"):
 //
-// - Thinking is one line once it ends, `∴ Thought for 12s`; its text is in
-//   the full view.
-// - Lookups one after another (reads, searches, listings, read-only
-//   commands) are one row, `Read 3 files, ran 2 commands`, with no output. A
-//   thought between two lookups goes into their row; anything else shown
-//   ends the row.
-// - Other calls are a row each with their output folded to 5 lines (and the
-//   last 5 when they failed); an edit shows its diff.
-// - A finished turn folds everything before its answer into one line,
-//   `▸ Worked for 2m 5s · 17 tool calls · 2 files +40 −12` (Focus), unless
-//   it stopped, failed, or had nothing before the answer.
+// - Normal: lookups one after another (reads, searches, listings) are one
+//   row in Claude Code's words, `Read 3 files, searched 2 patterns`, with no
+//   output; other calls are a row each with their output folded to 5 lines
+//   (and the last 5 when they failed); an edit shows its diff; thinking isn't
+//   shown. A finished turn's steps stay as they are, as in Claude Code.
+// - Thinking: the same, with the model's thinking where it came.
+// - Verbose: every item and all its output.
 //
-// The full view (Verbose) shows every item and all its output.
+// The grouping and wording are the TUI's (koda-tui's `tui_render.rs`).
 import type { CommandAction, Item, Session, Turn } from '../protocol/types.gen';
 import type { RpcMessage } from './bridge';
 
@@ -228,14 +224,16 @@ export function workedFor(ms: number): string {
 export type Row =
   | { kind: 'user'; key: string; text: string }
   | { kind: 'thought'; key: string; ms: number | null; text: string; running: boolean }
-  | { kind: 'lookups'; key: string; label: string; failed: number; calls: ToolCall[]; thoughts: string[] }
+  | { kind: 'lookups'; key: string; label: string; failed: number; calls: ToolCall[] }
   | { kind: 'tool'; key: string; call: ToolCall; children: ToolCall[] }
   | { kind: 'message'; key: string; text: string; streaming: boolean }
   | { kind: 'compaction'; key: string; text: string }
-  | { kind: 'worked'; key: string; label: string; rows: Row[] }
   | { kind: 'note'; key: string; text: string; tone: 'stopped' | 'error' };
 
-export type View = 'normal' | 'verbose';
+/** Claude Code's desktop views, which Ctrl+O cycles. */
+export type View = 'normal' | 'thinking' | 'verbose';
+
+export const VIEWS: readonly View[] = ['normal', 'thinking', 'verbose'];
 
 function userText(item: Extract<ItemView, { type: 'userMessage' }>): string {
   return item.content
@@ -258,26 +256,8 @@ function itemMs(item: ItemView): number | null {
   return item.startedAtMs && item.completedAtMs ? item.completedAtMs - item.startedAtMs : null;
 }
 
-/** `+a −r` lines and the files an edit's diffs touch. */
-export function diffStats(calls: readonly ToolCall[]): { files: number; added: number; removed: number } {
-  const files = new Set<string>();
-  let added = 0;
-  let removed = 0;
-  for (const call of calls) {
-    for (const change of call.changes ?? []) {
-      files.add(change.path);
-      for (const line of change.diff.split('\n')) {
-        if (line.startsWith('+++') || line.startsWith('---')) continue;
-        if (line.startsWith('+')) added++;
-        else if (line.startsWith('-')) removed++;
-      }
-    }
-  }
-  return { files: files.size, added, removed };
-}
-
 /** The rows of one turn, in the view asked for. */
-export function turnRows(turn: TurnView, view: View, foldFinished: boolean): Row[] {
+export function turnRows(turn: TurnView, view: View): Row[] {
   const top = turn.items.filter((item) => !item.parentItemId);
   const children = (id: string) =>
     turn.items.filter((item): item is ToolCall => item.parentItemId === id && item.type === 'toolCall');
@@ -290,43 +270,25 @@ export function turnRows(turn: TurnView, view: View, foldFinished: boolean): Row
     let group: Extract<Row, { kind: 'lookups' }> | null = null;
     let counts: Counts = { read: 0, search: 0, list: 0, command: 0 };
     let groupRunning = false;
-    let thought: { key: string; ms: number | null; text: string; running: boolean } | null = null;
     const closeGroup = () => {
       if (group) group.label = lookupLabel(counts, groupRunning);
       group = null;
     };
-    const flushThought = () => {
-      const waiting = thought as { key: string; ms: number | null; text: string; running: boolean } | null;
-      if (waiting) rows.push({ kind: 'thought', key: waiting.key, ms: waiting.ms, text: waiting.text, running: waiting.running });
-      thought = null;
-    };
     for (const item of top) {
       if (item.type === 'reasoning') {
-        const ms = itemMs(item);
-        const live = !item.completedAtMs && running;
-        // Thoughts one after another add up to one.
-        const prev = thought as { key: string; ms: number | null; text: string; running: boolean } | null;
-        thought = prev
-          ? {
-              key: prev.key,
-              ms: prev.ms !== null && ms !== null ? prev.ms + ms : (prev.ms ?? ms),
-              text: `${prev.text}\n\n${item.text}`,
-              running: live,
-            }
-          : { key: item.id, ms, text: item.text, running: live };
+        // Thinking shows in the Thinking view only, where it came; in Normal
+        // it's left out and doesn't split a row of lookups.
+        if (view === 'thinking') {
+          closeGroup();
+          rows.push({ kind: 'thought', key: item.id, ms: itemMs(item), text: item.text, running: running && !item.completedAtMs });
+        }
         continue;
       }
       if (item.type === 'toolCall') {
         const looked = lookups(item);
         if (looked) {
-          if (group && thought) {
-            // A thought between two lookups goes into their row.
-            (group as Extract<Row, { kind: 'lookups' }>).thoughts.push((thought as { text: string }).text);
-            thought = null;
-          }
-          flushThought();
           if (!group) {
-            group = { kind: 'lookups', key: item.id, label: '', failed: 0, calls: [], thoughts: [] };
+            group = { kind: 'lookups', key: item.id, label: '', failed: 0, calls: [] };
             counts = { read: 0, search: 0, list: 0, command: 0 };
             groupRunning = false;
             rows.push(group);
@@ -339,12 +301,10 @@ export function turnRows(turn: TurnView, view: View, foldFinished: boolean): Row
           continue;
         }
         closeGroup();
-        flushThought();
         rows.push({ kind: 'tool', key: item.id, call: item, children: children(item.id) });
         continue;
       }
       closeGroup();
-      flushThought();
       if (item.type === 'userMessage') rows.push({ kind: 'user', key: item.id, text: userText(item) });
       else if (item.type === 'agentMessage') {
         rows.push({ kind: 'message', key: item.id, text: item.text, streaming: running && !item.completedAtMs });
@@ -353,14 +313,12 @@ export function turnRows(turn: TurnView, view: View, foldFinished: boolean): Row
       }
     }
     closeGroup();
-    flushThought();
   }
 
   if (turn.status === 'interrupted') rows.push({ kind: 'note', key: `${turn.id}-end`, text: 'Stopped', tone: 'stopped' });
   if (turn.status === 'failed') {
     rows.push({ kind: 'note', key: `${turn.id}-end`, text: turn.error ?? 'The turn failed', tone: 'error' });
   }
-  if (view === 'normal' && foldFinished && turn.status === 'completed') return folded(turn, rows, top);
   return rows;
 }
 
@@ -377,34 +335,6 @@ function verboseRows(item: ItemView, children: (id: string) => ToolCall[]): Row[
     case 'contextCompaction':
       return [{ kind: 'compaction', key: item.id, text: 'Context compacted' }];
   }
-}
-
-/**
- * Focus: the prompt, `▸ Worked for …` over everything before the answer, and
- * the answer. The answer is the last agent message that isn't commentary
- * (the last one, for turns stored before messages had a phase).
- */
-function folded(turn: TurnView, rows: Row[], top: ItemView[]): Row[] {
-  const messages = top.filter((item) => item.type === 'agentMessage');
-  const answer =
-    [...messages].reverse().find((m) => m.type === 'agentMessage' && m.phase !== 'commentary') ?? messages.at(-1);
-  if (!answer) return rows;
-  const answerAt = rows.findIndex((row) => row.key === answer.id);
-  const firstUser = rows.findIndex((row) => row.kind === 'user');
-  const middle = rows.slice(firstUser + 1, answerAt);
-  if (answerAt < 0 || middle.length === 0) return rows;
-  const calls = top.filter((item): item is ToolCall => item.type === 'toolCall');
-  const stats = diffStats(calls);
-  const parts: string[] = [];
-  if (turn.durationMs !== null) parts.push(`Worked for ${workedFor(turn.durationMs)}`);
-  if (calls.length) parts.push(calls.length === 1 ? '1 tool call' : `${calls.length} tool calls`);
-  if (stats.files) parts.push(`${stats.files} file${stats.files === 1 ? '' : 's'} +${stats.added} −${stats.removed}`);
-  const label = parts.length ? parts.join(' · ') : 'Worked';
-  return [
-    ...rows.slice(0, firstUser + 1),
-    { kind: 'worked', key: `${turn.id}-worked`, label, rows: middle },
-    ...rows.slice(answerAt),
-  ];
 }
 
 // ── Tool output ──────────────────────────────────────────────────────────
