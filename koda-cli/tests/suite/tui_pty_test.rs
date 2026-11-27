@@ -2278,7 +2278,6 @@ fn old_server(
                 let result = match request["method"].as_str() {
                     Some("initialize") => serde_json::json!({
                         "serverInfo": {"name": "koda", "version": version},
-                        "protocolVersion": 2,
                     }),
                     Some("serve/stop") => {
                         asked.lock().unwrap().push(params.clone());

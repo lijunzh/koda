@@ -34,7 +34,7 @@ use koda_protocol::turn::{
     LoopCapDecision, LoopCapResponse, Turn, TurnError, TurnInterruptParams, TurnInterruptResponse,
     TurnStartParams, TurnStartResponse, TurnStatus, TurnSteerParams, TurnSteerResponse, UserInput,
 };
-use koda_protocol::{PROTOCOL_VERSION, ServerNotification, ServerRequest};
+use koda_protocol::{ServerNotification, ServerRequest};
 use koda_state::db::{Database, Role};
 use koda_state::session_store::SessionStore;
 use tokio::sync::{mpsc, oneshot};
@@ -379,7 +379,6 @@ pub(crate) async fn open(
         SessionStartedNotification {
             session: described.clone(),
             koda_version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: PROTOCOL_VERSION,
         },
     )));
     // A Claude model pinned while its line has moved on.

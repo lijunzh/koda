@@ -73,14 +73,13 @@ pub fn experimental_required_message(reason: &str) -> String {
     format!("{reason} requires experimentalApi capability")
 }
 
-/// The server says what it is and which protocol it speaks.
+/// The server says what it is. Its version is the protocol's, as Codex's
+/// `userAgent` carries its build version.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResponse {
     /// Koda's name and version.
     pub server_info: ServerInfo,
-    /// [`crate::PROTOCOL_VERSION`] of the server.
-    pub protocol_version: u32,
 }
 
 /// Koda's name and version.

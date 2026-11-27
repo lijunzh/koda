@@ -391,8 +391,9 @@ orb -m ubuntu bash -lc 'mkdir -p ~/.ssh ~/.aws ~/.config/koda/db && KODA_REQUIRE
   flag removed. A release that breaks one of those is the next minor.
 - The wire protocol isn't held to that. Koda's clients and server ship together
   and run one version (Lijun, 2026-11-26), so a release may change the protocol;
-  an incompatible change raises `PROTOCOL_VERSION`, which `koda exec --json`
-  readers such as koda-evals check. Only what two versions need to update in
+  the Koda version is the protocol's, as Codex has no separate protocol
+  number, and `koda exec --json` readers such as koda-evals pick their reader
+  by it. Only what two versions need to update in
   place stays the same: `initialize`'s `serverInfo.version`, `serve/stop` and
   `serve/updating`.
 - A new crate inherits the workspace version (`version.workspace = true`), gets a

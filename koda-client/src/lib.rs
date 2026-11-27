@@ -168,7 +168,6 @@ impl InProcessClient {
                     name: String::new(),
                     version: String::new(),
                 },
-                protocol_version: 0,
             },
         };
         client.server = client
@@ -199,7 +198,6 @@ impl InProcessClient {
                     name: String::new(),
                     version: String::new(),
                 },
-                protocol_version: 0,
             },
         };
         client.server = client
@@ -304,10 +302,6 @@ mod tests {
         assert_eq!(
             client.server().server_info.version,
             env!("CARGO_PKG_VERSION")
-        );
-        assert_eq!(
-            client.server().protocol_version,
-            koda_protocol::PROTOCOL_VERSION
         );
         client.shutdown().await;
     }

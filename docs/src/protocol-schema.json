@@ -1341,22 +1341,15 @@
       "type": "object"
     },
     "InitializeResponse": {
-      "description": "The server says what it is and which protocol it speaks.",
+      "description": "The server says what it is. Its version is the protocol's, as Codex's\n`userAgent` carries its build version.",
       "properties": {
-        "protocolVersion": {
-          "description": "[`crate::PROTOCOL_VERSION`] of the server.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
         "serverInfo": {
           "$ref": "#/$defs/ServerInfo",
           "description": "Koda's name and version."
         }
       },
       "required": [
-        "serverInfo",
-        "protocolVersion"
+        "serverInfo"
       ],
       "type": "object"
     },
@@ -4339,14 +4332,8 @@
       "description": "`session/started`: a session is ready for its first turn.",
       "properties": {
         "kodaVersion": {
-          "description": "The Koda release, such as `0.7.0`.",
+          "description": "The Koda release, such as `0.8.0`, which says which protocol the\nstream speaks: a reader that can't read it should stop.",
           "type": "string"
-        },
-        "protocolVersion": {
-          "description": "[`crate::PROTOCOL_VERSION`]. A reader that can't read it should stop.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
         },
         "session": {
           "$ref": "#/$defs/Session",
@@ -4355,8 +4342,7 @@
       },
       "required": [
         "session",
-        "kodaVersion",
-        "protocolVersion"
+        "kodaVersion"
       ],
       "type": "object"
     },
@@ -6688,7 +6674,6 @@
       }
     }
   },
-  "protocolVersion": 4,
   "serverRequests": {
     "item/tool/requestUserInput": {
       "params": {

@@ -17,6 +17,7 @@ use std::sync::{Arc, OnceLock, PoisonError};
 use std::time::Duration;
 
 use koda_core::config::KodaConfig;
+use koda_protocol::ClientRequest;
 use koda_protocol::ServerNotification;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
@@ -26,7 +27,6 @@ use koda_protocol::session::{
     SortDirection,
 };
 use koda_protocol::state::{SandboxState, StateReadResponse};
-use koda_protocol::{ClientRequest, PROTOCOL_VERSION};
 use koda_state::db::Database;
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -1208,7 +1208,6 @@ impl Host {
                 // Every Koda crate shares one version.
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
-            protocol_version: PROTOCOL_VERSION,
         })
     }
 

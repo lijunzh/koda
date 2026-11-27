@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Removed
 
+- **`protocolVersion`,** from `initialize` and `session/started`, as Codex's app-server has no protocol number: Koda's clients and server ship together, so the Koda version (`serverInfo.version`, `kodaVersion`) says which protocol a stream speaks. A `koda exec --json` reader picks its reader by `kodaVersion`.
 - **Safe mode.** Koda now decides what runs without asking the way Codex does, from the kernel sandbox rather than a list of commands. There are two modes, Auto (the default) and Plan; `Shift+Tab` switches between them. `--mode`, `mode` in `config.toml` and an agent's `trust` take `auto` or `plan`; `mode = "safe"` gets a message saying so, an agent declaring `"safe"` runs in Plan with a warning, and a session stored in Safe reopens in Auto. `/safe`, the Plan dialog's "Implement it in Safe" and the `a` approval key (approve and switch to Auto) are gone.
 - **`--max-tokens`, `--temperature` and `--thinking-budget`,** deprecated in 0.7: use `-c model_max_output_tokens=N`, `-c model_temperature=X` and `-c model_thinking_budget=N`. [Upgrading to 0.8](https://lijunzh.github.io/koda/upgrading-0.8.html) lists everything to change.
 - **The read-only command list.** About 110 command prefixes with flag rules decided which commands Safe and Plan let run; the 2026-11-26 test review found it rated `git branch -D main`, `sed --in-place` and `awk 'BEGIN{system(…)}'` read-only. Codex retired its own list in August. The sandbox now decides what a command can change.

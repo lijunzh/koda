@@ -24,10 +24,11 @@
 //! follows koda-cli's version, and its Rust API makes no semver promise of
 //! its own: a 0.7.x release may change it. The Koda crates pin each other
 //! exactly, so every koda-cli builds against the crates it shipped with.
-//! The wire protocol is versioned apart, by [`PROTOCOL_VERSION`], which an
-//! incompatible change raises. Koda's own clients and its server ship
-//! together and run one version, so a release may change the protocol;
-//! a reader of `koda exec --json` or another client checks the version.
+//! The wire protocol has no version of its own, as Codex's app-server has
+//! none: Koda's own clients and its server ship together and run one
+//! version, so the Koda version (`serverInfo.version` from `initialize`,
+//! `kodaVersion` on `session/started`) says which protocol it speaks, and a
+//! release may change it. A reader of `koda exec --json` goes by that.
 
 pub mod agent;
 pub mod background;
@@ -55,15 +56,6 @@ pub use server::{ServerNotification, ServerRequest};
 use schemars::generate::SchemaSettings;
 use serde_json::{Value, json};
 
-/// The protocol's version, sent in the `initialize` response and on
-/// `session/started`. Version 1 was `stream-json`, the output-only format
-/// this protocol replaces. Version 3 (0.7.13) took Codex's names and
-/// shapes: `modelProvider`, Codex's token-usage names, prompts as a list
-/// of `UserInput` parts, Codex's approval answers, `session/resume`, and
-/// more (see the changelog). Version 4 (0.7.14) keeps a stored turn's
-/// items flat, as Codex's `ThreadItem`.
-pub const PROTOCOL_VERSION: u32 = 4;
-
 /// The protocol as one JSON Schema document: every message shape; for each
 /// client method and server request its parameters and result; for each
 /// notification its parameters.
@@ -77,7 +69,6 @@ pub fn schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Koda client protocol",
-        "protocolVersion": PROTOCOL_VERSION,
         "message": message,
         "methods": methods,
         "serverRequests": server_requests,
