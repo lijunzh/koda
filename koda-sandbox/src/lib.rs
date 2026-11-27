@@ -517,6 +517,20 @@ pub fn is_available() -> bool {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+/// For tests: a sandbox test that can't run here (no sandbox, no `~/.ssh`,
+/// no `curl`) calls this and returns. It skips with `why` on a developer's
+/// machine, and fails when `KODA_REQUIRE_SANDBOX` is set, as CI sets it: a
+/// skipped security test passes and checks nothing.
+#[doc(hidden)]
+pub fn skip_test(why: impl std::fmt::Display) {
+    assert!(
+        std::env::var_os("KODA_REQUIRE_SANDBOX").is_none(),
+        "a sandbox test can't run: {why}. KODA_REQUIRE_SANDBOX is set, so it fails \
+         rather than pass without checking anything"
+    );
+    eprintln!("skip: {why}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

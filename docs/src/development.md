@@ -348,9 +348,14 @@ orb -m ubuntu bash -lc 'CARGO_TARGET_DIR=$HOME/target/koda cargo nextest run --w
 Pass `-j 4` when local model evals are running, so the build doesn't push their
 tasks past their time limits. On an Apple Silicon Mac the machine is arm64 while
 CI's runner is x86_64; that has not mattered so far. The first run takes about
-five minutes at `-j 4`; later runs build only what changed. To check the
-security-boundary tests ran rather than being skipped, look for each name in
-`ci.yml`'s `required_tests` lists on a `test … ok` line.
+five minutes at `-j 4`; later runs build only what changed. To make every
+sandbox test run rather than skip, as CI does, create the folders the
+credential tests check and set `KODA_REQUIRE_SANDBOX`: a test that can't run
+then fails with what it's missing.
+
+```bash
+orb -m ubuntu bash -lc 'mkdir -p ~/.ssh ~/.aws ~/.config/koda/db && KODA_REQUIRE_SANDBOX=1 CARGO_TARGET_DIR=$HOME/target/koda cargo nextest run --workspace'
+```
 
 ## Release checklist
 

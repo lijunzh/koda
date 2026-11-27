@@ -3155,7 +3155,7 @@ mod tests {
                 .output()
                 .is_err()
         {
-            eprintln!("skip: needs the seatbelt backend and python3");
+            koda_sandbox::skip_test(format_args!("needs the seatbelt backend and python3"));
             return;
         }
         let registry = BgRegistry::new();
@@ -3503,7 +3503,7 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_default();
         let ssh = format!("{home}/.ssh");
         if !crate::sandbox::is_available() || !std::path::Path::new(&ssh).exists() {
-            eprintln!("skip: needs the seatbelt backend and ~/.ssh");
+            koda_sandbox::skip_test(format_args!("needs the seatbelt backend and ~/.ssh"));
             return;
         }
         let project = tempfile::tempdir().unwrap();
@@ -3546,7 +3546,7 @@ mod tests {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let ssh_dir = format!("{home}/.ssh");
         if !std::path::Path::new(&ssh_dir).exists() {
-            eprintln!("skip: {ssh_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{ssh_dir} does not exist"));
             return;
         }
         let project = tempfile::tempdir().unwrap();

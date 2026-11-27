@@ -1077,7 +1077,7 @@ print(\"connected\")'";
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let db_dir = format!("{home}/.config/koda/db");
         if !Path::new(&db_dir).exists() {
-            eprintln!("skip: {db_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{db_dir} does not exist"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1106,7 +1106,7 @@ print(\"connected\")'";
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let ssh_dir = format!("{home}/.ssh");
         if !Path::new(&ssh_dir).exists() {
-            eprintln!("skip: {ssh_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{ssh_dir} does not exist"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1135,7 +1135,7 @@ print(\"connected\")'";
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".into());
         let ssh_dir = format!("{home}/.ssh");
         if !Path::new(&ssh_dir).exists() {
-            eprintln!("skip: {ssh_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{ssh_dir} does not exist"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1283,7 +1283,7 @@ print(\"connected\")'";
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let ssh_dir = format!("{home}/.ssh");
         if !Path::new(&ssh_dir).exists() {
-            eprintln!("skip: {ssh_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{ssh_dir} does not exist"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1312,7 +1312,7 @@ print(\"connected\")'";
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let ssh_dir = format!("{home}/.ssh");
         if !Path::new(&ssh_dir).exists() {
-            eprintln!("skip: {ssh_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{ssh_dir} does not exist"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1343,7 +1343,7 @@ print(\"connected\")'";
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
         let aws_dir = format!("{home}/.aws");
         if !Path::new(&aws_dir).exists() {
-            eprintln!("skip: {aws_dir} does not exist");
+            koda_sandbox::skip_test(format_args!("{aws_dir} does not exist"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1456,7 +1456,7 @@ print(\"connected\")'";
     #[tokio::test]
     async fn build_succeeds_in_all_modes_when_sandbox_available() {
         if !is_available() {
-            eprintln!("skip: kernel sandbox not available on this host");
+            koda_sandbox::skip_test(format_args!("kernel sandbox not available on this host"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1597,7 +1597,7 @@ print(\"connected\")'";
     #[tokio::test]
     async fn plan_policy_blocks_a_project_write_in_the_kernel() {
         if !is_available() {
-            eprintln!("skip: kernel sandbox not available on this host");
+            koda_sandbox::skip_test(format_args!("kernel sandbox not available on this host"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1813,7 +1813,7 @@ print(\"connected\")'";
     #[tokio::test(flavor = "multi_thread")]
     async fn a_child_in_a_worktree_cannot_touch_shared_git_metadata() {
         if !is_available() {
-            eprintln!("skipped: no sandbox backend");
+            koda_sandbox::skip_test(format_args!("no sandbox backend"));
             return;
         }
         let tmp = tempfile::tempdir_in("/tmp").unwrap();
@@ -1851,7 +1851,7 @@ print(\"connected\")'";
     #[tokio::test(flavor = "multi_thread")]
     async fn a_child_cannot_add_a_worktree_config() {
         if !is_available() {
-            eprintln!("skipped: no sandbox backend");
+            koda_sandbox::skip_test(format_args!("no sandbox backend"));
             return;
         }
         let tmp = tempfile::tempdir_in("/tmp").unwrap();

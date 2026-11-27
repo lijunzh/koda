@@ -187,6 +187,7 @@ fn client() {
 #[test]
 fn a_sandboxed_command_cannot_reach_the_server() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let case = Case::new();
@@ -213,6 +214,7 @@ fn a_sandboxed_command_cannot_reach_the_server() {
 #[test]
 fn kodas_settings_cant_be_written_from_a_session_in_the_home_folder() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let mut case = Case::new();
@@ -248,6 +250,7 @@ fn kodas_settings_cant_be_written_from_a_session_in_the_home_folder() {
 #[test]
 fn a_session_in_one_of_kodas_worktrees_writes_its_checkout_only() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let mut case = Case::new();
@@ -274,6 +277,7 @@ fn a_session_in_one_of_kodas_worktrees_writes_its_checkout_only() {
 #[test]
 fn a_server_under_xdg_config_home_is_closed_too() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let mut case = Case::new();
@@ -286,6 +290,7 @@ fn a_server_under_xdg_config_home_is_closed_too() {
 #[test]
 fn another_path_to_the_socket_is_closed_too() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let case = Case::new();
@@ -332,6 +337,7 @@ fn another_path_to_the_socket_is_closed_too() {
 #[test]
 fn moving_a_folder_above_the_socket_does_not_open_it() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     for allow_write in [false, true] {
@@ -361,6 +367,7 @@ fn moving_a_folder_above_the_socket_does_not_open_it() {
 #[test]
 fn a_server_that_starts_later_is_closed_to_a_running_command() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let case = Case::new();
@@ -387,6 +394,7 @@ fn a_server_that_starts_later_is_closed_to_a_running_command() {
 #[test]
 fn a_socket_somewhere_else_is_closed_to_its_own_sessions() {
     if !available() {
+        koda_sandbox::skip_test("no working sandbox here");
         return;
     }
     let case = Case::new();

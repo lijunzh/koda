@@ -681,7 +681,7 @@ mod tests {
     #[test]
     fn a_shared_temp_root_gets_no_git_or_koda_folders() {
         if !is_available() {
-            eprintln!("bwrap not available; skipping");
+            crate::skip_test(format_args!("bwrap not available; skipping"));
             return;
         }
         let tmp = Path::new("/tmp");
@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn build_command_with_proxy_adds_unshare_and_stage2() {
         if !is_available() {
-            eprintln!("bwrap not available; skipping");
+            crate::skip_test(format_args!("bwrap not available; skipping"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -849,7 +849,7 @@ mod tests {
     #[test]
     fn build_command_with_proxy_sets_stage2_env_vars() {
         if !is_available() {
-            eprintln!("bwrap not available; skipping");
+            crate::skip_test(format_args!("bwrap not available; skipping"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
@@ -1064,7 +1064,7 @@ mod tests {
     #[test]
     fn build_command_skips_git_deny_when_allowed() {
         if !is_available() {
-            eprintln!("bwrap not available; skipping");
+            crate::skip_test(format_args!("bwrap not available; skipping"));
             return;
         }
         let dir = tempfile::tempdir().unwrap();
