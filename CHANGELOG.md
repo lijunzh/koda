@@ -6,23 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Added
+## [0.8.0] - 2026-11-27
 
-- **A host that isn't on the proxy's allow-list asks, as Codex's managed proxy does,** instead of failing. The question carries the host in `networkApprovalContext` (Codex's field) and belongs to the command that opened the connection: `y` lets the connection through (the next one asks again), `s` allows the host, protocol and port for the session, `n` refuses it and stops the command. With no command running it names none and is asked only during a turn; with several running, or nobody to ask, the host is refused.
-- **`[s]` says what it covers:** `` [s] `git commit …` this session `` for a command leaving the sandbox (the request's new `sessionPrefix`), `[s] docs.rs this session` for a host.
-
-### Fixed
-
-- **Three more places the TUI could lose a message from the host:** a prompt that went to join a goal turn and couldn't (the turn had just ended) dropped that turn's start and everything after it, so the next goal turn's approval never showed; in `/side` or `/review`, the main turn ending dropped a background agent's request kept for the return; and a session chosen with `/resume` whose turn was running in another window on the shared server wasn't followed, and the next prompt failed after 5 seconds. A prompt now joins that turn.
-
-- **A turn Koda started on its own could hang unseen:** a goal or wake turn that started while the TUI waited for something else (Shift+Tab or `/model` at that moment, `/compact`, a prompt joining a goal turn, the return from `/review`) lost its start and its approvals. The TUI now keeps the host's messages in order and follows that turn. A background agent's request that came during those waits is shown, not dropped.
-- **`koda resume` of a session whose turn was running on the shared server didn't start:** it waited for a settings report the host sends only once the turn ends, and gave up after 15 seconds. The TUI now opens the session at once, from what the host's answer says it runs with, and follows the running turn. It no longer waits for settings anywhere: as in Codex, it applies the host's reports as they arrive, so a change made during a turn shows once the turn ends, and `/model` says the model you chose.
-- **Back from `/side` while the main session's turn ran, the TUI stalled 15 seconds** and warned that the host didn't report the session's settings. A change the host applies once a turn ends (Shift+Tab during the turn, `/model` as one starts) now reaches the status bar when it does.
-- **A SOCKS5 connection (git over SSH through the proxy) was cut after 10 seconds:** the handshake deadline covered the whole tunnel.
-- **The main session's commands could write `.git`:** only sub-agents and Plan got the sandbox policy that keeps it read-only, so `git commit` ran in the sandbox and `rm -r .git` ran without asking. A session started in Plan also stayed read-only after switching to Auto, and `[sandbox] allow_local_binding` reached only sub-agents.
-- **A sub-agent's commands had the network unfiltered:** they ran without the session's proxy. They now go through it, and an unlisted host asks in the main session.
-- **A network question could name the wrong command:** only a foreground `Bash` counted as running, so a `Cargo` build's or `Monitor`'s connection was put to whatever `Bash` ran beside it, and a no stopped that one.
-- **A headless run's refused host stopped the command,** with the model told the user had denied it. The connection now just fails, as in Codex's `exec`.
+Safe mode is gone: Koda decides what asks from the kernel sandbox, as Codex does. Configs, flags and protocol clients that used `safe`, the removed flags or `protocolVersion` need a change; see [Upgrading to 0.8](https://lijunzh.github.io/koda/upgrading-0.8.html).
 
 ### Removed
 
@@ -43,13 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **"This session" on a request to leave the sandbox covers its prefix,** as Codex's `prefix_rule`: the model proposes one (`["git", "commit"]`), and a yes for the session covers every later `git commit` that leaves the sandbox. A prefix that would cover any program (`bash`, `python -c`, `sudo`, `git` alone; Codex's banned list) isn't offered, and a later command that would be destructive still asks.
 - **A command's paths no longer decide whether it asks,** as in Codex. Auto used to ask before any command that named a path outside the project, `cd ~ && ls` and `cat ../notes.md` included. The sandbox already keeps a command's writes in the project and temp directories, and a forced `rm` asks wherever it points, so `cd ~/other && ls` runs and `cd /tmp && rm -rf x` asks. Edit and Write outside the project are unchanged.
 - **The dangerous-command check sees through more spellings:** `/bin/rm -rf`, `git -C dir push --force`, `git -c k=v reset --hard`, `trap 'rm -rf x' EXIT` and a shell reading a script from stdin, and it adds `git push --force-with-lease`, `+refspec`, `--delete`, `:branch` and `--mirror`. It reads git's long options as git does, by any unambiguous prefix or with `=value` (`git push --force-w`, `git reset --har`, `git clean --force`), decodes `$'…'` quoting, and looks inside `case` arms, `bash -c --`, `env -S`, `setsid`, `stdbuf`, `caffeinate`, `busybox`, `watch` and `script`; `doas` asks as `sudo` does, and `gh -R repo` no longer hides a merge. A session prefix can't be `rm`, `yarn run`, `pythonw`, `pwsh` or the rest of Codex's banned list.
-
-### Added
-
-- **A `Bash` call says what its command does, as Codex's `commandActions`:** each `toolCall` item for `Bash` carries one entry per command in it, from its start: `read` (with the file's `name` and `path`), `listFiles`, `search` (with the `query` and `path`) or `unknown`. The reading is Codex's own parser (`parse_command`), carried in `koda-command` with Koda's scanner in place of tree-sitter; all of Codex's tests for it pass. The TUI uses it: a lookup row counts `cat a.rs && rg GUI` as a read and a search rather than a command, and the status line says `Reading Cargo.toml` or `Searching for "GUI"` rather than `Running a command`. For showing only: approvals still go by Koda's command classification.
-
-### Changed
-
 - **A turn's steps are folded, as Claude Code folds them, so the answer is easy to find.** Thinking was printed in full and every lookup had its own header and output: a local model's turn put about 190 lines before a 50-line answer. Now, in the folded view:
   - **Thinking** leaves one line when it ends, `∴ Thought for 12s (ctrl+o to show thinking)`.
   - **Lookups made one after another** (reads, searches, listings and commands the host found read-only) are one row with no output, in Claude Code's words: `Read 3 files, searched 2 patterns, ran 4 commands`, or `Reading …` while one runs. A failed one is counted on the row in red. A thought between two lookups goes into their row; text from Koda or any other step starts a new one.
@@ -59,6 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **A host that isn't on the proxy's allow-list asks, as Codex's managed proxy does,** instead of failing. The question carries the host in `networkApprovalContext` (Codex's field) and belongs to the command that opened the connection: `y` lets the connection through (the next one asks again), `s` allows the host, protocol and port for the session, `n` refuses it and stops the command. With no command running it names none and is asked only during a turn; with several running, or nobody to ask, the host is refused.
+- **`[s]` says what it covers:** `` [s] `git commit …` this session `` for a command leaving the sandbox (the request's new `sessionPrefix`), `[s] docs.rs this session` for a host.
+- **A `Bash` call says what its command does, as Codex's `commandActions`:** each `toolCall` item for `Bash` carries one entry per command in it, from its start: `read` (with the file's `name` and `path`), `listFiles`, `search` (with the `query` and `path`) or `unknown`. The reading is Codex's own parser (`parse_command`), carried in `koda-command` with Koda's scanner in place of tree-sitter; all of Codex's tests for it pass. The TUI uses it: a lookup row counts `cat a.rs && rg GUI` as a read and a search rather than a command, and the status line says `Reading Cargo.toml` or `Searching for "GUI"` rather than `Running a command`. For showing only: approvals still go by Koda's command classification.
 - **An agent message says what it was to the turn, as Codex's `phase`:** on `item/completed`, `commentary` when the same model response also asked for tools (a note on the way) and `final_answer` when it didn't (the answer), spelled as Codex spells them. Codex's model sets it; Koda's server works it out from the response, so a client knows the answer when it completes rather than when the turn ends. Absent while the text streams and when the response was cut short. The TUI uses it for focus view (below).
 - **Focus view, as Claude Code's `/focus`:** a finished turn shows its prompt, one row (`▸ Worked for 2m 5s · 17 tool calls · 2 files +40 −12`) and its answer; the row opens to the rest with a click or `F4`. `/focus` turns it on or off and keeps the choice as `[tui] view_mode` (`default`, `verbose` or `focus`), which picks the view a session starts in. Off by default, as in Claude Code; Codex's TUI folds by default.
 - **One folded row opens on its own:** click a lookup row, a `Thought for` line or a `… +N lines` marker to open it in place, and click it again to close it, as in Claude Code's fullscreen view; a drag still selects and copies. From the keyboard, as Codex's F4: `F4` focuses the last row on screen, `↑`/`↓` move, `Enter` opens or closes, `→`/`←` open and close, `Esc` leaves. A sub-agent's `Done (…)` line opens to its calls.
@@ -66,6 +48,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Three more places the TUI could lose a message from the host:** a prompt that went to join a goal turn and couldn't (the turn had just ended) dropped that turn's start and everything after it, so the next goal turn's approval never showed; in `/side` or `/review`, the main turn ending dropped a background agent's request kept for the return; and a session chosen with `/resume` whose turn was running in another window on the shared server wasn't followed, and the next prompt failed after 5 seconds. A prompt now joins that turn.
+- **A turn Koda started on its own could hang unseen:** a goal or wake turn that started while the TUI waited for something else (Shift+Tab or `/model` at that moment, `/compact`, a prompt joining a goal turn, the return from `/review`) lost its start and its approvals. The TUI now keeps the host's messages in order and follows that turn. A background agent's request that came during those waits is shown, not dropped.
+- **`koda resume` of a session whose turn was running on the shared server didn't start:** it waited for a settings report the host sends only once the turn ends, and gave up after 15 seconds. The TUI now opens the session at once, from what the host's answer says it runs with, and follows the running turn. It no longer waits for settings anywhere: as in Codex, it applies the host's reports as they arrive, so a change made during a turn shows once the turn ends, and `/model` says the model you chose.
+- **Back from `/side` while the main session's turn ran, the TUI stalled 15 seconds** and warned that the host didn't report the session's settings. A change the host applies once a turn ends (Shift+Tab during the turn, `/model` as one starts) now reaches the status bar when it does.
+- **A SOCKS5 connection (git over SSH through the proxy) was cut after 10 seconds:** the handshake deadline covered the whole tunnel.
+- **The main session's commands could write `.git`:** only sub-agents and Plan got the sandbox policy that keeps it read-only, so `git commit` ran in the sandbox and `rm -r .git` ran without asking. A session started in Plan also stayed read-only after switching to Auto, and `[sandbox] allow_local_binding` reached only sub-agents.
+- **A sub-agent's commands had the network unfiltered:** they ran without the session's proxy. They now go through it, and an unlisted host asks in the main session.
+- **A network question could name the wrong command:** only a foreground `Bash` counted as running, so a `Cargo` build's or `Monitor`'s connection was put to whatever `Bash` ran beside it, and a no stopped that one.
+- **A headless run's refused host stopped the command,** with the model told the user had denied it. The connection now just fails, as in Codex's `exec`.
 - **The plan panel shows on every provider:** a `TodoWrite` that ran after the reply finished streaming, which is every call on an OpenAI-compatible server such as LM Studio or llama-server, sent no `turn/plan/updated`, so the TUI never showed the plan. Only Anthropic's calls, run while the reply streams, sent it.
 
 ## [0.7.14] - 2026-11-26
