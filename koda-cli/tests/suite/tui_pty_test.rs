@@ -634,30 +634,6 @@ async fn a_stop_hands_steering_text_back() {
     assert!(sent.contains("steering text"), "{sent}");
 }
 
-/// A stop sends nothing queued: the queued text comes back to the input box.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_stop_hands_queued_text_back() {
-    let reply = tool_calls(&[write_file("a.txt")]).set_delay(Duration::from_secs(3));
-    let server = scripted_model(vec![reply]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    wait_for_model_call(&server, 1).await;
-    tui.type_text("queued text");
-    tui.type_text("\t");
-    tui.wait_for_output("approve");
-    tui.stop_turn(CTRL_C);
-
-    assert_eq!(model_calls(&server).await.len(), 1);
-    tui.wait_for_screen("Not sent to the model");
-    assert!(
-        input_box(&tui.screen()).contains("queuedtext"),
-        "{}",
-        tui.screen()
-    );
-}
-
 /// Whether a process whose command line matches `pattern` is running.
 fn running(pattern: &str) -> bool {
     Command::new("pgrep")
@@ -831,6 +807,8 @@ async fn shift_tab_switches_the_mode_through_the_host() {
 /// A session resumed by an id prefix opens in the mode it last ran in, as
 /// the host reports it, and `/copy` copies its earlier reply: the TUI keeps
 /// the replies it was sent, as Codex's `/copy` does, and reads no database.
+/// On a pty: `/copy` writes the clipboard, which only the process's own
+/// `SSH_CONNECTION` keeps to the test terminal's OSC 52.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resumed_session_keeps_its_mode_and_copy_takes_its_reply() {
     use koda_state::session_store::SessionStore;
@@ -953,51 +931,6 @@ async fn a_first_run_that_chose_its_provider_skips_the_picker() {
     assert!(!screen.contains("Choose your LLM provider"), "{screen}");
 }
 
-/// A key typed into a wizard is taken with one Enter. The wizard's trail
-/// box took the first Enter and dropped the key, so it needed two.
-#[test]
-fn a_wizard_takes_its_answer_with_one_enter() {
-    let home = home();
-    let mut tui = Tui::start(home.path());
-
-    // `/key` asks for a key without switching provider, so nothing calls an API.
-    tui.type_text("/key");
-    tui.type_text("\r");
-    tui.wait_for_screen("API key");
-    tui.type_text("\r");
-    tui.wait_for_screen("API key for");
-    tui.wait_for_screen("Paste or type it");
-    tui.paste("sk-test-not-a-real-key");
-    tui.type_text("\r");
-    tui.wait_for_screen("set to sk-t");
-}
-
-/// The provider picker lists, and switches to, the address Koda is running
-/// with. It used the provider's default port, not the one given.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_provider_picker_uses_the_running_address() {
-    let server = scripted_model(vec![]).await;
-    let models = json!({"object": "list", "data": [
-        {"id": "stub-picked", "object": "model", "type": "llm", "state": "loaded"}
-    ]});
-    server.mount_ok("GET", r".*/models$", models).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.type_text("/provider");
-    tui.type_text("\r");
-    tui.wait_for_screen("Select a provider");
-    // LM Studio, the provider in use, comes first.
-    tui.type_text("\r");
-    tui.wait_for_screen("stub-picked");
-    tui.type_text("\r");
-    tui.wait_for_screen("Model: stub-picked");
-
-    tui.submit("hi");
-    let sent = wait_for_model_call(&server, 1).await;
-    assert!(sent.contains(r#""model":"stub-picked""#), "{sent}");
-}
-
 /// A model picked in `/model` is the next start's choice: the host saves it
 /// (`config/batchWrite`) and a new session starts from it, with the flags
 /// winning where they name something.
@@ -1023,37 +956,6 @@ async fn a_model_choice_is_the_next_starts_choice() {
     tui.submit("which model");
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
-}
-
-/// `s` in `/model` changes only this session, as Codex's does: its next
-/// request asks for the model, and `config.toml` doesn't name it.
-#[tokio::test(flavor = "multi_thread")]
-async fn s_in_the_model_picker_is_this_session_only() {
-    let server = scripted_model(vec![]).await;
-    let models = json!({"object": "list", "data": [
-        {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
-    ]});
-    server.mount_ok("GET", r".*/models$", models).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, "/model");
-    tui.wait_for_screen("Select a model");
-    highlight(&mut tui, "stub-local");
-    tui.type_text("s");
-    tui.wait_for_screen("Model: stub-local \u{00b7} this session");
-    // The composer is still empty: the `s` was the picker's.
-    tui.wait_for_screen(IDLE_HINT);
-
-    tui.submit("which model");
-    let sent = wait_for_model_call(&server, 1).await;
-    assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
-    quit_and_read_session_id(&mut tui);
-    let config = home.path().join(".config/koda/config.toml");
-    let saved = std::fs::read_to_string(&config).unwrap_or_default();
-    assert!(
-        !saved.contains("stub-local"),
-        "a session choice was saved: {saved}"
-    );
 }
 
 /// Flags are for one run, as Codex's are: a `--base-url` and `--model` given
@@ -1185,15 +1087,6 @@ fn highlight(tui: &mut Tui, text: &str) {
     panic!("never highlighted {text:?}:\n{}", tui.screen());
 }
 
-/// The lines of the screen from the open picker's title down.
-fn picker_lines(screen: &str, title: &str) -> String {
-    screen
-        .lines()
-        .skip_while(|line| !line.contains(title))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// A command whose start is typed and whose rest arrives as a paste,
 /// Enter included, runs whole. This is also what a busy Koda sees when it
 /// reads typed keys late, in one batch. The typed `/me` opens the slash popup;
@@ -1212,32 +1105,6 @@ async fn enter_during_a_held_paste_does_not_reach_the_slash_popup() {
     tui.type_text("mory add the code word is zebrafish\r");
     tui.wait_for_screen("Saved to Koda's notes for this project");
     tui.wait_for_screen("/memory add the code word is zebrafish");
-}
-
-/// `/model` lists the session's provider's models, as Codex's `/model`
-/// lists its thread's: the local server's, and no other provider's alias.
-/// Esc changes nothing.
-#[tokio::test(flavor = "multi_thread")]
-async fn model_picker_lists_the_sessions_provider_and_esc_changes_nothing() {
-    let server = scripted_model(vec![]).await;
-    let models = json!({"object": "list", "data": [
-        {"id": "stub-local", "object": "model", "type": "llm", "state": "loaded"}
-    ]});
-    server.mount_ok("GET", r".*/models$", models).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    run_command(&mut tui, "/model");
-    tui.wait_for_screen("Select a model");
-    highlight(&mut tui, "stub-local");
-    let listed = picker_lines(&tui.screen(), "Select a model");
-    assert!(!listed.contains("claude-haiku"), "{listed}");
-    tui.type_text(ESC);
-    tui.wait_for_screen_without("Select a model");
-
-    tui.submit("hi");
-    let sent = wait_for_model_call(&server, 1).await;
-    assert!(sent.contains(r#""model":"stub-model""#), "{sent}");
 }
 
 /// Picking a model in `/model` changes it on the host, for the same
@@ -1266,32 +1133,6 @@ async fn model_picker_pick_changes_the_model_on_the_host() {
     let sent = wait_for_model_call(&server, 1).await;
     assert!(sent.contains(r#""model":"stub-local""#), "{sent}");
     tui.wait_for_screen("From stub-local.");
-}
-
-/// `/provider <url>` moves the session to the server at that address: the
-/// next request goes there, not to the one Koda started with.
-#[tokio::test(flavor = "multi_thread")]
-async fn provider_with_an_address_moves_the_next_turn_there() {
-    let first = scripted_model(vec![]).await;
-    let second = scripted_model(vec![text_reply("From the second server.")]).await;
-    let models = json!({"object": "list", "data": [
-        {"id": "stub-model", "object": "model", "type": "llm", "state": "loaded"}
-    ]});
-    second.mount_ok("GET", r".*/models$", models).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &first.url());
-
-    run_command(&mut tui, &format!("/provider {}", second.url()));
-    // A session's provider and server don't change: this is a new one.
-    tui.wait_for_screen("New session on");
-    tui.submit("where are you");
-    let sent = wait_for_model_call(&second, 1).await;
-    assert!(sent.contains("where are you"), "{sent}");
-    tui.wait_for_screen("From the second server.");
-    assert!(
-        model_calls(&first).await.is_empty(),
-        "the first server still got the turn"
-    );
 }
 
 /// `/resume` lists earlier sessions; picking one resumes it, and the model
@@ -1376,62 +1217,6 @@ async fn image_flag_sends_the_image_with_the_first_prompt() {
     assert!(sent.contains("data:image/png;base64,"), "no image: {sent}");
     assert!(sent.contains("[Image #1] what colour"), "{sent}");
     drop(tui);
-}
-
-/// `/init` asks the model to write AGENTS.md, as Codex's `/init` does, and
-/// leaves an existing instruction file alone.
-#[tokio::test(flavor = "multi_thread")]
-async fn init_asks_for_agents_md_unless_there_is_one() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, "/init");
-    let sent = wait_for_model_call(&server, 1).await;
-    assert!(sent.contains("Create an AGENTS.md file"), "{sent}");
-    tui.wait_for_screen_without(BUSY_PROMPT);
-
-    std::fs::write(home.path().join("AGENTS.md"), "# Notes\n").unwrap();
-    run_command(&mut tui, "/init");
-    tui.wait_for_screen("AGENTS.md already exists");
-    assert_eq!(model_calls(&server).await.len(), 1);
-}
-
-/// `/resume <id>` resumes by id; `/resume delete <id>` removes a
-/// session, and the picker no longer offers it.
-#[tokio::test(flavor = "multi_thread")]
-async fn sessions_resume_and_delete_by_id() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.submit("bravo session words");
-    tui.wait_for_screen("All done.");
-    let bravo = quit_and_read_session_id(&mut tui);
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.submit("charlie session words");
-    tui.wait_for_screen("All done.");
-    let charlie = quit_and_read_session_id(&mut tui);
-
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    run_command(&mut tui, &format!("/resume {bravo}"));
-    tui.wait_for_screen("bravo session words");
-    // Its earlier turn is drawn as it was live (6h-b3).
-    tui.wait_for_screen("session resumed");
-    assert!(tui.screen().contains("Worked for"), "{}", tui.screen());
-    tui.submit_and_finish("bravo again", "All done.");
-    let sent = wait_for_model_call(&server, 3).await;
-    assert!(sent.contains("bravo session words"), "{sent}");
-    assert!(!sent.contains("charlie session words"), "{sent}");
-
-    run_command(&mut tui, &format!("/resume delete {charlie}"));
-    tui.wait_for_screen_without(BUSY_PROMPT);
-    run_command(&mut tui, "/resume");
-    tui.wait_for_screen("Sessions");
-    let listed = picker_lines(&tui.screen(), "Sessions");
-    assert!(
-        !listed.contains(&charlie[..8]),
-        "deleted session listed:\n{listed}"
-    );
-    assert!(listed.contains(&bravo[..8]), "{listed}");
 }
 
 /// A stdio MCP server with one tool, `lookup`.
@@ -1779,35 +1564,6 @@ async fn a_compaction_during_a_turn_lets_the_turn_go_on() {
     assert_no_more_calls(&server, 8).await;
 }
 
-/// Esc while a sub-agent works stops the turn and the sub-agent, and nothing
-/// starts another turn. The sub-agent's last status reaches the TUI after
-/// the turn has stopped, which the TUI reads at idle; a finished
-/// background agent used to start a turn there (#1349).
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_during_a_sub_agent_starts_no_other_turn() {
-    let invoke = tool_calls(&[(
-        "InvokeAgent",
-        json!({"agent_name": "explore", "prompt": "look around"}),
-    )]);
-    // Sub-agents call the model without streaming.
-    let slow = json_reply("too late").set_delay(Duration::from_secs(10));
-    let server = scripted_model(vec![invoke, slow]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(
-        sent.contains("look around"),
-        "not the sub-agent's call: {sent}"
-    );
-    tui.stop_turn(ESC);
-    tui.wait_for_screen_without(BUSY_PROMPT);
-
-    assert_no_more_calls(&server, 2).await;
-    assert_stopped(&mut tui, &server, 2).await;
-}
-
 /// A sub-agent that finishes hands its answer to the turn, and the turn ends
 /// after its last reply; nothing starts another turn.
 #[tokio::test(flavor = "multi_thread")]
@@ -1882,30 +1638,6 @@ async fn a_background_process_runs_until_stop() {
     }
     tui.submit("/stop");
     tui.wait_for_screen("Nothing is running in the background.");
-}
-
-/// `/stop` runs during a turn, as Codex's does, and the turn goes on.
-#[tokio::test(flavor = "multi_thread")]
-async fn stop_works_during_a_turn() {
-    // 36 s: no other test sleeps that long, so pgrep finds only this one.
-    let started = tool_calls(&[("Bash", json!({"command": "sleep 36", "background": true}))]);
-    let slow = final_text().set_delay(Duration::from_secs(5));
-    let server = scripted_model(vec![started, slow]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("start it");
-    tui.approve_until(|| running("sleep 36"));
-    wait_for_model_call(&server, 2).await;
-    tui.submit("/stop");
-    tui.wait_for_screen("Stopped 1 background task.");
-    assert!(tui.screen().contains(BUSY_PROMPT), "{}", tui.screen());
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while running("sleep 36") {
-        assert!(Instant::now() < deadline, "/stop left it running");
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    tui.wait_for_screen("All done.");
 }
 
 /// A sub-agent's row shows above the status bar while it works, with Esc
@@ -2080,53 +1812,6 @@ async fn a_prompt_given_to_koda_is_sent_when_the_tui_opens() {
     tui.wait_for_screen("All done.");
 }
 
-/// `/feedback` asks Codex's three questions (what kind, logs or not, a
-/// note) and saves a ZIP with the report, the log and the session's rows.
-#[tokio::test(flavor = "multi_thread")]
-async fn feedback_saves_a_report_with_the_session() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.submit_and_finish("hello", "All done.");
-
-    tui.type_text("/feedback");
-    tui.type_text("\r");
-    tui.wait_for_screen("How was this?");
-    // "bug" comes first, then "yes" to the logs.
-    tui.type_text("\r");
-    tui.wait_for_screen("Include logs and session history?");
-    tui.type_text("\r");
-    tui.wait_for_screen("Note (optional)");
-    tui.type_text("it hung");
-    tui.type_text("\r");
-    tui.wait_for_screen("Feedback saved");
-    tui.wait_for_screen("open an issue");
-
-    let dir = home.path().join(".config/koda/feedback");
-    let zip = std::fs::read_dir(&dir)
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| path.extension().is_some_and(|ext| ext == "zip"))
-        .expect("a feedback ZIP");
-    let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
-    let names: Vec<String> = archive
-        .file_names()
-        .map(|name| name.unwrap().to_string())
-        .collect();
-    assert!(names.contains(&"report.json".to_string()), "{names:?}");
-    assert!(
-        names.iter().any(|n| n.ends_with("/koda-logs.log")),
-        "{names:?}"
-    );
-    assert!(names.iter().any(|n| n.contains("/session-")), "{names:?}");
-    let mut report = String::new();
-    std::io::Read::read_to_string(&mut archive.by_name("report.json").unwrap(), &mut report)
-        .unwrap();
-    assert!(report.contains("\"reason\": \"it hung\""), "{report}");
-    assert!(report.contains("\"classification\": \"bug\""), "{report}");
-}
-
 /// A file dropped on the terminal arrives as a bracketed paste of its
 /// path: the input box shows an `[Image #1]` marker, as Claude Code's
 /// does, and the prompt carries the image with the marker in its text.
@@ -2205,72 +1890,6 @@ fn proposed_plan() -> ResponseTemplate {
             "Here is the plan.\n\n<proposed_plan>\n# Greeting\n- Add a hello line\n</proposed_plan>\n"}}]}),
         json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
     ])
-}
-
-/// `/plan <prompt>` enters Plan and sends the prompt, whose turn tells the
-/// model it plans; a proposed plan is drawn framed, and "Implement this
-/// plan?" switches to Safe and sends "Implement the plan.", as Codex's TUI
-/// does.
-#[tokio::test(flavor = "multi_thread")]
-async fn plan_then_implement_it_in_safe() {
-    use koda_state::session_store::SessionStore;
-    let server = scripted_model(vec![proposed_plan()]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.wait_for_screen("SAFE");
-    run_command(&mut tui, "/plan add a greeting");
-    tui.wait_for_screen("Implement this plan?");
-    let screen = tui.screen();
-    assert!(screen.contains("PLAN"), "{screen}");
-    assert!(screen.contains("Proposed plan"), "{screen}");
-    assert!(!screen.contains("<proposed_plan>"), "{screen}");
-    assert!(screen.contains("No, keep planning"), "{screen}");
-    let planning = wait_for_model_call(&server, 1).await;
-    assert!(planning.contains("add a greeting"), "{planning}");
-    assert!(planning.contains("plan mode"), "{planning}");
-    assert!(planning.contains("<proposed_plan>"), "{planning}");
-
-    // The first choice: implement it in Safe.
-    tui.type_text("\r");
-    tui.wait_for_screen("All done.");
-    let implementing = wait_for_model_call(&server, 2).await;
-    assert!(
-        implementing.contains("Implement the plan."),
-        "{implementing}"
-    );
-    assert!(
-        !implementing.contains("Read-only session"),
-        "still told it plans: {implementing}"
-    );
-    tui.wait_for_screen("SAFE");
-    let session = quit_and_read_session_id(&mut tui);
-    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
-        .await
-        .unwrap();
-    assert_eq!(
-        db.get_session_mode(&session).await.unwrap().as_deref(),
-        Some("safe")
-    );
-}
-
-/// Typing while "Implement this plan?" is up is a reply: the menu goes,
-/// the text is sent, and the session stays in Plan.
-#[tokio::test(flavor = "multi_thread")]
-async fn typing_a_reply_keeps_planning() {
-    let server = scripted_model(vec![proposed_plan()]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.wait_for_screen("SAFE");
-    run_command(&mut tui, "/plan add a greeting");
-    tui.wait_for_screen("Implement this plan?");
-    tui.submit("use French");
-    tui.wait_for_screen("All done.");
-    let reply = wait_for_model_call(&server, 2).await;
-    assert!(reply.contains("use French"), "{reply}");
-    assert!(reply.contains("plan mode"), "{reply}");
-    let screen = tui.screen();
-    assert!(screen.contains("PLAN"), "{screen}");
-    assert!(!screen.contains("Implement this plan?"), "{screen}");
 }
 
 /// The messages session `id` has stored, as one string.
@@ -2794,56 +2413,6 @@ async fn only_a_server_of_this_version_is_used() {
     assert!(tui.exits());
 }
 
-/// `/side` asks in a fork with Codex's side instructions and boundary, and
-/// Ctrl+C returns: the main session goes on without the side question, and
-/// the side conversation is gone.
-#[tokio::test(flavor = "multi_thread")]
-async fn side_asks_in_a_fork_and_ctrl_c_returns() {
-    let server = scripted_model(vec![]).await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.submit_and_finish("pick a colour", "All done.");
-
-    run_command(&mut tui, "/side which colour was it");
-    tui.wait_for_screen("side conversation");
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(sent.contains("You are in a side conversation"), "{sent}");
-    assert!(sent.contains("side_conversation_boundary"), "{sent}");
-    assert!(sent.contains("pick a colour"), "history lost: {sent}");
-    assert!(sent.contains("which colour was it"), "{sent}");
-    tui.wait_for_screen_without(BUSY_PROMPT);
-    tui.wait_for_screen("Ask a side question");
-
-    tui.type_text(CTRL_C);
-    tui.wait_for_screen("Back in the main session");
-    tui.submit_and_finish("carry on", "All done.");
-    let sent = wait_for_model_call(&server, 3).await;
-    assert!(sent.contains("pick a colour"), "{sent}");
-    assert!(sent.contains("carry on"), "{sent}");
-    assert!(
-        !sent.contains("which colour was it"),
-        "the side leaked: {sent}"
-    );
-    assert!(!sent.contains("side conversation"), "{sent}");
-
-    let main = quit_and_read_session_id(&mut tui);
-    assert!(
-        stored_messages(home.path(), &main)
-            .await
-            .contains("carry on")
-    );
-    use koda_state::session_store::SessionStore;
-    let project = std::fs::canonicalize(home.path()).unwrap();
-    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
-        .await
-        .unwrap();
-    assert_eq!(
-        db.list_sessions(10, &project).await.unwrap().len(),
-        1,
-        "the side conversation was kept"
-    );
-}
-
 /// `/side` typed while a turn runs leaves the turn running, as Codex's
 /// `/side` does, here on the shared server: the side question is answered
 /// meanwhile, and on the way back the TUI follows the main turn to its end.
@@ -2884,78 +2453,6 @@ async fn side_mid_turn_leaves_the_turn_running() {
     tui.wait_for_screen_without(BUSY_PROMPT);
     tui.type_text("/exit\r");
     assert!(tui.exits());
-}
-
-/// `/review` runs Codex's rubric in a session of its own, lists the
-/// findings back in the main session, and the next prompt there carries
-/// them, as Codex's review hands its results to the thread.
-#[tokio::test(flavor = "multi_thread")]
-async fn review_lists_findings_and_the_next_prompt_carries_them() {
-    let findings = json!({
-        "findings": [{
-            "title": "[P1] Off by one in the loop",
-            "body": "The loop skips the last item.",
-            "confidence_score": 0.9,
-            "priority": 1,
-            "code_location": {
-                "absolute_file_path": "/tmp/x/src/lib.rs",
-                "line_range": {"start": 3, "end": 4}
-            }
-        }],
-        "overall_correctness": "patch is incorrect",
-        "overall_explanation": "It drops data.",
-        "overall_confidence_score": 0.8
-    })
-    .to_string();
-    let server = FakeLlmServer::spawn().await;
-    server
-        .mount_fn("POST", r".*/chat/completions$", move |request| {
-            let body = String::from_utf8_lossy(&request.body);
-            if body.contains("Review guidelines") {
-                text_reply(&findings)
-            } else {
-                final_text()
-            }
-        })
-        .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-    tui.submit_and_finish("make a change", "All done.");
-
-    run_command(&mut tui, "/review");
-    let sent = wait_for_model_call(&server, 2).await;
-    assert!(sent.contains("Review the current code changes"), "{sent}");
-    assert!(
-        !sent.contains("make a change"),
-        "the review saw the session: {sent}"
-    );
-    tui.wait_for_screen("Review of current changes");
-    tui.wait_for_screen("[P1] Off by one in the loop");
-    tui.wait_for_screen("Verdict: patch is incorrect");
-
-    tui.submit_and_finish("fix the P1", "All done.");
-    let sent = wait_for_model_call(&server, 3).await;
-    assert!(sent.contains("<user_action>"), "{sent}");
-    assert!(sent.contains("Off by one in the loop"), "{sent}");
-    assert!(sent.contains("make a change"), "{sent}");
-    assert!(!sent.contains("Review guidelines"), "{sent}");
-
-    let main = quit_and_read_session_id(&mut tui);
-    assert!(
-        stored_messages(home.path(), &main)
-            .await
-            .contains("fix the P1")
-    );
-    use koda_state::session_store::SessionStore;
-    let project = std::fs::canonicalize(home.path()).unwrap();
-    let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
-        .await
-        .unwrap();
-    assert_eq!(
-        db.list_sessions(10, &project).await.unwrap().len(),
-        1,
-        "the review session was kept"
-    );
 }
 
 // ── /goal ───────────────────────────────────────────────────────────────
@@ -3177,145 +2674,4 @@ async fn rewind_takes_the_last_turn_out() {
     assert!(sent.contains("first prompt"), "{sent}");
     assert!(sent.contains("second prompt"), "{sent}");
     assert!(!sent.contains("Old reply."), "{sent}");
-}
-
-/// A sub-agent's reply, which doesn't stream, that calls one tool.
-fn sub_agent_call(name: &str, args: Value) -> ResponseTemplate {
-    let call = json!({
-        "id": "sub_call",
-        "type": "function",
-        "function": {"name": name, "arguments": args.to_string()},
-    });
-    ResponseTemplate::new(200).set_body_json(json!({
-        "choices": [{
-            "message": {"role": "assistant", "tool_calls": [call]},
-            "finish_reason": "stop",
-        }],
-    }))
-}
-
-/// The main agent's streamed replies in order, then text; a sub-agent's
-/// replies (which don't stream) in order, then "Sub-agent done.".
-async fn model_with_a_sub_agent(
-    main: Vec<ResponseTemplate>,
-    sub: Vec<ResponseTemplate>,
-) -> FakeLlmServer {
-    let server = FakeLlmServer::spawn().await;
-    let (main_next, sub_next) = (AtomicUsize::new(0), AtomicUsize::new(0));
-    server
-        .mount_fn("POST", r".*/chat/completions$", move |request| {
-            let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
-            if body["stream"] == json!(true) {
-                return main
-                    .get(main_next.fetch_add(1, Ordering::SeqCst))
-                    .cloned()
-                    .unwrap_or_else(final_text);
-            }
-            sub.get(sub_next.fetch_add(1, Ordering::SeqCst))
-                .cloned()
-                .unwrap_or_else(|| {
-                    ResponseTemplate::new(200).set_body_json(json!({
-                        "choices": [{
-                            "message": {"role": "assistant", "content": "Sub-agent done."},
-                            "finish_reason": "stop",
-                        }],
-                    }))
-                })
-        })
-        .await;
-    server
-}
-
-fn delegate(args: Value) -> ResponseTemplate {
-    tool_calls(&[("InvokeAgent", args)])
-}
-
-/// A sub-agent asks in the main session, as in Claude Code and Codex: the
-/// request names it, and `y` lets its write run.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_sub_agents_request_names_it_and_y_approves_it() {
-    let (_, write) = write_file("a.txt");
-    let server = model_with_a_sub_agent(
-        vec![delegate(
-            json!({"agent_name": "task", "prompt": "write a.txt"}),
-        )],
-        vec![sub_agent_call("Write", write)],
-    )
-    .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_screen("task asks");
-    assert!(tui.screen().contains("[esc] reject"), "{}", tui.screen());
-    tui.type_text("y");
-    tui.wait_for_screen("All done.");
-    assert!(
-        home.path().join("a.txt").exists(),
-        "the approved write didn't run"
-    );
-}
-
-/// Esc on a sub-agent's request refuses that one call; the sub-agent and the
-/// turn go on (Claude Code).
-#[tokio::test(flavor = "multi_thread")]
-async fn esc_refuses_a_sub_agents_call_and_the_turn_goes_on() {
-    let (_, write) = write_file("a.txt");
-    let server = model_with_a_sub_agent(
-        vec![delegate(
-            json!({"agent_name": "task", "prompt": "write a.txt"}),
-        )],
-        vec![sub_agent_call("Write", write)],
-    )
-    .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_screen("task asks");
-    tui.type_text(ESC);
-    tui.wait_for_screen("All done.");
-    assert!(!home.path().join("a.txt").exists(), "the refused write ran");
-    let sub_agent_heard = wait_for_model_call(&server, 3).await;
-    assert!(
-        sub_agent_heard.contains("User rejected this action."),
-        "{sub_agent_heard}"
-    );
-}
-
-/// A background agent may ask after the turn that started it has ended: the
-/// idle TUI shows its request, and `y` answers it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_background_agent_asks_while_the_tui_is_idle() {
-    let (_, write) = write_file("a.txt");
-    let server = model_with_a_sub_agent(
-        vec![delegate(json!({
-            "agent_name": "task",
-            "prompt": "write a.txt",
-            "run_in_background": true,
-        }))],
-        vec![sub_agent_call("Write", write)],
-    )
-    .await;
-    let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
-
-    tui.submit("first prompt");
-    tui.wait_for_screen("asks");
-    let screen = tui.screen();
-    assert!(
-        screen.contains("task a"),
-        "names the agent and its id: {screen}"
-    );
-    assert!(!screen.contains("[f] feedback"), "{screen}");
-    tui.type_text("y");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !home.path().join("a.txt").exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the approved write didn't run:\n{}",
-            tui.screen()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }
