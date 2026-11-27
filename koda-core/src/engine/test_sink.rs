@@ -20,6 +20,20 @@ pub struct TestSink {
     /// `Some` after [`Self::subscribe`] is called; broadcasts every emit().
     /// Lazy so tests that don't need it pay no allocation.
     broadcaster: std::sync::Mutex<Option<tokio::sync::broadcast::Sender<EngineEvent>>>,
+    /// Set by [`Self::cancel_when`]: cancels its token from inside `emit`.
+    cancel_on: std::sync::Mutex<Option<CancelOn>>,
+}
+
+/// A token to cancel when an event matches, before the engine goes on.
+struct CancelOn {
+    cancel: tokio_util::sync::CancellationToken,
+    pred: Box<dyn Fn(&EngineEvent) -> bool + Send + Sync>,
+}
+
+impl std::fmt::Debug for CancelOn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CancelOn").finish_non_exhaustive()
+    }
 }
 
 impl TestSink {
@@ -41,6 +55,22 @@ impl TestSink {
     /// Check if no events were collected.
     pub fn is_empty(&self) -> bool {
         self.events.lock().unwrap().is_empty()
+    }
+
+    /// Cancel `cancel` when an event matching `pred` is emitted, from
+    /// inside `emit`: the engine hasn't gone on past the event when the
+    /// token is cancelled. A task that watches [`Self::subscribe`] cancels
+    /// later, so a short wait after the event (a retry's) could run out
+    /// first on a slow runner.
+    pub fn cancel_when(
+        &self,
+        cancel: tokio_util::sync::CancellationToken,
+        pred: impl Fn(&EngineEvent) -> bool + Send + Sync + 'static,
+    ) {
+        *self.cancel_on.lock().unwrap() = Some(CancelOn {
+            cancel,
+            pred: Box::new(pred),
+        });
     }
 
     /// Subscribe to a live broadcast of events as they're emitted.
@@ -158,6 +188,38 @@ impl EngineSink for TestSink {
             // below is still authoritative.
             let _ = tx.send(event.clone());
         }
+        let cancel = self
+            .cancel_on
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|on| (on.pred)(&event))
+            .map(|on| on.cancel.clone());
         self.events.lock().unwrap().push(event);
+        if let Some(cancel) = cancel {
+            cancel.cancel();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The token is cancelled by the time `emit` returns, before the engine
+    /// could start the wait that follows the event.
+    #[test]
+    fn a_matching_event_cancels_before_emit_returns() {
+        let sink = TestSink::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        sink.cancel_when(cancel.clone(), |e| matches!(e, EngineEvent::Warn { .. }));
+        sink.emit(EngineEvent::Info {
+            message: "not this one".into(),
+        });
+        assert!(!cancel.is_cancelled());
+        sink.emit(EngineEvent::Warn {
+            message: "this one".into(),
+        });
+        assert!(cancel.is_cancelled());
     }
 }

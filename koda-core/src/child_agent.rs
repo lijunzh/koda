@@ -1213,47 +1213,41 @@ mod tests {
             }
         });
 
-        // Foreground "tool call" that holds the loop hostage.
-        let foreground = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+        // Foreground "tool call" that holds the loop hostage until the
+        // test lets it go, so "before it returns" doesn't hang on timing.
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let foreground = tokio::spawn(async move {
+            let _ = held.await;
         });
 
-        // Producer: emits status events at intervals while the
-        // foreground task is still in its `await`. Pre-#1321 these
-        // would queue silently — invisible until the foreground
-        // returned. Post-#1321 they reach the sink immediately.
-        let reg_p = reg.clone();
-        let producer = tokio::spawn(async move {
-            for iter in 1..=5u32 {
-                tokio::time::sleep(Duration::from_millis(40)).await;
-                reg_p.push_status_event(EngineEvent::ChildTaskUpdate {
-                    task_id: 7,
-                    agent_name: String::new(),
-                    spawner: None,
-                    is_background: true,
-                    status: AgentStatus::Running { iter },
-                });
-            }
-        });
+        // Status events pushed while the foreground task is still in its
+        // `await`. Pre-#1321 these would queue silently — invisible until
+        // the foreground returned. Post-#1321 they reach the sink at once.
+        for iter in 1..=5u32 {
+            reg.push_status_event(EngineEvent::ChildTaskUpdate {
+                task_id: 7,
+                agent_name: String::new(),
+                spawner: None,
+                is_background: true,
+                status: AgentStatus::Running { iter },
+            });
+        }
 
-        producer.await.unwrap();
-        // Wait for the forwarder to drain in-flight events. Cap at a
-        // value well below the foreground sleep (300 ms) so a
-        // regression — events queueing instead of streaming — fails
-        // here, not by accident from the foreground completing first.
-        let deadline = std::time::Instant::now() + Duration::from_millis(150);
-        while count.load(Ordering::SeqCst) < 5 && std::time::Instant::now() < deadline {
-            tokio::task::yield_now().await;
+        // All five reach the sink while the foreground is still held. The
+        // deadline only guards against a hang: a regression never gets
+        // there, as the foreground isn't released until after.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while count.load(Ordering::SeqCst) < 5 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "all 5 bg-status events must reach the sink BEFORE the foreground \
+                 tool call returns; pre-#1321 this was 0 (queued, not flowing)"
+            );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let observed_before_foreground = count.load(Ordering::SeqCst);
+        assert!(!foreground.is_finished());
+        release.send(()).unwrap();
         foreground.await.unwrap();
-
-        assert_eq!(
-            observed_before_foreground, 5,
-            "all 5 bg-status events must reach the sink BEFORE the foreground \
-             tool call returns; pre-#1321 this was 0 (queued, not flowing)"
-        );
 
         // Drop registry so the channel closes and the forwarder exits.
         drop(reg);
