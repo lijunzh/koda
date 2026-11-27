@@ -118,8 +118,8 @@ Clients see a sub-agent's request as `item/toolCall/requestApproval` with an
 These apply in both modes:
 
 1. **Kernel sandbox** (macOS seatbelt / Linux bwrap) restricts file
-   writes to the project directory and scratch zones (`/tmp`, `~/.cache`,
-   `~/.cargo`, etc.), keeps `.git` read-only, and protects credential
+   writes to the project directory, `/tmp` and `$TMPDIR`, as Codex's does
+   (package caches such as `~/.cargo` are read-only), keeps `.git` read-only, and protects credential
    directories and files. See [Sandbox](./sandbox.md).
 2. **Outside-project floor:** Edit and Write work only in the project and
    temp directories, and ask before changing Koda's own settings, `.git`,

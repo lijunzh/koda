@@ -121,7 +121,9 @@ pub fn definitions() -> Vec<ToolDefinition> {
             WriteStdin types into it. \
             Commands run in a sandbox: they write only inside the project (but not its \
             .git, which is read-only, so a git command that changes the repository, such \
-            as add, commit or checkout, has to leave the sandbox), /tmp and cache folders, \
+            as add, commit or checkout, has to leave the sandbox), /tmp and $TMPDIR, not \
+            package caches in the home folder (a build that downloads dependencies has to \
+            leave the sandbox), \
             can't change ~/.ssh or other credential folders, and reach \
             the network only through a proxy that allows GitHub and the main package \
             registries over HTTP(S){own_ports}; when a command reaches for another host, \

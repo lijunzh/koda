@@ -150,8 +150,8 @@ koda exec --mode plan "Anything in my inbox I need to deal with?"
 
 - **Runs** tools that read: Read, Grep, Glob, web fetch and search, MCP
   tools whose server marks them `readOnlyHint`, and every Bash command, in
-  a kernel sandbox that keeps the project read-only. Temp and cache
-  directories stay writable.
+  a kernel sandbox that keeps the project read-only and has no network.
+  Temp directories stay writable.
 - **Refuses** everything else without asking: Write, Edit, destructive
   commands, leaving the sandbox, and MCP tools without the mark. The model
   is told the call was refused and that it should say what it would do

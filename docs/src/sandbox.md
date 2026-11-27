@@ -60,9 +60,18 @@ through Bash, inside the kernel sandbox.
 
 ### Write restrictions
 
-Bash commands can only write to:
+Bash commands can only write to Codex's writable roots:
 - The project directory, except `.git`, which is read-only
-- `/tmp` and standard cache dirs (`~/.cache`, `~/.cargo`, etc.)
+- `/tmp` and `$TMPDIR`
+
+Package caches in your home folder (`~/.cargo`, `~/.npm`, `~/.cache`) are
+read-only, as in Codex: a command could otherwise put a program in
+`~/.cargo/bin` or change `~/.cargo/config.toml`. A build that has to
+download dependencies (`cargo build` with a new crate, a first
+`npm install`) or that keeps its cache there (`go build`) fails inside the
+sandbox, and the model asks to run it outside; a "this session" answer to
+its prefix (`["cargo", "build"]`) covers the next one. A build that has
+everything cached already runs inside.
 
 In Plan the project is read-only too, and a command has no network at all,
 not even through the proxy, as in Codex's read-only sandbox.

@@ -390,9 +390,9 @@ pub fn policy_for_agent(trust: crate::trust::TrustMode, project_root: &Path) -> 
     // allow list (seatbelt last-match-wins, bwrap a later `--ro-bind`), so
     // a Bash command `BashTool::classify` wrongly judged read-only still
     // can't change the project. Codex's `exec` gets the same guarantee
-    // from its read-only sandbox. Temp and cache directories stay
-    // writable: read-only commands such as `git log` or `rg` may use them,
-    // and they hold none of the user's work.
+    // from its read-only sandbox. Temp directories stay writable:
+    // read-only commands such as `git log` or `rg` may use them, and they
+    // hold none of the user's work.
     if trust == crate::trust::TrustMode::Plan {
         policy
             .fs
@@ -1603,6 +1603,61 @@ print(\"connected\")'";
         let out = run(crate::trust::TrustMode::Auto, "safe.txt").await;
         assert!(out.status.success(), "touch failed under Safe: {out:?}");
         assert!(dir.path().join("safe.txt").exists());
+    }
+
+    /// A command writes only the project, `/tmp` and `$TMPDIR`, Codex's
+    /// writable roots: package caches in the home folder are read-only, so
+    /// nothing can be planted in `~/.cargo/bin` or `~/.cargo/config.toml`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_cant_write_the_home_folders_caches() {
+        if !is_available() {
+            koda_sandbox::skip_test(format_args!("kernel sandbox not available on this host"));
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let policy = policy_for_agent(crate::trust::TrustMode::Auto, dir.path());
+        let name = format!("koda-sandbox-probe-{}", std::process::id());
+        for cache in [".cargo", ".cache"] {
+            let target = home.join(cache);
+            if !target.is_dir() {
+                continue;
+            }
+            let probe = target.join(&name);
+            let cmd = build(
+                &format!("touch '{}'", probe.display()),
+                dir.path(),
+                &crate::trust::TrustMode::Auto,
+                &policy,
+                None,
+                None,
+            );
+            let out = cmd.unwrap().output().await.unwrap();
+            let wrote = probe.exists();
+            let _ = std::fs::remove_file(&probe);
+            assert!(
+                !wrote && !out.status.success(),
+                "wrote {}: {out:?}",
+                probe.display()
+            );
+        }
+        // `/tmp` still is writable.
+        let tmp = std::path::Path::new("/tmp").join(&name);
+        let cmd = build(
+            &format!("touch '{}'", tmp.display()),
+            dir.path(),
+            &crate::trust::TrustMode::Auto,
+            &policy,
+            None,
+            None,
+        );
+        let out = cmd.unwrap().output().await.unwrap();
+        let wrote = tmp.exists();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(wrote, "couldn't write /tmp: {out:?}");
     }
 
     /// A Plan command has no network, not even the proxy: GitHub is on the
