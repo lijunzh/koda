@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call, type RpcMessage, type ServerStatus } from './bridge';
+import { type ControlsState, controlsFor, withControls } from './controls';
 import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
 import { SessionView } from './SessionView';
@@ -26,6 +27,8 @@ export function App() {
   const [transcript, setTranscript] = useState<TranscriptState | null>(null);
   const [view, setView] = useState<View>('normal');
   const [pending, setPending] = useState<readonly Pending[]>([]);
+  const [controls, setControls] = useState<ControlsState | null>(null);
+  const [planShown, setPlanShown] = useState(true);
   const selectedId = useRef<string | null>(null);
   /** Events from before the open session's snapshot came, kept to apply after it. */
   const early = useRef<RpcMessage[]>([]);
@@ -36,6 +39,11 @@ export function App() {
       if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         setView((v) => VIEWS[(VIEWS.indexOf(v) + 1) % VIEWS.length]);
+      }
+      // Ctrl+T hides or shows the plan, as in Claude Code.
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        setPlanShown((shown) => !shown);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -57,6 +65,7 @@ export function App() {
       queued = [];
       setSessions((state) => withMessages(state, batch));
       setPending((state) => withRequests(state, batch));
+      setControls((state) => (state ? withControls(state, batch) : state));
       setTranscript((state) => {
         if (state) return withEvents(state, batch);
         // The open session's snapshot hasn't come yet: keep its events for it.
@@ -109,9 +118,14 @@ export function App() {
     selectedId.current = id;
     early.current = [];
     setTranscript(null);
+    setControls(null);
     const opened = (session: Session) => {
       if (selectedId.current !== id) return;
       setSelected({ id, session });
+      setControls(controlsFor(id, session.settings));
+      void call('session/goal/get', { sessionId: id }).then((answer) => {
+        if (selectedId.current === id && answer.goal) setControls((c) => (c && c.sessionId === id ? { ...c, goal: answer.goal ?? null } : c));
+      }, () => {});
       // The snapshot, then what came while it was on its way: the server
       // answers at one point in the session's stream, so nothing repeats.
       setTranscript(withEvents(fromSession(session), early.current));
@@ -162,6 +176,9 @@ export function App() {
           view={view}
           onView={setView}
           requests={selected ? forSession([...pending], selected.id) : []}
+          controls={controls}
+          planShown={planShown}
+          onOpen={(session) => open(session.id, session)}
           onAnswer={async (id, result) => {
             await window.koda.respond(id, result);
             setPending((state) => without(state, id));

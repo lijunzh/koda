@@ -1,7 +1,7 @@
 // Starting and deleting sessions, which the main process does with the
 // system's dialogs.
 import { describe, expect, it } from 'vitest';
-import { deleteSession, newSession, type SessionActionDeps } from '../src/main/sessions';
+import { deleteSession, newSession, type SessionActionDeps, setMode } from '../src/main/sessions';
 
 function deps(over: Partial<SessionActionDeps> = {}) {
   const sent: Array<[string, unknown]> = [];
@@ -14,6 +14,7 @@ function deps(over: Partial<SessionActionDeps> = {}) {
     },
     pickFolder: async () => '/work/project',
     confirmDelete: async () => true,
+    confirmAuto: async () => true,
     ...over,
   };
   return { all, sent };
@@ -47,5 +48,24 @@ describe('session actions', () => {
   it('refuses an id that is not one', async () => {
     await expect(deleteSession(deps().all, 42)).rejects.toThrow(/session id/);
     await expect(deleteSession(deps().all, '')).rejects.toThrow(/session id/);
+  });
+});
+
+describe('mode', () => {
+  it('lowers to Plan at once, and raises to Auto only once the user confirms', async () => {
+    const plan = deps();
+    expect(await setMode(plan.all, 's1', 'plan')).toBe(true);
+    expect(plan.sent).toEqual([['session/settings/update', { sessionId: 's1', mode: 'plan' }]]);
+
+    let asked = '';
+    const auto = deps({ confirmAuto: async (label) => ((asked = label), true) });
+    expect(await setMode(auto.all, 's1', 'auto')).toBe(true);
+    expect(asked).toBe('fix the bug');
+    expect(auto.sent.at(-1)).toEqual(['session/settings/update', { sessionId: 's1', mode: 'auto' }]);
+
+    const no = deps({ confirmAuto: async () => false });
+    expect(await setMode(no.all, 's1', 'auto')).toBe(false);
+    expect(no.sent.map(([m]) => m)).toEqual(['session/read']);
+    await expect(setMode(no.all, 's1', 'safe')).rejects.toThrow(/auto or plan/);
   });
 });

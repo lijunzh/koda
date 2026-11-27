@@ -20,6 +20,7 @@ interface KodaBridge {
   onMessages(listener: (batch: RpcMessage[]) => void): () => void;
   newSession(): Promise<Session | null>;
   deleteSession(id: string): Promise<boolean>;
+  setMode(id: string, mode: 'auto' | 'plan'): Promise<boolean>;
   replaceServer(turns: 'wait' | 'stop'): Promise<void>;
   retry(): Promise<void>;
   relaunch(): Promise<void>;

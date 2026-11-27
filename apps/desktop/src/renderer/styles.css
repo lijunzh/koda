@@ -443,3 +443,83 @@ button.primary {
   gap: 8px;
   align-items: center;
 }
+/* The open session's controls */
+.session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 24px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 13px;
+}
+.session-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.session-bar select,
+.session-bar button {
+  font: inherit;
+}
+.plan {
+  margin: 0 0 8px;
+  padding-left: 22px;
+  font-size: 13px;
+}
+.plan-step.completed {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.plan-step.inProgress {
+  font-weight: 600;
+}
+.heading h1 {
+  cursor: text;
+}
+.rename {
+  font: inherit;
+  font-size: 20px;
+  font-weight: 600;
+  width: 100%;
+}
+.goal-row {
+  flex-basis: 100%;
+}
+.goal {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.goal.editing {
+  flex-direction: column;
+  align-items: stretch;
+}
+.goal textarea,
+.goal input {
+  font: inherit;
+  padding: 6px 8px;
+}
+.goal-set {
+  font-size: 12px;
+}
+.background {
+  position: relative;
+}
+.background-list {
+  position: absolute;
+  z-index: 2;
+  top: 100%;
+  left: 0;
+  min-width: 360px;
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: Canvas;
+}
+.background-list li {
+  margin: 4px 0;
+}

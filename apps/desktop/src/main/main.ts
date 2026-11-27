@@ -21,7 +21,7 @@ import { answerRefusal } from './answers';
 import { Connection } from './connection';
 import type { RpcId } from './koda-client';
 import { refusal } from './relay';
-import { deleteSession, newSession, type SessionActionDeps } from './sessions';
+import { deleteSession, newSession, type SessionActionDeps, setMode } from './sessions';
 import { findKoda, type RunningTurns } from './server';
 import { loginShellPath } from './shell-path';
 
@@ -201,9 +201,23 @@ async function main() {
       });
       return answer.response === 0;
     },
+    confirmAuto: async (label) => {
+      if (!win) return false;
+      const answer = await dialog.showMessageBox(win, {
+        type: 'question',
+        message: `Let Koda work in Auto in "${label}"?`,
+        detail:
+          'Koda edits files in the project and runs commands in its sandbox without asking. It still asks before a command leaves the sandbox, reaches a new host, or can lose work.',
+        buttons: ['Auto', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      return answer.response === 0;
+    },
   };
   ipcMain.handle('koda:newSession', guarded(() => newSession(sessionDeps)));
   ipcMain.handle('koda:deleteSession', guarded((id: unknown) => deleteSession(sessionDeps, id)));
+  ipcMain.handle('koda:setMode', guarded((id: unknown, mode: unknown) => setMode(sessionDeps, id, mode)));
   ipcMain.handle(
     'koda:retry',
     guarded(() => {

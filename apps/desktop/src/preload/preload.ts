@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('koda', {
   newSession: () => ipcRenderer.invoke('koda:newSession'),
   /** Delete a session once the user confirms; resolves with whether it was deleted. */
   deleteSession: (id: string) => ipcRenderer.invoke('koda:deleteSession', id),
+  /** Put a session in Auto (after the user confirms) or Plan; resolves with whether it changed. */
+  setMode: (id: string, mode: 'auto' | 'plan') => ipcRenderer.invoke('koda:setMode', id, mode),
   /** Try starting or joining the server again. */
   retry: () => ipcRenderer.invoke('koda:retry'),
   /** Quit and open the app again: after an update, the new one. */
