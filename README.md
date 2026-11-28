@@ -20,6 +20,11 @@ brew install koda
 cargo install koda-cli --locked
 ```
 
+On an Apple Silicon Mac, Homebrew also installs Koda's desktop app: run
+`koda app` once and it puts Koda.app in `~/Applications` and opens it. After
+that it's in Launchpad and Spotlight like any app. See [The desktop
+app](https://lijunzh.github.io/koda/desktop-app.html).
+
 On Linux, Koda's sandbox needs bubblewrap: `apt install bubblewrap` (or your
 distribution's package). Reading PDFs uses poppler, if you want it: `brew
 install poppler`, or `apt install poppler-utils`.
@@ -35,6 +40,7 @@ koda exec "fix the failing test"       # one prompt without the TUI, for scripts
 git diff | koda exec "review this"     # piped input
 koda resume --last                     # pick up this project's latest session
 koda --oss                             # a local model, no API key (needs llama.cpp)
+koda app                               # the desktop app (Apple Silicon Macs, with Homebrew)
 ```
 
 On first run Koda opens its provider picker: choose a provider and give it an
