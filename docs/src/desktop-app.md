@@ -15,9 +15,13 @@ brew install koda
 koda app
 ```
 
-`koda app` puts the app in `~/Applications/Koda.app` the first time, and
-again after each `brew upgrade koda`, so the app and `koda` are always one
-version. After that you can open it from Launchpad or Spotlight like any app.
+There's nothing to download or drag into Applications. `koda app` puts the
+app in `~/Applications/Koda.app` (your own Applications folder, not the
+system's `/Applications`) the first time, says so, and opens it. After that
+you can open it from Launchpad, Spotlight or the Dock like any app.
+
+After each `brew upgrade koda`, run `koda app` once more: it replaces the app
+with the new version, so the app and `koda` are always one version.
 
 The app is signed ad hoc, not with an Apple Developer ID. macOS opens it
 because `koda app` installs it; a copy downloaded with a browser would be

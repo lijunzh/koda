@@ -18,6 +18,18 @@ install on an Intel Mac, which has no prebuilt binary):
 cargo install koda-cli --locked
 ```
 
+**The desktop app** comes with the Homebrew install on an Apple Silicon Mac.
+There's nothing to download or drag into Applications:
+
+```bash
+koda app
+```
+
+The first run puts Koda.app in `~/Applications` (your own Applications
+folder, not the system's `/Applications`) and opens it. From then on, open it
+from Launchpad, Spotlight or the Dock like any app. See [The desktop
+app](./desktop-app.md).
+
 **A release binary:** each [GitHub
 release](https://github.com/lijunzh/koda/releases) has archives for Apple
 Silicon Macs (`aarch64-apple-darwin`) and Linux on x86_64 and ARM64. Unpack
@@ -84,6 +96,10 @@ brew upgrade koda                   # Homebrew
 cargo install koda-cli --locked     # Cargo: installs the newest version over the old
 ```
 
+After `brew upgrade koda`, run `koda app` once: it replaces the desktop app
+with the new version, so the app and `koda` stay one version ([Updates and
+the server](./desktop-app.md#updates-and-the-server)).
+
 The TUI tells you when a newer version is out (it asks crates.io). Coming
 from 0.6? Read [Upgrading to 0.7](./upgrading-0.7.md).
 
@@ -92,4 +108,5 @@ from 0.6? Read [Upgrading to 0.7](./upgrading-0.7.md).
 ```bash
 brew uninstall koda                 # or: cargo uninstall koda-cli
 rm -rf ~/.config/koda               # Koda's settings, keys, sessions and logs
+rm -rf ~/Applications/Koda.app      # the desktop app, if you opened it with `koda app`
 ```

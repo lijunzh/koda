@@ -15,6 +15,7 @@ data](./privacy.md).
 | Mode | How to invoke | Best for |
 |------|--------------|----------|
 | **Interactive TUI** | `koda`, or `koda "prompt"` to start with one | Long sessions, iterative coding |
+| **Desktop app** | `koda app` (Apple Silicon Macs, installed with Homebrew) | The same sessions in a window: several side by side, diffs to review. See [The desktop app](./desktop-app.md) |
 | **Headless** | `koda exec "prompt"` or `echo … \| koda exec` | Scripts, CI, one-shot tasks |
 | **Server** | `koda serve --stdio` | A GUI, an editor or a script driving Koda over its [client protocol](./serve.md) |
 
