@@ -479,8 +479,12 @@ npm start                 # build into out/ and open the app
   `.primary` is the one to press; menus are the app's own (`Menu.tsx`),
   never a native `select`. A new control uses the tokens, not a colour of
   its own.
-- **Changes** (`src/renderer/diffs.ts`, `ReviewPanel.tsx`): a panel beside
-  the conversation with a turn's edits, file by file and numbered: the
+- **The side panel** (`SidePanel.tsx`): the panes a session has open, as
+  tabs (Changes, Background tasks), or the list of what can be opened when
+  none is; Cmd+. hides or shows it and Shift+Cmd+D opens Changes. The
+  Activity panel is `SessionDetails.tsx`.
+- **Changes** (`src/renderer/diffs.ts`, `ReviewPanel.tsx`): a pane in the
+  side panel with a turn's edits, file by file and numbered: the
   latest `turn/diff/updated` of a turn while the window had the session
   open, else the turn's finished Edit and Write calls' `changes` (which
   have no file lines; the app adds them). A comment on a line is sent with

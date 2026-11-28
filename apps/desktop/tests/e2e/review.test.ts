@@ -51,7 +51,11 @@ describe.skipIf(!koda)('reviewing changes', () => {
     if (await asked.count()) await asked.getByRole('button', { name: 'Yes', exact: true }).click();
     await done.waitFor({ timeout: 30_000 });
 
-    await page.getByRole('button', { name: 'Changes' }).click();
+    // The side panel lists the panes that can be opened; Changes is one.
+    await page.getByRole('button', { name: 'Side panel' }).click();
+    const side = page.getByTestId('side-panel');
+    await side.getByRole('button', { name: /Changes/ }).click();
+    await side.getByRole('tab', { name: 'Changes' }).waitFor();
     const review = page.getByTestId('review');
     await review.getByTestId('review-file').filter({ hasText: 'greeting.txt' }).waitFor({ timeout: 10_000 });
     const added = review.locator('.review-line.add');
@@ -79,5 +83,14 @@ describe.skipIf(!koda)('reviewing changes', () => {
     expect(model.bodies().at(-1)).toContain('greeting.txt:2');
     expect(model.bodies().at(-1)).toContain('Drop the comma');
     expect(await review.getByTestId('review-comment').count()).toBe(0);
+
+    // Closing the tab leaves the list of panes; Shift+Cmd+D opens Changes again, Cmd+. hides the panel.
+    await side.getByRole('button', { name: 'Close Changes' }).click();
+    await side.getByRole('button', { name: /Background tasks/ }).waitFor();
+    expect(await page.getByTestId('review').count()).toBe(0);
+    await page.keyboard.press('Meta+Shift+d');
+    await page.getByTestId('review').waitFor();
+    await page.keyboard.press('Meta+.');
+    await expect.poll(() => page.getByTestId('side-panel').count()).toBe(0);
   });
 });

@@ -82,9 +82,10 @@ export function GoalLine({ sessionId, goal }: { sessionId: string; goal: Goal | 
 }
 
 /** What runs in the background: the model's commands and agents, each with Stop. */
-export function Background({ sessionId }: { sessionId: string }) {
+export function Background({ sessionId, pane }: { sessionId: string; pane?: boolean }) {
   const [list, setList] = useState<BackgroundTerminalsListResponse | null>(null);
-  const [open, setOpen] = useState(false);
+  // As a pane the list is always open, and says so when nothing runs.
+  const [open, setOpen] = useState(Boolean(pane));
   const refresh = useCallback(() => {
     call('session/backgroundTerminals/list', { sessionId }).then(setList, () => setList(null));
   }, [sessionId]);
@@ -106,10 +107,10 @@ export function Background({ sessionId }: { sessionId: string }) {
 
   const agents = list?.agents ?? [];
   const count = (list?.data.length ?? 0) + agents.length;
-  if (!count) return null;
+  if (!count) return pane ? <p className="review-empty">Nothing is running in the background.</p> : null;
   return (
-    <span className="background" data-testid="background">
-      <button onClick={() => setOpen(!open)}>{count} in the background</button>
+    <span className={pane ? 'background as-pane' : 'background'} data-testid={pane ? 'background-pane' : 'background'}>
+      {!pane && <button onClick={() => setOpen(!open)}>{count} in the background</button>}
       {open && (
         <ul className="background-list">
           {list!.data.map((t) => (

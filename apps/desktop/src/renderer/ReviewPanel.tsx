@@ -1,4 +1,4 @@
-// The Changes pane, beside the conversation, laid out as Claude Code's
+// The Changes pane, in the side panel, laid out as Claude Code's
 // desktop app lays out a diff: one turn's changes (the latest first), file
 // by file, each with its counts; unchanged lines between the changes folded
 // to a count; old and new line numbers; a bar at the left of each added or
@@ -17,12 +17,11 @@ interface Props {
   cwd: string | null;
   transcript: TranscriptState;
   diffs: TurnDiffs;
-  onClose(): void;
 }
 
 type Draft = { key: string; at: Omit<LineComment, 'comment'>; text: string };
 
-export function ReviewPanel({ sessionId, cwd, transcript, diffs, onClose }: Props) {
+export function ReviewPanel({ sessionId, cwd, transcript, diffs }: Props) {
   // The turns that changed something, the latest first.
   const changed = useMemo(
     () =>
@@ -91,22 +90,17 @@ export function ReviewPanel({ sessionId, cwd, transcript, diffs, onClose }: Prop
   );
 
   return (
-    <aside className="review" data-testid="review" aria-label="Changes">
-      <header>
-        <strong>Changes</strong>
-        {shown && (
+    <div className="review" data-testid="review">
+      {shown && (
+        <header>
           <MenuButton label="Turn" entries={turns}>
             Turn {shown.index}
             <span className="caret" aria-hidden>
               ⌄
             </span>
           </MenuButton>
-        )}
-        <span className="spacer" />
-        <button className="icon-button" aria-label="Close changes" onClick={onClose}>
-          ✕
-        </button>
-      </header>
+        </header>
+      )}
       {!shown && <p className="review-empty">No changes to show. What a command changed isn't shown here.</p>}
       <div className="review-files">
         {files.map((file) => (
@@ -136,7 +130,7 @@ export function ReviewPanel({ sessionId, cwd, transcript, diffs, onClose }: Prop
           {error && <span className="problem">{error}</span>}
         </footer>
       )}
-    </aside>
+    </div>
   );
 }
 
