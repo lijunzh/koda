@@ -1484,3 +1484,66 @@ textarea {
   padding: 0 6px;
   margin: 0;
 }
+
+/* Settings: a line of explanation, a switch, the shortcut list */
+.setting-description {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 440px;
+}
+.switch {
+  width: 34px;
+  height: 20px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--selected);
+  flex: none;
+}
+.switch span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 0.12s;
+}
+.switch[aria-checked='true'] {
+  background: var(--accent);
+}
+.switch[aria-checked='true'] span {
+  transform: translateX(14px);
+}
+.switch:hover:not(:disabled) {
+  background: var(--selected);
+}
+.switch[aria-checked='true']:hover:not(:disabled) {
+  background: var(--accent);
+}
+.shortcuts {
+  margin: 0;
+}
+.shortcuts dd {
+  margin: 0;
+}
+kbd {
+  font: 12px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--raised);
+  border-radius: 6px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.settings-body nav .session {
+  margin-bottom: 2px;
+}
+
+/* Less motion when the system asks for it */
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .mark.working {
+    animation: none;
+  }
+  .switch span {
+    transition: none;
+  }
+}

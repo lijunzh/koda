@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('koda', {
   deleteSession: (id: string) => ipcRenderer.invoke('koda:deleteSession', id),
   /** Put a session in Auto (after the user confirms) or Plan; resolves with whether it changed. */
   setMode: (id: string, mode: 'auto' | 'plan') => ipcRenderer.invoke('koda:setMode', id, mode),
+  /** What Settings says the main process should do: send notifications, keep the computer awake. */
+  setAppPrefs: (prefs: { notifications: boolean; keepAwake: boolean }) => ipcRenderer.invoke('koda:setAppPrefs', prefs),
   /** Try starting or joining the server again. */
   retry: () => ipcRenderer.invoke('koda:retry'),
   /** Quit and open the app again: after an update, the new one. */

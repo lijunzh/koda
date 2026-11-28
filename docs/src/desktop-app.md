@@ -126,12 +126,16 @@ sessions fit side by side.
 
 The gear at the bottom of the session list, or Cmd+,, opens Settings:
 
-- **Theme**: follow the system (the default), or always light or dark.
-- **Transcript width**: narrow (the default) or wide.
+| Section | Setting |
+|---|---|
+| Appearance | **Theme**: follow the system (the default), or always light or dark. **Transcript width**: narrow (the default) or wide. Motion follows the system's Reduce motion setting |
+| Conversation | **Default transcript view**: Normal, Thinking or Verbose when the app opens. Ctrl+O still changes it at any time |
+| Desktop app | **Notifications**: say when Koda needs you or has finished while the app isn't in front. **Keep computer awake**: keep the Mac from idle-sleeping while the app is open, so a long turn can finish (the display can still turn off). The app's and the server's versions |
+| Keyboard shortcuts | The app's shortcuts |
 
-Both are remembered between launches. Keys, providers and everything else
-about Koda itself are still set with `koda` (`/key`, `/provider`,
-`config.toml`).
+They're remembered between launches. Keys, providers, the default model and
+everything else about Koda itself are still set with `koda` (`/key`,
+`/provider`, `config.toml`).
 
 ## Updates and the server
 
