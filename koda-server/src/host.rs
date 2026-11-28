@@ -42,10 +42,44 @@ use crate::session::{
 /// Open sessions' in-process handles, by id; shared with the client.
 pub(crate) type HandleMap = Arc<std::sync::Mutex<HashMap<String, SessionHandles>>>;
 
-/// How long shutdown waits for sessions to stop their turns. A turn bounds
-/// its own wind-down at five seconds; the client stops the host by force
-/// after its own five.
+/// How long a session being closed gets to stop its turn; one that hasn't
+/// by then is cut off ([`OpenSession::cut_off`]). A turn bounds its own
+/// wind-down at five seconds; the client stops the host by force after its
+/// own five, so this is under both.
 const SESSION_STOP: Duration = Duration::from_secs(4);
+
+/// An open session: where its commands go, and what stops it by force.
+#[derive(Clone)]
+struct OpenSession {
+    commands: mpsc::UnboundedSender<SessionCommand>,
+    /// What the session sends its clients by, to say its turn's end for it
+    /// if its task has to be stopped.
+    sink: Arc<session::HostSink>,
+    /// Its task.
+    task: tokio::task::AbortHandle,
+}
+
+impl OpenSession {
+    fn send(&self, command: SessionCommand) -> Result<(), mpsc::error::SendError<SessionCommand>> {
+        self.commands.send(command)
+    }
+
+    /// Stop the session where it stands: it was told to stop and hasn't
+    /// within [`SESSION_STOP`]. The end of the turn it was running is said
+    /// first, with its waiting requests withdrawn, and then its task is
+    /// stopped, as Codex aborts a task that doesn't stop in its grace and
+    /// still sends `TurnAborted`. A client always sees a turn end, and
+    /// before it hears the session was archived, deleted or closed.
+    async fn cut_off(&self) {
+        let secs = SESSION_STOP.as_secs();
+        self.sink
+            .cut_off(&format!(
+                "the turn did not stop within {secs}s of its session closing"
+            ))
+            .await;
+        self.task.abort();
+    }
+}
 
 /// How many sessions `session/list` gives without a limit.
 const DEFAULT_LIST_LIMIT: u32 = 50;
@@ -145,8 +179,8 @@ struct Host {
     client: OnceLock<ClientInfo>,
     /// Sent once, right after `initialize` is answered.
     config_warnings: std::sync::Mutex<Vec<koda_protocol::config::ConfigWarningNotification>>,
-    /// Open sessions' command channels, by id.
-    sessions: Mutex<HashMap<String, mpsc::UnboundedSender<SessionCommand>>>,
+    /// Open sessions, by id.
+    sessions: Mutex<HashMap<String, OpenSession>>,
     /// Open sessions' in-process handles, by id.
     handles: HandleMap,
     /// Their tasks. Dropping the host stops them.
@@ -1095,8 +1129,13 @@ impl Host {
                 .remove(id);
             let (done, stopped) = oneshot::channel();
             let _ = session.send(SessionCommand::Shutdown { done: Some(done) });
-            // Dropped once the session's task has ended, its turn stopped.
-            let _ = tokio::time::timeout(SESSION_STOP, stopped).await;
+            // Dropped once the session's turn has stopped and said so. One
+            // that takes too long is cut off, so its turn's end is still
+            // said before the session is said to be closed.
+            if tokio::time::timeout(SESSION_STOP, stopped).await.is_err() {
+                tracing::warn!("session {id} didn't stop in time; cutting its turn off");
+                session.cut_off().await;
+            }
             self.closed(id);
         }
     }
@@ -1481,14 +1520,15 @@ impl Host {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id.clone(), opened.handles);
-        sessions.insert(id.clone(), opened.commands);
         // A panic in the session (a tool, a provider) ends this session
         // alone: its turn fails, its clients are told, and the host forgets
         // it, as Codex's unwinding build keeps the server up.
         let sink = opened.task.sink();
         let ended = self.ended.clone();
         let session_id = id.clone();
-        self.tasks.lock().await.spawn(async move {
+        let commands = opened.commands;
+        let cut_off_by = Arc::clone(&sink);
+        let task = self.tasks.lock().await.spawn(async move {
             use futures_util::FutureExt;
             let ran = std::panic::AssertUnwindSafe(opened.task.run())
                 .catch_unwind()
@@ -1500,6 +1540,14 @@ impl Host {
             }
             let _ = ended.send((session_id, failed));
         });
+        sessions.insert(
+            id.clone(),
+            OpenSession {
+                commands,
+                sink: cut_off_by,
+                task,
+            },
+        );
         Ok(SessionStartResponse {
             session: opened.session,
         })
@@ -1530,7 +1578,8 @@ impl Host {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clear();
-        for session in self.sessions.lock().await.drain().map(|(_, s)| s) {
+        let open: Vec<OpenSession> = self.sessions.lock().await.drain().map(|(_, s)| s).collect();
+        for session in &open {
             let _ = session.send(SessionCommand::Shutdown { done: None });
         }
         let mut tasks = self.tasks.lock().await;
@@ -1538,6 +1587,12 @@ impl Host {
             while tasks.join_next().await.is_some() {}
         })
         .await;
+        // One still running is cut off: its turn's end is said before its
+        // task is stopped, so the client sees every turn it saw start end.
+        for session in open.iter().filter(|session| !session.task.is_finished()) {
+            tracing::warn!("a session didn't stop in time; cutting its turn off");
+            session.cut_off().await;
+        }
         tasks.shutdown().await;
     }
 

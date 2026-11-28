@@ -521,6 +521,12 @@ impl Outbox {
         self.ready.notify_one();
     }
 
+    /// The lines waiting for the client, oldest first.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> Vec<String> {
+        self.lock().iter().cloned().collect()
+    }
+
     /// Whether the client fell too far behind and was let go.
     pub(crate) fn overflowed(&self) -> bool {
         self.overflowed.load(Ordering::Acquire)

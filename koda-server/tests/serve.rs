@@ -520,6 +520,71 @@ async fn eof_at_an_approval_ends_the_connection() {
     assert_eq!(turn_completed(&rest)["status"], "interrupted");
 }
 
+/// An MCP server with one tool, `wait`, whose calls it never answers,
+/// written to `dir`: its script's path. A turn that calls it doesn't stop
+/// when told to, as the engine lets a call that isn't a command or a read
+/// finish.
+fn stuck_tool_server(dir: &std::path::Path) -> String {
+    let script = r#"while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"stuck","version":"0.1.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"wait","description":"Wait","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+    let path = dir.join("mcp-stuck.sh");
+    std::fs::write(&path, script).unwrap();
+    path.display().to_string()
+}
+
+/// EOF while the turn is in a call that won't stop: the turn's end is still
+/// said, interrupted, before `koda serve` ends. Koda waits four seconds for
+/// a session to stop, then says its turn's end for it and stops its task,
+/// as Codex aborts a task that outlives its grace and still sends
+/// `TurnAborted`. Before, the task was stopped with nothing said, and a
+/// client never saw the turn it saw start end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn eof_ends_a_turn_that_wont_stop() {
+    let server = model(vec![tool_call("c1", "stuck__wait", json!({}))]).await;
+    let mut wire = Wire::open(config(&server)).await;
+    let script = stuck_tool_server(wire._dir.path());
+    wire.call(
+        "config/batchWrite",
+        json!({"edits": [{
+            "keyPath": "mcp_servers.stuck",
+            "value": {"command": "sh", "args": [script]},
+            "mergeStrategy": "replace",
+        }]}),
+    )
+    .await
+    .unwrap();
+    // A session opened now starts the server.
+    let started = wire.call("session/start", json!({})).await.unwrap();
+    wire.session = started["session"]["id"].as_str().unwrap().to_string();
+    let turn = wire.turn("Wait").await;
+    // The call is out, and its server never answers it.
+    wire.until(|l| l["method"] == "item/started" && l["params"]["item"]["id"] == "c1")
+        .await;
+
+    drop(wire.input.take());
+    let mut rest = Vec::new();
+    while let Some(line) = wire.next().await {
+        rest.push(line);
+    }
+    tokio::time::timeout(WAIT, &mut wire.served)
+        .await
+        .expect("koda serve didn't end after EOF")
+        .unwrap()
+        .unwrap();
+    assert_eq!(count(&rest, "turn/completed"), 1, "{rest:?}");
+    let ended = turn_completed(&rest);
+    assert_eq!(ended["id"], turn.as_str(), "{ended}");
+    assert_eq!(ended["status"], "interrupted", "{ended}");
+}
+
 /// A client that stops reading stdout ends the connection when the pipe
 /// breaks, though stdin stays open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -985,6 +1050,85 @@ async fn the_evaluator_decides_when_a_goal_is_met() {
     // The checks' tokens count toward the goal.
     let goal = wire.goal().await;
     assert_eq!(goal["tokensUsed"], 4 * 220, "{goal}");
+    wire.finish().await;
+}
+
+/// Steering text Koda accepts while the turn does its last work is answered
+/// in that turn, as a Codex turn with input pending doesn't finish. The
+/// engine looks for steering text a last time when the reply ends; here the
+/// goal's check follows, held at the model, and the text comes during it.
+/// Before, `turn/steer` was answered as accepted and the text was dropped
+/// when the turn ended: no item for it, and the model never had it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_steer_accepted_as_the_turn_ends_is_answered_in_it() {
+    let server = model(vec![
+        text("Ran the tests: all pass."),
+        text(r#"{"ok": true, "reason": "The tests pass."}"#),
+        text("The lint is clean too."),
+    ])
+    .await;
+    // The check's reply waits for the test: the turn is at its last work
+    // for as long as the test needs it to be.
+    let gate = server.gate("<goal_condition>").await;
+    let mut config = judged(config(&server));
+    config.base_url = gate.url();
+    let mut wire = Wire::open(config).await;
+    let session = wire.session.clone();
+    wire.set_goal(json!({"objective": "Make the tests pass"}))
+        .await;
+    let started = wire.until_method("turn/started").await;
+    let turn = started.last().unwrap()["params"]["turn"]["id"].clone();
+    // The check is asked, so the reply is over and the engine has looked
+    // for steering text for the last time.
+    model_calls(&server, 2).await;
+
+    let steered = wire
+        .call(
+            "turn/steer",
+            json!({"sessionId": session, "expectedTurnId": turn,
+                   "input": [{"type": "text", "text": "Run the lint as well"}],
+                   "clientUserMessageId": "s1"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(steered["turnId"], turn);
+    gate.release();
+
+    // The turn goes on with the text, and ends once.
+    let lines = wire.until_method("turn/completed").await;
+    let ended = turn_completed(&lines);
+    assert_eq!(ended["id"], turn, "{ended}");
+    assert_eq!(ended["status"], "completed", "{ended}");
+    assert_eq!(count(&lines, "turn/started"), 0, "the same turn: {lines:?}");
+    let delivered = lines
+        .iter()
+        .find(|l| {
+            l["method"] == "item/completed"
+                && l["params"]["item"]["type"] == "userMessage"
+                && l["params"]["item"]["clientUserMessageIds"] == json!(["s1"])
+        })
+        .unwrap_or_else(|| panic!("no item for the steer: {lines:?}"));
+    assert_eq!(delivered["params"]["turnId"], turn, "{delivered}");
+    assert!(
+        delivered.to_string().contains("Run the lint as well"),
+        "{delivered}"
+    );
+    assert!(
+        lines.iter().any(|l| l["method"] == "item/completed"
+            && l["params"]["item"]["text"] == "The lint is clean too."),
+        "the steer was answered: {lines:?}"
+    );
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 3, "the reply, the check, the steer's reply");
+    assert!(
+        requests[2]["messages"]
+            .to_string()
+            .contains("Run the lint as well"),
+        "{}",
+        requests[2]["messages"]
+    );
+    // The turn's use is all of it, not only what followed the steer.
+    assert_eq!(ended["usage"]["modelCalls"], 3, "{ended}");
     wire.finish().await;
 }
 

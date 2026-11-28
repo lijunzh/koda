@@ -72,6 +72,12 @@ const APPROVAL_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
 /// How many messages a new session may send before its connection has the
 /// answer that subscribes it; more are dropped, with a warning.
 const HELD_LIMIT: usize = 1_000;
+/// How long the server goes on reading a client it has refused for a message
+/// over the limit, for the client to close its end.
+const DISCARD_WAIT: Duration = Duration::from_secs(30);
+/// How much of what such a client still sends is read and dropped: as much
+/// again as the limit.
+const DISCARD_BYTES: u64 = crate::stdio::MAX_MESSAGE_BYTES as u64;
 /// How many messages may wait for one client before the server lets it go.
 /// Codex lets a socket client go at 128; Koda waits longer because a
 /// session's first messages, up to [`HELD_LIMIT`], reach its client at once
@@ -260,6 +266,8 @@ async fn serve_on(
         approval_wait,
         stopping: tokio::sync::watch::Sender::new(false),
         stop_requested: tokio::sync::Notify::new(),
+        #[cfg(test)]
+        at_the_lock: std::sync::atomic::AtomicUsize::new(0),
     });
     let pump = {
         let router = Arc::clone(&router);
@@ -487,6 +495,10 @@ struct Router {
     stopping: tokio::sync::watch::Sender<bool>,
     /// A client asked the server to stop (`serve/stop`).
     stop_requested: tokio::sync::Notify,
+    /// How many threads are taking the state's lock, for a test that has to
+    /// know another thread has reached it.
+    #[cfg(test)]
+    at_the_lock: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Default)]
@@ -589,7 +601,28 @@ fn draining_error() -> ErrorObject {
 
 impl Router {
     fn lock(&self) -> MutexGuard<'_, RouterState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        #[cfg(test)]
+        self.at_the_lock.fetch_add(1, Ordering::SeqCst);
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        #[cfg(test)]
+        self.at_the_lock.fetch_sub(1, Ordering::SeqCst);
+        state
+    }
+
+    /// Count `connection` among the server's clients and queue its
+    /// `initialize` answer, then the config file's warnings, in one step.
+    /// A client that has its answer is one `serve/stop` counts and one that
+    /// hears what every client is told; queued first, the answer could reach
+    /// it a moment before either held. Codex queues the answer and marks
+    /// the connection initialized with nothing between, on the one queue
+    /// its messages leave by.
+    fn admit(&self, connection: u64, outbox: &Arc<Outbox>, answer: String) {
+        let mut state = self.lock();
+        state.connections.insert(connection, Arc::clone(outbox));
+        outbox.push(answer);
+        for warning in &state.warnings {
+            outbox.push(warning.clone());
+        }
     }
 
     /// Send one of the host's messages to whoever should have it.
@@ -1103,12 +1136,7 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
                     let answer =
                         serde_json::to_string(&rpc::Response::new(request_id, initialized.clone()))
                             .unwrap_or_default();
-                    outbox.push(answer);
-                    let mut state = router.lock();
-                    for warning in &state.warnings {
-                        outbox.push(warning.clone());
-                    }
-                    state.connections.insert(id, Arc::clone(&outbox));
+                    router.admit(id, &outbox, answer);
                     continue;
                 }
                 if !ready {
@@ -1320,14 +1348,55 @@ async fn connection(id: u64, stream: UnixStream, router: Arc<Router>, initialize
     outbox.close();
     let _ = writer.await;
     if too_long {
-        // Read what the client is still sending before closing: on Linux,
-        // closing a Unix socket with unread input resets the connection, and
-        // the client would lose the error.
-        let _ = tokio::time::timeout(
-            Duration::from_secs(1),
-            tokio::io::copy(&mut lines, &mut tokio::io::sink()),
-        )
-        .await;
+        // The error is written and the server's end of the socket shut, so
+        // the client reads the error and then the end. Go on reading what it
+        // still sends until it closes its own end: on Linux, closing a Unix
+        // socket with unread input resets the connection, and a client still
+        // writing would get the reset in place of the end. Codex has no such
+        // step: its WebSocket transport drops a connection that sends too
+        // large a message, with no error to deliver.
+        drop(line);
+        tokio::select! {
+            read = discard_until_closed(&mut lines, DISCARD_WAIT, DISCARD_BYTES) => {
+                if !matches!(read, Discarded::Closed) {
+                    tracing::warn!(
+                        "koda serve: a client refused for a message over the limit kept the \
+                         connection ({read:?}); closing it"
+                    );
+                }
+            }
+            _ = stopping.wait_for(|stop| *stop) => {}
+        }
+    }
+}
+
+/// How [`discard_until_closed`] ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Discarded {
+    /// The other end closed.
+    Closed,
+    /// It sent more than `most` bytes.
+    TooMuch,
+    /// It hadn't closed after `wait`.
+    TimedOut,
+}
+
+/// Read `input` and drop what comes until the other end closes, for at
+/// most `wait` and `most` bytes.
+async fn discard_until_closed<R: tokio::io::AsyncRead + Unpin>(
+    input: &mut R,
+    wait: Duration,
+    most: u64,
+) -> Discarded {
+    use tokio::io::AsyncReadExt;
+    let mut limited = input.take(most.saturating_add(1));
+    let mut dropped = tokio::io::sink();
+    let reading = tokio::io::copy(&mut limited, &mut dropped);
+    match tokio::time::timeout(wait, reading).await {
+        Ok(Ok(read)) if read > most => Discarded::TooMuch,
+        // A read that fails is the other end gone, as a close is.
+        Ok(_) => Discarded::Closed,
+        Err(_) => Discarded::TimedOut,
     }
 }
 
@@ -1544,18 +1613,7 @@ mod tests {
     /// again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn what_a_closed_session_still_sends_is_not_kept() {
-        let (commands, _host) = tokio::sync::mpsc::channel(1);
-        let router = Arc::new(Router {
-            state: Mutex::default(),
-            handle: RequestHandle {
-                commands,
-                next_id: Arc::default(),
-            },
-            unload_delay: Duration::from_secs(60),
-            approval_wait: Duration::from_secs(60),
-            stopping: tokio::sync::watch::Sender::new(false),
-            stop_requested: tokio::sync::Notify::new(),
-        });
+        let router = router();
         let told = |method: &str| {
             serde_json::json!({"jsonrpc": "2.0", "method": method, "params": {"sessionId": "s"}})
                 .to_string()
@@ -1587,6 +1645,97 @@ mod tests {
                 assert_eq!(kept(&router), 1, "unarchived, it is kept again");
             }
         }
+    }
+
+    fn router() -> Arc<Router> {
+        let (commands, _host) = tokio::sync::mpsc::channel(1);
+        Arc::new(Router {
+            state: Mutex::default(),
+            handle: RequestHandle {
+                commands,
+                next_id: Arc::default(),
+            },
+            unload_delay: Duration::from_secs(60),
+            approval_wait: Duration::from_secs(60),
+            stopping: tokio::sync::watch::Sender::new(false),
+            stop_requested: tokio::sync::Notify::new(),
+            at_the_lock: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// A connection is counted among the server's clients before its
+    /// `initialize` answer is queued for it, so a client holding its answer
+    /// is one `serve/stop` counts and one that hears what every client is
+    /// told. With the answer queued first, there was a moment when it had
+    /// neither: this holds the state's lock over that moment.
+    #[test]
+    fn a_connection_is_counted_before_its_initialize_answer_is_out() {
+        let router = router();
+        router.deliver(r#"{"jsonrpc":"2.0","method":"configWarning","params":{}}"#.to_string());
+        let outbox = Arc::new(Outbox::bounded(8));
+        let state = router.lock();
+        std::thread::scope(|scope| {
+            let admitting = scope.spawn(|| router.admit(1, &outbox, "the answer".to_string()));
+            // The other thread has got as far as the lock, which this one
+            // holds: whatever it does before counting the connection is done.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while router.at_the_lock.load(Ordering::SeqCst) == 0 {
+                assert!(std::time::Instant::now() < deadline, "never admitted");
+                std::thread::yield_now();
+            }
+            assert!(!state.connections.contains_key(&1));
+            assert_eq!(
+                outbox.waiting(),
+                Vec::<String>::new(),
+                "the answer is out, and the connection isn't counted yet"
+            );
+            drop(state);
+            admitting.join().unwrap();
+        });
+        assert!(router.lock().connections.contains_key(&1));
+        assert!(router.busy_reason(None).is_some(), "serve/stop counts it");
+        // The answer first, then the warnings, as each client is told them.
+        let waiting = outbox.waiting();
+        assert_eq!(waiting.len(), 2, "{waiting:?}");
+        assert_eq!(waiting[0], "the answer");
+        assert!(waiting[1].contains("configWarning"), "{waiting:?}");
+    }
+
+    /// A client refused for a message over the limit is read until it
+    /// closes, however slowly it sends the rest: closing first, with its
+    /// bytes unread, resets the connection on Linux. The server read on for
+    /// one second, which a client still writing after that outlasted. It
+    /// stops for one that never closes, and for one that sends without end.
+    #[tokio::test(start_paused = true)]
+    async fn an_over_limit_client_is_read_until_it_closes() {
+        use tokio::io::AsyncWriteExt;
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let sending = tokio::spawn(async move {
+            // The clock is the test's: ten seconds pass at once.
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            client.write_all(&[b'a'; 1000]).await.unwrap();
+        });
+        assert_eq!(
+            discard_until_closed(&mut server, DISCARD_WAIT, DISCARD_BYTES).await,
+            Discarded::Closed
+        );
+        sending.await.unwrap();
+
+        let (_open, mut server) = tokio::io::duplex(64);
+        assert_eq!(
+            discard_until_closed(&mut server, DISCARD_WAIT, DISCARD_BYTES).await,
+            Discarded::TimedOut
+        );
+
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let sending =
+            tokio::spawn(async move { while client.write_all(&[b'a'; 64]).await.is_ok() {} });
+        assert_eq!(
+            discard_until_closed(&mut server, DISCARD_WAIT, 1000).await,
+            Discarded::TooMuch
+        );
+        drop(server);
+        sending.await.unwrap();
     }
 
     #[test]
