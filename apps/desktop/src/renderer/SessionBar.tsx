@@ -1,6 +1,7 @@
 // The open session's controls, under its title: model, effort and mode (as
 // the TUI's /model, /effort and Shift+Tab), how much context is left, and
 // compacting it.
+import { MenuButton } from './Menu';
 import { useEffect, useState } from 'react';
 import type { Model } from '../protocol/types.gen';
 import { call } from './bridge';
@@ -47,33 +48,19 @@ export function SessionBar({
 
   return (
     <div className="session-bar" data-testid="session-bar">
-      <label>
-        <span className="meta">Model</span>
-        <select
-          aria-label="Model"
-          value={current ? (current.alias ?? current.id) : settings.model}
-          onChange={(e) => void update({ model: e.target.value })}
-        >
-          {choices.map((m) => (
-            <option key={m.alias ?? m.id} value={m.alias ?? m.id}>
-              {m.alias ? `${m.alias} (${m.id})` : m.id}
-            </option>
-          ))}
-        </select>
-      </label>
+      <MenuButton
+        label="Model"
+        value={current ? (current.alias ?? current.id) : settings.model}
+        items={choices.map((m) => ({ value: m.alias ?? m.id, label: m.alias ?? m.id, detail: m.alias ? m.id : undefined }))}
+        onPick={(model) => void update({ model })}
+      />
       {efforts.length > 0 && (
-        <label>
-          <span className="meta">Effort</span>
-          <select
-            aria-label="Effort"
-            value={settings.effort ?? current?.defaultReasoningEffort ?? ''}
-            onChange={(e) => void update({ effort: e.target.value })}
-          >
-            {efforts.map((effort) => (
-              <option key={effort}>{effort}</option>
-            ))}
-          </select>
-        </label>
+        <MenuButton
+          label="Effort"
+          value={settings.effort ?? current?.defaultReasoningEffort ?? ''}
+          items={efforts.map((effort) => ({ value: effort, label: effort }))}
+          onPick={(effort) => void update({ effort })}
+        />
       )}
       <div className="views mode" role="group" aria-label="Mode">
         {(['auto', 'plan'] as const).map((mode) => (

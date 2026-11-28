@@ -448,6 +448,13 @@ npm start                 # build into out/ and open the app
   goal (`session/goal/*`), and lists what runs in the background
   (`session/backgroundTerminals/list`, read again as items and turns end)
   with Stop for each.
+- **The look** (`src/renderer/styles.css`): every colour, corner and gap
+  comes from the tokens at the top of the file, set once for light and once
+  for dark, after Claude Code's desktop app (neutral white and grey in
+  light, near-black in dark). A plain `button` is a quiet filled one;
+  `.primary` is the one to press; menus are the app's own (`Menu.tsx`),
+  never a native `select`. A new control uses the tokens, not a colour of
+  its own.
 - **Changes** (`src/renderer/diffs.ts`, `ReviewPanel.tsx`): a panel beside
   the conversation with a turn's edits, file by file and numbered: the
   latest `turn/diff/updated` of a turn while the window had the session
