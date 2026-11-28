@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
-- **Koda has a logo, and the desktop app its own icon:** a bear's paw print, amber on a dark tile, in place of Electron's default icon in the Dock, Launchpad and Finder. The app shows it while it starts, on an empty session and in Settings. The README and the manual carry it too, and the manual has a favicon.
+- **Koda has a logo, and the desktop app its own icon:** a bear's paw print, cream on an amber tile, in place of Electron's default icon in the Dock, Launchpad and Finder. The app shows it while it starts, on an empty session and in Settings. The README and the manual carry it too, and the manual has a favicon.
 
 ## [0.8.2] - 2026-11-28
 

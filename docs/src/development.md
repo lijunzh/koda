@@ -520,7 +520,7 @@ npm start                 # build into out/ and open the app
   (the fuses turn off the inspector it attaches through): check it by
   starting `Contents/MacOS/Koda` with a scratch `XDG_CONFIG_HOME` and
   reading the page through `--remote-debugging-port`.
-- **The icon** is `assets/icon.svg`: a bear's paw print, amber on a dark
+- **The icon** is `assets/icon.svg`: a bear's paw print, cream on an amber
   tile in macOS's icon grid (an 824-point tile in a 1024 canvas). The
   packaged app's `assets/icon.icns`, the logo in the README and the manual
   (`docs/src/assets/koda-logo.png`) and the manual's favicon

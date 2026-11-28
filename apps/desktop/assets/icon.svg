@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Koda's icon: a bear's print, amber on a dark tile. The pad is three-lobed; each of the
+<!-- Koda's icon: a bear's print, cream on an amber tile. The pad is three-lobed; each of the
      five toes is one water-drop shape whose point is the claw. The toes' areas are 12.4, 12.7,
      14.0, 11.7 and 10.4 percent of the pad's, left to right. The tile is macOS's: 824 of the
      1024 canvas, corners 186. Rebuild the .icns and the docs' images with
@@ -8,8 +8,8 @@
   <title>Koda</title>
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#322c26"/>
-      <stop offset="1" stop-color="#1c1916"/>
+      <stop offset="0" stop-color="#dc9844"/>
+      <stop offset="1" stop-color="#b86c22"/>
     </linearGradient>
     <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
       <feGaussianBlur stdDeviation="14"/>
@@ -17,8 +17,8 @@
   </defs>
   <rect x="112" y="124" width="800" height="812" rx="180" fill="#000" opacity=".28" filter="url(#shadow)"/>
   <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
-  <rect x="104" y="104" width="816" height="816" rx="182" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="8"/>
-  <g fill="#e3a552" transform="translate(512 512) rotate(22) scale(0.7965) translate(0 149)">
+  <rect x="104" y="104" width="816" height="816" rx="182" fill="none" stroke="#fff" stroke-opacity=".18" stroke-width="8"/>
+  <g fill="#f8e7cb" transform="translate(512 512) rotate(22) scale(0.7965) translate(0 149)">
     <!-- the pad -->
     <path d="M0 -220C70 -220 120 -180 150 -120C175 -70 215 -50 245 -10C285 45 275 150 215 195C165 232 95 215 60 190C35 172 -35 172 -60 190C-95 215 -165 232 -215 195C-275 150 -285 45 -245 -10C-215 -50 -175 -70 -150 -120C-120 -180 -70 -220 0 -220Z"/>
     <!-- the toes, left to right -->
