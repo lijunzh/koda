@@ -11,47 +11,72 @@ use ratatui::{
 
 // ── Banner ───────────────────────────────────────────
 
+/// The banner: Koda's logo, the bear's paw print, beside the version, the
+/// model and the folder. A terminal that can't draw the print's dots gets
+/// the three lines alone.
 pub fn build_banner_lines(model: &str, provider: &str, cwd: &str) -> Vec<Line<'static>> {
+    banner_lines(model, provider, cwd, draws_braille())
+}
+
+/// Whether the terminal's font has Braille characters, which the print is
+/// drawn with. The Linux console's doesn't; terminal emulators' do.
+fn draws_braille() -> bool {
+    std::env::var("TERM").map_or(true, |term| term != "linux")
+}
+
+fn banner_lines(model: &str, provider: &str, cwd: &str, print: bool) -> Vec<Line<'static>> {
     let ver = env!("CARGO_PKG_VERSION");
 
-    const BEAR: [&str; 3] = [
-        "\u{259e}\u{2580}\u{259a}\u{2584}\u{2584}\u{259e}\u{2580}\u{259a}",
-        "\u{258c}\u{00b7}\u{2590}\u{2580}\u{258c}\u{00b7}\u{2590} ",
-        "\u{2580}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2584}\u{2580}",
+    // The logo's print (apps/desktop/assets/icon.svg) in Braille dots, as
+    // Codex draws its logo in the terminal: five rows of ten, 20 dots by 20.
+    const PAW: [&str; 5] = [
+        "   \u{2880}\u{2844}\u{2880}\u{28e4}   ",
+        " \u{28fe}\u{2846}\u{283f}\u{2807}\u{28bf}\u{281f}\u{28e0}\u{2846} ",
+        " \u{28c9}\u{28e5}\u{28fe}\u{28ff}\u{28f7}\u{285c}\u{281b}\u{28c1}\u{2840}",
+        "\u{28b0}\u{28ff}\u{28ff}\u{28ff}\u{28ff}\u{28ff}\u{28f7}\u{2818}\u{281f}\u{2801}",
+        " \u{2809}\u{2809}\u{281b}\u{28bf}\u{28ff}\u{287f}   ",
     ];
 
-    vec![
-        Line::default(),
-        Line::from(vec![
-            Span::styled(format!(" {}", BEAR[0]), WARM_ACCENT),
-            Span::raw("  "),
-            Span::styled(format!("Koda v{ver}"), WARM_TITLE),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {}", BEAR[1]), WARM_ACCENT),
-            Span::raw("  "),
+    let info = [
+        vec![Span::styled(format!("Koda v{ver}"), WARM_TITLE)],
+        vec![
             Span::styled(model.to_string(), WARM_INFO),
             Span::styled(" \u{00b7} ", WARM_MUTED),
             Span::styled(provider.to_string(), WARM_MUTED),
-        ]),
-        Line::from(vec![
-            Span::styled(format!(" {}", BEAR[2]), WARM_ACCENT),
-            Span::raw("  "),
+        ],
+        vec![
             Span::styled(cwd.to_string(), DIM),
-            // `·`-separated discoverability hint (#1194/#1195 round 5).
-            // Combined with cwd onto one line so the bear glyph (3 rows)
-            // and info content (3 rows) form a clean rectangle — no
-            // orphan 4th row dangling without a bear neighbor. Same
-            // `WARM_MUTED ` · ` pattern used on the model/provider line
-            // above for visual consistency. Koda project roots tend to
-            // live near the FS root (short paths) so we don't bother
-            // with a width fallback.
+            // The hint shares the folder's line, so the three lines sit
+            // centred beside the print's five rows.
             Span::styled("  \u{00b7} ", WARM_MUTED),
             Span::styled("?", WARM_ACCENT),
             Span::styled(" for shortcuts", DIM),
-        ]),
-        Line::default(),
-    ]
+        ],
+    ];
+
+    let mut lines = vec![Line::default()];
+    if print {
+        let mut info = info.into_iter();
+        for (row, dots) in PAW.iter().enumerate() {
+            let mut spans = vec![Span::styled(format!(" {dots}"), WARM_ACCENT)];
+            // The middle three rows carry the three lines.
+            if (1..=3).contains(&row)
+                && let Some(text) = info.next()
+            {
+                spans.push(Span::raw("  "));
+                spans.extend(text);
+            }
+            lines.push(Line::from(spans));
+        }
+    } else {
+        for text in info {
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(text);
+            lines.push(Line::from(spans));
+        }
+    }
+    lines.push(Line::default());
+    lines
 }
 
 /// Collect all startup lines (banner + warnings + notices), for the
@@ -248,12 +273,35 @@ mod tests {
     }
 
     #[test]
-    fn banner_is_compact() {
-        let lines = build_banner_lines("gpt-4o", "openai", "~/repo");
-        // Blank top + 3 bear lines + blank trailing = 5. The hint
-        // (`? for shortcuts`) shares the cwd line with a `·` separator
-        // so the bear glyph (3 rows) gets a clean 3-row info partner
-        // — no orphan 4th row.
+    fn banner_is_the_print_beside_three_lines() {
+        // A blank line, the print's five rows, a blank line. The version,
+        // the model and the folder sit on the middle three.
+        let lines = banner_lines("gpt-4o", "openai", "~/repo", true);
+        assert_eq!(lines.len(), 7);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(text[2].contains("Koda v"), "{text:?}");
+        assert!(text[3].contains("gpt-4o"), "{text:?}");
+        assert!(text[4].contains("~/repo"), "{text:?}");
+        // Every row of the print is as wide as the others, so the text lines up.
+        let widths: Vec<usize> = lines[1..6]
+            .iter()
+            .map(|l| l.spans[0].content.chars().count())
+            .collect();
+        assert!(widths.iter().all(|w| *w == widths[0]), "{widths:?}");
+    }
+
+    #[test]
+    fn a_terminal_without_braille_gets_the_three_lines_alone() {
+        let lines = banner_lines("gpt-4o", "openai", "~/repo", false);
         assert_eq!(lines.len(), 5);
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(text.contains("Koda v") && text.contains("gpt-4o") && text.contains("~/repo"));
+        assert!(!text.chars().any(|c| ('\u{2800}'..='\u{28ff}').contains(&c)));
     }
 }

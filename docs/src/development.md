@@ -119,7 +119,7 @@ koda/
 │   │   ├── file_search.rs  # @ mentions' files, through the server's fuzzyFileSearch
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
-│   │   ├── startup.rs      # Startup banner rendering
+│   │   ├── startup.rs      # Startup banner: the logo's print in Braille dots
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── input_history.rs # ↑ / ↓ history, kept in history.jsonl as Codex's TUI keeps it
 │   │   ├── sink.rs         # UiEvent: the engine events the TUI renders
@@ -190,10 +190,10 @@ capture is enabled for scroll wheel; text selection is handled by
 
 ```
 [history panel]                ← ScrollBuffer: scrollable, mouse-selectable
-─── 🐻 ─                        ← separator
+───────                        ← separator
 ⚡> input                      ← tui-textarea, sized to content
 ──────────────────────────────
-model │ auto │ 58% context left │ 🐻 12s  ← status bar
+model │ auto │ 58% context left │ 12s  ← status bar
 [menu_area]                    ← dropdown / approval / wizard (Min(0))
 ```
 

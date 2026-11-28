@@ -11,11 +11,16 @@ Run `koda` with no arguments to open the full-screen TUI.
 │  ✓ Bash (exit 0)                                                         │
 │                                                                          │
 │  All tests pass! Here's what I changed in `auth.rs` …                   │
-│────────────────────────────────────────────────────── 🐻 ────────────────│
+│──────────────────────────────────────────────────────────────────────────│
 │  > _                                                                     │
 │  claude-sonnet-4 │ auto │ ████████░░ 78% │ ⏳ 8s                        │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+When it opens, Koda prints its logo, a bear's paw print drawn in dots, beside
+the version, the model with its provider, and the folder. The print needs a
+font with Braille characters, which terminal emulators have; on the bare
+Linux console the three lines show without it.
 
 ## Layout
 

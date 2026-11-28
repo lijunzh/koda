@@ -139,7 +139,7 @@ impl TuiContext {
         let items = model_items(&models, &name, &self.settings.model);
         let mut dd = crate::widgets::dropdown::DropdownState::new(
             items,
-            "\u{1f43b} Select a model (/provider for another provider)",
+            "Select a model (/provider for another provider)",
         )
         .with_select_hint("enter default \u{00b7} s session");
         if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
@@ -154,7 +154,7 @@ impl TuiContext {
 
     pub(crate) fn open_provider_picker(&mut self) {
         let items = provider_items(&self.providers, false);
-        let dd = crate::widgets::dropdown::DropdownState::new(items, "\u{1f43b} Select a provider");
+        let dd = crate::widgets::dropdown::DropdownState::new(items, "Select a provider");
         self.menu = MenuContent::Provider(dd);
     }
 
@@ -362,7 +362,7 @@ impl TuiContext {
             return;
         }
         let items = model_items(&models, &provider.name, &self.settings.model);
-        let title = format!("\u{1f43b} {} models", provider.name);
+        let title = format!("{} models", provider.name);
         let mut dd = crate::widgets::dropdown::DropdownState::new(items, &title);
         if let Some(idx) = dd.filtered.iter().position(|m| m.is_current) {
             dd.selected = idx;
@@ -390,9 +390,9 @@ impl TuiContext {
                     })
                     .collect();
                 let title = if self.fork_on_pick {
-                    "\u{1f43b} Fork which session?"
+                    "Fork which session?"
                 } else {
-                    "\u{1f43b} Sessions"
+                    "Sessions"
                 };
                 let mut dd = crate::widgets::dropdown::DropdownState::new(items, title);
                 if let Some(idx) = dd.filtered.iter().position(|s| s.is_current) {

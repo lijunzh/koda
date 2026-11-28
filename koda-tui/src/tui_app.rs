@@ -84,7 +84,7 @@ pub async fn run(
     // First-run welcome message (after terminal is initialized)
     if first_run {
         ctx.emit(Line::styled(
-            "  \u{1f43b} Welcome to Koda! Let's pick your LLM provider.",
+            "  Welcome to Koda! Let's pick your LLM provider.",
             Style::default().fg(Color::Cyan),
         ));
         // No key, no server: `koda --oss` runs a local model with nothing

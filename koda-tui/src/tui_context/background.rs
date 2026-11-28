@@ -98,7 +98,7 @@ pub(crate) async fn show_agents(
 
 fn render_agents(buffer: &mut ScrollBuffer, agents: &[AgentInfo]) {
     tui_output::blank(buffer);
-    tui_output::emit_line(buffer, Line::styled("  \u{1f43b} Sub-Agents", BOLD));
+    tui_output::emit_line(buffer, Line::styled("  Sub-Agents", BOLD));
     tui_output::blank(buffer);
     if agents.is_empty() {
         tui_output::dim_msg(buffer, "No sub-agents configured.".into());
