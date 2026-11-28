@@ -52,6 +52,8 @@ const SHORTCUTS: Array<[string, string]> = [
   ['⌘⇧M', 'The mode menu'],
   ['Ctrl O', 'Cycle Normal, Thinking, Verbose'],
   ['Ctrl T', 'Hide or show the plan'],
+  ['⌘.', 'Hide or show the side panel'],
+  ['⌘⇧D', 'Open Changes in the side panel'],
   ['⌥ click', 'Open a session in split view'],
   ['⌘⌃W', 'Take the session out of split view'],
   ['⌘↵', 'Send review comments; submit an answer'],

@@ -207,8 +207,8 @@ it back, as Codex's `thread/archive` and `thread/unarchive` do:
 - **An archived session** is left out of `session/list` unless `archived` is
   `true`. `session/read`, `session/turns/list` and `session/fork` still work
   on it (the fork isn't archived). `session/resume` is refused with
-  `-32600`: "session <id> is archived. Run `koda unarchive <id>` to
-  unarchive it first."
+  `-32600`: "session ID is archived. Run `koda unarchive ID` to unarchive it
+  first.", with the session's ID.
 - **An open session is closed first,** whatever it is doing, in every
   client: its running turn stops (`turn/completed`, `interrupted`), the
   requests waiting in it are withdrawn (`serverRequest/resolved`), and it
@@ -220,8 +220,8 @@ it back, as Codex's `thread/archive` and `thread/unarchive` do:
   session's own first. Forks aren't touched.
 - **`session/unarchive`** answers with the session as `session/read` gives
   it, and doesn't open it: `session/resume` does.
-- **Refused with `-32600`:** archiving an archived session ("session <id> is
-  archived"), unarchiving one that isn't ("session <id> is not archived"), an
+- **Refused with `-32600`:** archiving an archived session ("session ID is
+  archived"), unarchiving one that isn't ("session ID is not archived"), an
   ID that names no session, and a session another process is writing.
 
 The `Session` object has no archived field, as Codex's `Thread` has none: a
