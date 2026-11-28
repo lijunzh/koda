@@ -18,7 +18,15 @@ runs; Ctrl+T hides or shows it.
 ## The prompt box
 
 Enter sends, Shift+Enter adds a line. While a turn
-runs, Enter adds your message to it, and Stop (or Esc) ends it.
+runs, Enter adds your message to it, and Stop (or Esc) ends it. An added
+message waits above the box until Koda reads it, at its next step. If the
+turn is stopped or fails first, the message comes back to the box, in front
+of anything you typed meanwhile.
+
+You can type as soon as a session shows. If you press Enter while it is
+still opening, the line above the box says so, and the message is sent once
+the session is open. Esc, or changing the text, takes it back. If the session
+can't be opened, the text stays in the box and the reason shows.
 
 Under the box are the session's model and mode:
 

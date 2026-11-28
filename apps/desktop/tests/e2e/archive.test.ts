@@ -73,8 +73,8 @@ describe.skipIf(!koda)('archive', () => {
     await bar.getByRole('button', { name: 'Unarchive' }).click();
     const box = page.getByRole('textbox', { name: 'Prompt' });
     await box.waitFor({ timeout: 30_000 });
-    // The prompt box is there before the server has opened the session, and Enter
-    // does nothing until it has: the conversation shows once it is open.
+    // The prompt box is there before the server has opened the session: the
+    // conversation shows once it is open. (Enter before that waits for it; see opening.test.ts.)
     await reply('First answer.').waitFor({ timeout: 30_000 });
     // The Archived list is asked for again after the server says it was unarchived.
     await expect.poll(() => archivedList.getByRole('button', { name: /Alpha question/ }).count(), { timeout: 30_000 }).toBe(0);

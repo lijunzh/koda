@@ -17,9 +17,11 @@ import { SessionDetails } from './SessionDetails';
 import { Background } from './SessionExtras';
 import { type SideState, SidePanel, withPane } from './SidePanel';
 import { type ListedSession, statusLabel, title } from './sessions';
-import { runningTurn, type TranscriptState, type View, VIEWS } from './transcript';
+import { runningTurn, type TranscriptState, type TurnView, type View, VIEWS } from './transcript';
 
 /** Claude Code's names for its desktop views. */
+/** A session not open yet has no turns; one array, so nothing re-renders for it. */
+const NO_TURNS: readonly TurnView[] = [];
 const VIEW_NAMES: Record<View, string> = { normal: 'Normal', thinking: 'Thinking', verbose: 'Verbose' };
 
 interface Props {
@@ -229,7 +231,9 @@ export function SessionView({
             <Composer
               sessionId={selected.id}
               running={running}
+              turns={transcript?.turns ?? NO_TURNS}
               ready={Boolean(session)}
+              failed={Boolean(selected.error) && !session}
               waiting={requests[0]?.method ?? null}
               foot={
                 controls && (

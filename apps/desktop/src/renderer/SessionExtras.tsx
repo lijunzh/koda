@@ -22,7 +22,7 @@ export function GoalLine({ sessionId, goal }: { sessionId: string; goal: Goal | 
 
   if (editing !== null) {
     return (
-      <div className="goal editing" data-testid="goal">
+      <div className="goal editing" data-testid="goal-form">
         <textarea
           aria-label="Goal"
           rows={2}
