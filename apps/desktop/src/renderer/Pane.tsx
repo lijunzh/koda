@@ -4,7 +4,7 @@
 // session on the server when it opens and leaves it when it closes.
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
-import type { Selected } from './App';
+import type { Place, Selected } from './App';
 import { call, type RpcMessage } from './bridge';
 import { type ControlsState, controlsFor, withControls } from './controls';
 import { type TurnDiffs, withDiffs } from './diffs';
@@ -23,6 +23,8 @@ interface Props {
   firstPrompt?: string;
   /** An archived session: read, not opened, until it is unarchived. */
   archived?: boolean;
+  /** The item a search result opened the session at. */
+  at?: Place;
   /** Hear the server's events; returns the way to stop. */
   subscribe(listener: Listener): () => void;
   listed?: ListedSession;
@@ -39,7 +41,7 @@ interface Props {
   onClose?(): void;
 }
 
-export function Pane({ id, initial, firstPrompt, archived, subscribe, listed, requests, onAnswer, view, onView, planShown, detailsShown, onDetails, onOpen, onClose }: Props) {
+export function Pane({ id, initial, firstPrompt, archived, at, subscribe, listed, requests, onAnswer, view, onView, planShown, detailsShown, onDetails, onOpen, onClose }: Props) {
   const [selected, setSelected] = useState<Selected>({ id });
   const [transcript, setTranscript] = useState<TranscriptState | null>(null);
   const [controls, setControls] = useState<ControlsState | null>(null);
@@ -117,6 +119,7 @@ export function Pane({ id, initial, firstPrompt, archived, subscribe, listed, re
     <SessionView
       selected={selected}
       archived={archived}
+      at={at}
       listed={listed}
       transcript={transcript}
       view={view}

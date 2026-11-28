@@ -32,6 +32,14 @@ interface PaneState {
   firstPrompt?: string;
   /** An archived session, shown to read. */
   archived?: boolean;
+  /** Where a search result opened it: the conversation shows that item. */
+  at?: Place;
+}
+
+/** An item of a conversation to show; `n` tells one click on a search result from the next. */
+export interface Place {
+  item: string;
+  n: number;
 }
 
 const PAGE = 50;
@@ -41,6 +49,7 @@ const FLUSH_MS = 50;
 export const MAX_PANES = 4;
 
 let nextKey = 1;
+let nextPlace = 1;
 
 export function App() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -195,10 +204,16 @@ export function App() {
    * pane, or, `beside`, in a new pane next to it (Claude Code's split view).
    */
   const open = useCallback(
-    (id: string, options: { session?: Session; beside?: boolean; pane?: number; firstPrompt?: string; archived?: boolean } = {}) => {
+    (
+      id: string,
+      options: { session?: Session; beside?: boolean; pane?: number; firstPrompt?: string; archived?: boolean; item?: string | null } = {},
+    ) => {
       const { panes, focused } = current.current;
+      const place = options.item ? { item: options.item, n: nextPlace++ } : undefined;
       const at = panes.findIndex((p) => p.id === id);
       if (at >= 0) {
+        // Open already: a search result still shows where it matched.
+        if (place) setPanes(panes.map((p, i) => (i === at ? { ...p, at: place } : p)));
         setFocused(at);
         return;
       }
@@ -209,6 +224,7 @@ export function App() {
         initial: options.session,
         firstPrompt: options.firstPrompt,
         archived: archivedIds.current.has(id),
+        at: place,
       };
       if (options.beside && panes.length < MAX_PANES) {
         const where = (options.pane ?? focused) + 1;
@@ -321,6 +337,11 @@ export function App() {
         onOpen={(id, beside) => open(id, { beside })}
         onOpenSession={(session) => open(session.id, { session })}
         onOpenArchived={(id) => open(id, { archived: true })}
+        onOpenFound={({ session, itemId }, how) => {
+          // One further down than the list has loaded joins it, as the open session it now is.
+          if (!how.archived) setSessions((state) => (state.byId.has(session.id) ? state : withSession(state, session)));
+          open(session.id, { beside: how.beside, archived: how.archived, item: itemId });
+        }}
         archiveTick={archiveTick}
         onNew={start}
         onMore={more}
@@ -370,6 +391,7 @@ export function App() {
                   initial={pane.initial}
                   firstPrompt={pane.firstPrompt}
                   archived={pane.archived}
+                  at={pane.at}
                   subscribe={subscribe}
                   listed={sessions.byId.get(pane.id)}
                   requests={forSession([...pending], pane.id)}

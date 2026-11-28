@@ -112,6 +112,8 @@ pub(crate) struct TuiContext {
     pub completer: crate::completer::InputCompleter,
     /// The files `@` mentions offer, found by the host.
     pub(crate) file_search: crate::file_search::FileSearch,
+    /// What was said in the project's sessions, for the `/resume` picker.
+    pub(crate) session_search: crate::session_search::SessionSearch,
     pub mouse_selection: Option<crate::mouse_select::Selection>,
     /// Y-coordinate of the history area top edge (for mouse mapping).
     pub history_area_y: u16,
@@ -620,6 +622,11 @@ impl TuiContext {
             crate::file_search::FileSearch::new(client.request_handle(), &project_root)
                 .waking(frame_requester.clone());
         let completer = crate::completer::InputCompleter::with_file_search(file_search.clone());
+        let session_search = crate::session_search::SessionSearch::new(
+            client.request_handle(),
+            client.project_root(),
+            frame_requester.clone(),
+        );
 
         let mut scroll_buffer = ScrollBuffer::new(2500);
         // The view the file names, as Claude Code's `viewMode`.
@@ -662,6 +669,7 @@ impl TuiContext {
             history_idx: None,
             completer,
             file_search,
+            session_search,
             mouse_selection: None,
             history_area_y: 0,
             history_area_height: 0,
@@ -963,6 +971,10 @@ impl TuiContext {
             // The host answered an `@` search: the dropdown shows it.
             if self.file_search.take_fresh() {
                 self.refresh_mention_menu();
+            }
+            // The host answered the `/resume` picker's search.
+            if let Some((term, found)) = self.session_search.take_fresh() {
+                self.show_found_sessions(&term, found);
             }
             // Redraw viewport (resize if textarea grew/shrank)
             self.draw()?;

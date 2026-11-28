@@ -4,11 +4,14 @@
 // menu on each (also on a right-click) to open it beside another, rename,
 // fork, archive or delete it. Option-click opens a session in split view.
 // "Archived" shows the sessions put away, to read, unarchive or delete.
+// Search narrows the list by title as you type and, under those, lists the
+// sessions in which the text was said (`search.ts`).
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call } from './bridge';
 import { ArchiveIcon, GearIcon, PlusIcon, SearchIcon } from './Icons';
 import { type Entry, MenuButton, MenuList } from './Menu';
+import { answered, asking, emptyLine, failed as searchFailed, type Found, IDLE, marked, SEARCH_DELAY_MS, SEARCH_LIMIT, type SearchState, searchTerm, unshown } from './search';
 import { byFolder, folderName, type ListedSession, listedPage, type SessionsState, statusLabel, title } from './sessions';
 
 /** How many archived sessions the list asks for: the most recent ones. */
@@ -27,6 +30,8 @@ interface Props {
   onOpenSession(session: Session): void;
   /** Open an archived session, to read. */
   onOpenArchived(id: string): void;
+  /** Open a session search found, at what matched: `beside`, in a new pane; an `archived` one, to read. */
+  onOpenFound(found: Found, how: { beside: boolean; archived: boolean }): void;
   /** Goes up when a session is archived, unarchived or deleted. */
   archiveTick: number;
   onNew(): void;
@@ -38,7 +43,7 @@ interface Props {
   hidden: boolean;
 }
 
-export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onOpenArchived, archiveTick, onNew, onMore, onSettings, connectedTo, hidden }: Props) {
+export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onOpenArchived, onOpenFound, archiveTick, onNew, onMore, onSettings, connectedTo, hidden }: Props) {
   const [query, setQuery] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +84,29 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
 
   const wanted = query?.trim().toLowerCase() ?? '';
   const failed = (e: Error) => setError(e.message);
+
+  // What was said in sessions, asked for once the typing rests; with the
+  // Archived list showing, in the archive. Each change of the query starts
+  // over, and an answer to an earlier one is dropped (`answered`).
+  const term = searchTerm(query);
+  const [search, setSearch] = useState<SearchState>(IDLE);
+  useEffect(() => {
+    const asked = term ? { term, archived: archivedShown } : null;
+    setSearch(asking(asked));
+    if (!asked) return;
+    const timer = setTimeout(() => {
+      call('session/search', {
+        searchTerm: asked.term,
+        limit: SEARCH_LIMIT,
+        sortKey: 'updated_at',
+        ...(asked.archived ? { archived: true } : {}),
+      }).then(
+        (answer) => setSearch((state) => answered(state, asked, answer)),
+        (e: Error) => setSearch((state) => searchFailed(state, asked, e.message)),
+      );
+    }, SEARCH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [term, archivedShown, archiveTick]);
   const archivedEntries = (session: ListedSession): Entry[] => [
     { type: 'item', id: 'open', label: 'Open', onPick: () => onOpenArchived(session.id) },
     {
@@ -96,6 +124,45 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
       sessions: wanted ? group.sessions.filter((s) => title(s).toLowerCase().includes(wanted)) : group.sessions,
     }))
     .filter((group) => group.sessions.length);
+  const archivedMatches = (archived ?? []).filter((s) => !wanted || title(s).toLowerCase().includes(wanted));
+  // "In conversations": not the sessions the title filter shows already.
+  const titleMatches = archivedShown ? archivedMatches : groups.flatMap((group) => group.sessions);
+  const results = unshown(search.found, new Set(titleMatches.map((s) => s.id)));
+  const empty = emptyLine(query, titleMatches.length, results.length, search);
+  const conversations = term !== null && (
+    <>
+      {search.waiting && (
+        <p className="empty searching" data-testid="searching">
+          Searching…
+        </p>
+      )}
+      {search.error && <p className="problem empty">{search.error}</p>}
+      {results.length > 0 && (
+        <section className="group" data-testid="content-results">
+          <h2>In conversations</h2>
+          <ul>
+            {results.map((found) => (
+              <li key={found.session.id} className="session-row">
+                <button
+                  className={found.session.id === selectedId ? 'session found selected' : 'session found'}
+                  title={found.session.cwd ?? undefined}
+                  onClick={(e) => onOpenFound(found, { beside: e.altKey && !archivedShown, archived: archivedShown })}
+                >
+                  <span className="found-head">
+                    <span className="session-title">{title(found.session)}</span>
+                    <span className="session-folder">{folderName(found.session.cwd ?? null)}</span>
+                  </span>
+                  <span className="snippet">
+                    {marked(found.snippet, term).map((part, i) => (part.hit ? <mark key={i}>{part.text}</mark> : part.text))}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
 
   const entriesFor = (session: ListedSession): Entry[] => [
     { type: 'item', id: 'open', label: 'Open', onPick: () => onOpen(session.id, false) },
@@ -163,30 +230,30 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
           <section className="group">
             <h2>Archived</h2>
             {archived && archived.length === 0 && <p className="empty">No archived sessions.</p>}
+            {archived && archived.length > 0 && wanted && empty && <p className="empty">{empty}</p>}
             <ul>
-              {(archived ?? [])
-                .filter((s) => !wanted || title(s).toLowerCase().includes(wanted))
-                .map((session) => (
-                  <li key={session.id} className="session-row">
-                    <button
-                      className={session.id === selectedId ? 'session selected' : 'session'}
-                      title={session.cwd ?? undefined}
-                      onClick={() => onOpenArchived(session.id)}
-                    >
-                      <span className="session-title">{title(session)}</span>
-                      <span className="session-folder">{folderName(session.cwd)}</span>
-                    </button>
-                    <MenuButton label="Session actions" entries={archivedEntries(session)} className="row-menu" right>
-                      <span aria-hidden>⋯</span>
-                    </MenuButton>
-                  </li>
-                ))}
+              {archivedMatches.map((session) => (
+                <li key={session.id} className="session-row">
+                  <button
+                    className={session.id === selectedId ? 'session selected' : 'session'}
+                    title={session.cwd ?? undefined}
+                    onClick={() => onOpenArchived(session.id)}
+                  >
+                    <span className="session-title">{title(session)}</span>
+                    <span className="session-folder">{folderName(session.cwd)}</span>
+                  </button>
+                  <MenuButton label="Session actions" entries={archivedEntries(session)} className="row-menu" right>
+                    <span aria-hidden>⋯</span>
+                  </MenuButton>
+                </li>
+              ))}
             </ul>
           </section>
+          {conversations}
         </div>
       )}
       <div className="groups" hidden={archivedShown}>
-        {sessions.loaded && groups.length === 0 && <p className="empty">{wanted ? 'No session matches.' : 'No sessions yet.'}</p>}
+        {sessions.loaded && !archivedShown && empty && <p className="empty">{empty}</p>}
         {error && <p className="problem empty">{error}</p>}
         {groups.map((group) => (
           <section key={group.folder ?? ''} className="group" data-testid="folder-group">
@@ -256,6 +323,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
             Show more
           </button>
         )}
+        {!archivedShown && conversations}
       </div>
       {menu && (
         <div ref={menuAt}>

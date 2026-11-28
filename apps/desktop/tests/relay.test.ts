@@ -59,6 +59,15 @@ describe('relay', () => {
     expect(refusal('session/resume', { sessionId: 's1', baseUrl: 'https://x' })).toMatch(/baseUrl/);
   });
 
+  it('searches what was said in sessions, by a term, in the list or the archive', () => {
+    expect(refusal('session/search', { searchTerm: 'retry budget' })).toBeNull();
+    expect(refusal('session/search', { searchTerm: 'retry', archived: true, limit: 25, sortKey: 'updated_at' })).toBeNull();
+    expect(refusal('session/search', {})).toMatch(/needs a searchTerm/);
+    expect(refusal('session/search', { searchTerm: 7 })).toMatch(/needs a searchTerm/);
+    expect(refusal('session/search', { searchTerm: 'retry', includeToolOutput: true })).toMatch(/not includeToolOutput/);
+    expect(refusal('session/search', { searchTerm: 'retry', cwd: '/' })).toMatch(/not cwd/);
+  });
+
   it('sends a typed prompt, and nothing that would raise the turn or reach outside the session', () => {
     const text = [{ type: 'text', text: 'hello' }];
     expect(refusal('turn/start', { sessionId: 's', input: text })).toBeNull();

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
-import type { Selected } from './App';
+import type { Place, Selected } from './App';
 import { call } from './bridge';
 import { Composer } from './Composer';
 import type { ControlsState } from './controls';
@@ -28,6 +28,8 @@ interface Props {
   selected: Selected;
   /** An archived session: its conversation, and Unarchive in place of the prompt box. */
   archived?: boolean;
+  /** The item a search result opened the session at. */
+  at?: Place;
   listed?: ListedSession;
   transcript: TranscriptState | null;
   view: View;
@@ -56,6 +58,7 @@ interface Props {
 export function SessionView({
   selected,
   archived,
+  at,
   listed,
   transcript,
   view,
@@ -216,7 +219,7 @@ export function SessionView({
       {!session && !selected.error && <p className="detail">Opening…</p>}
       <div className="session-split">
         <div className="conversation-column">
-          {transcript && <Conversation transcript={transcript} view={view} />}
+          {transcript && <Conversation transcript={transcript} view={view} at={at} />}
           {archived ? (
             <div className="bottom">
               <div className="archived-bar" data-testid="archived-bar">

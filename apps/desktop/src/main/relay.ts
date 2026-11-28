@@ -89,6 +89,18 @@ CHECKED['session/fork'] = (params) => {
   return typeof params.sessionId === 'string' ? null : 'session/fork needs a sessionId';
 };
 
+// Searching what was said in the stored sessions: the page sends the text,
+// whether to look in the archive instead, and how many to return, in which
+// order. It reads no more than `session/read` gives the page already; a
+// search of tool output, or one narrowed some other way, isn't the page's
+// to ask for until it has a use for it.
+CHECKED['session/search'] = (params) => {
+  const keys = ['searchTerm', 'archived', 'limit', 'sortKey'];
+  const extra = Object.keys(params).filter((key) => !keys.includes(key));
+  if (extra.length) return `session/search takes ${keys.join(', ')} from the page, not ${extra.join(', ')}`;
+  return typeof params.searchTerm === 'string' ? null : 'session/search needs a searchTerm';
+};
+
 CHECKED['turn/start'] = (params) =>
   // No `mode`: a turn can't raise its own trust; nor an `outputSchema`.
   promptRefusal('turn/start', params, ['sessionId', 'input', 'clientUserMessageId']);

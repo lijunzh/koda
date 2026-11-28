@@ -150,8 +150,6 @@ pub(crate) type ModelDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::model_menu::ModelItem>;
 pub(crate) type ProviderDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::provider_menu::ProviderItem>;
-pub(crate) type SessionDropdown =
-    crate::widgets::dropdown::DropdownState<crate::widgets::session_menu::SessionItem>;
 pub(crate) type FileDropdown =
     crate::widgets::dropdown::DropdownState<crate::widgets::file_menu::FileItem>;
 
@@ -187,8 +185,9 @@ pub enum MenuContent {
     ),
     /// Key management — pick a provider to set its API key (`/key`).
     Key(ProviderDropdown),
-    /// Session picker dropdown (`/resume` with no args).
-    Session(SessionDropdown),
+    /// Session picker dropdown (`/resume` with no args); typing in it
+    /// searches.
+    Session(crate::widgets::session_menu::SessionPicker),
     /// `/feedback`: the kind of report, then, once `classification` is
     /// chosen, whether to include logs and session history.
     Feedback {

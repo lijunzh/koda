@@ -16,9 +16,18 @@ The session list, on the left, shows every folder's sessions, the most
 recently active first. A small spinner marks a session whose turn is
 running, and *needs you* one that waits for an approval or an answer. The
 list stays current when the TUI or another window starts, renames or
-deletes a session. **Search** narrows it by name. Hover a session for its
-**…** menu (or right-click it): open it, open it in split view, rename,
-fork, [archive](#archiving-a-session) or delete it.
+deletes a session. Hover a session for its **…** menu (or right-click it):
+open it, open it in split view, rename, fork,
+[archive](#archiving-a-session) or delete it.
+
+**Search** narrows the list by name as you type. From the second
+character it also looks through what was said: under the names that match,
+**In conversations** lists the sessions in which you, Koda or a tool call
+used the text, each with the words around the first place it occurs. The
+text is taken as written, letters in either case; what tools returned and
+Koda's thinking aren't searched. Click a result to open the session at
+that place. While [**Archived**](#archiving-a-session) is showing, Search
+looks through the archived sessions instead.
 
 Renaming, forking and deleting are also in the menu beside the session's
 title ([Working in a session](./desktop-conversation.md#the-sessions-title-and-its-menu)).

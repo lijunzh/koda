@@ -45,6 +45,7 @@ pub(crate) mod queued;
 pub mod retired_env;
 pub(crate) mod scroll_buffer;
 pub mod session_id;
+pub(crate) mod session_search;
 pub(crate) mod startup;
 #[cfg(test)]
 mod test_tui;
