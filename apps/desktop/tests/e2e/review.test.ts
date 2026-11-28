@@ -59,12 +59,19 @@ describe.skipIf(!koda)('reviewing changes', () => {
     expect(await added.textContent()).toContain('hello, world');
     expect(await review.locator('.review-line.del').textContent()).toContain('hello');
 
-    await added.click();
+    // Unchanged lines above the change are folded to a count.
+    expect(await review.locator('.review-skip').first().textContent()).toBe('\u00a0');
+
+    // Hovering a line shows the "+" beside its number; Enter adds the comment.
+    await added.hover();
+    await added.getByRole('button', { name: 'Comment on line 2' }).click();
     const comment = review.getByRole('textbox', { name: 'Comment' });
     await comment.fill('Drop the comma');
     await comment.press('Enter');
     expect(await review.getByTestId('review-comment').textContent()).toContain('Drop the comma');
-    await review.getByRole('button', { name: 'Send 1 comment' }).click();
+    await review.getByRole('button', { name: /Send 1 comment/ }).waitFor();
+    // Cmd+Enter sends every comment.
+    await page.keyboard.press('Meta+Enter');
 
     await page.getByTestId('agent-message').filter({ hasText: 'Kept it short.' }).waitFor({ timeout: 30_000 });
     const sent = page.getByTestId('user-message').last();
