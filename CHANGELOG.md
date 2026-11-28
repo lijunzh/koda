@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The desktop app's look,** the first step toward Claude Code's desktop app: one set of colours and sizes in light and dark, quiet buttons in place of the browser's own, the conversation and the prompt box in one centred column, and the app's own menus for the model and the effort in place of the system's pop-up.
+
 ## [0.8.1] - 2026-11-27
 
 The desktop app's first version, on Apple Silicon Macs: `koda app` opens it. Nothing to change in configs, flags or sessions.

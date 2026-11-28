@@ -69,7 +69,7 @@ export function Composer({ sessionId, running, ready, waiting }: Props) {
             ✻
           </span>{' '}
           {waiting ? waitingLabel(waiting) : statusLine(running)}
-          {running.startedAt ? <span className="meta"> {workedFor(now - running.startedAt * 1000)}</span> : null}
+          {running.startedAt ? <span className="meta"> {workedFor(Math.max(0, now - running.startedAt * 1000))}</span> : null}
         </div>
       )}
       {error && <p className="problem">{error}</p>}
