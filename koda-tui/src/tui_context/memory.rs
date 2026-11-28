@@ -67,7 +67,7 @@ impl TuiContext {
             .await;
         let buffer = &mut self.scroll_buffer;
         tui_output::blank(buffer);
-        tui_output::emit_line(buffer, Line::styled("  \u{1f43b} Memory", BOLD));
+        tui_output::emit_line(buffer, Line::styled("  Memory", BOLD));
         tui_output::blank(buffer);
         let sources = &self.session.instruction_sources;
         if sources.is_empty() {

@@ -3,6 +3,7 @@ import type { Session } from '../protocol/types.gen';
 import { call, type RpcMessage, type ServerStatus } from './bridge';
 import { type Listener, Pane } from './Pane';
 import { forSession, type Pending, withRequests, without } from './requests';
+import { Logo } from './Logo';
 import { ServerLine } from './ServerLine';
 import { back, canGoBack, canGoForward, forget, forward, here, type History, START, visit } from './history';
 import { NewSession } from './NewSession';
@@ -293,6 +294,7 @@ export function App() {
     return (
       <main className="status">
         <div className="window-band" />
+        <Logo size={56} />
         <h1>Koda</h1>
         <ServerLine status={status} />
       </main>

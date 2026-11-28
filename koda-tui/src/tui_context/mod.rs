@@ -606,7 +606,7 @@ impl TuiContext {
             let items = menus::provider_items(&providers, false);
             menu = MenuContent::Provider(crate::widgets::dropdown::DropdownState::new(
                 items,
-                "\u{1f43b} Choose your LLM provider",
+                "Choose your LLM provider",
             ));
         }
 
@@ -1067,9 +1067,9 @@ impl TuiContext {
             let now_on = !self.textarea.is_vim_enabled();
             self.textarea.set_vim_enabled(now_on);
             let msg = if now_on {
-                "\u{1f43b} Vim mode: ON \u{2014} Esc \u{2192} NORMAL, i/a/o \u{2192} INSERT."
+                "Vim mode: ON \u{2014} Esc \u{2192} NORMAL, i/a/o \u{2192} INSERT."
             } else {
-                "\u{1f43b} Vim mode: OFF."
+                "Vim mode: OFF."
             };
             self.scroll_buffer.push(Line::from(Span::styled(
                 msg,
@@ -1222,10 +1222,8 @@ impl TuiContext {
             }
             SlashAction::Compact => CommandOutcome::Compact,
             SlashAction::Quit => {
-                self.scroll_buffer.push(Line::styled(
-                    "\u{1f43b} Goodbye!",
-                    Style::default().fg(Color::Cyan),
-                ));
+                self.scroll_buffer
+                    .push(Line::styled("Goodbye!", Style::default().fg(Color::Cyan)));
                 CommandOutcome::Quit
             }
         }

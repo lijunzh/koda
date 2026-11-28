@@ -33,6 +33,8 @@ describe.skipIf(!koda)('a new session', () => {
     expect(await app.evaluate(({ app }) => app.getPath('userData'))).toContain(home);
     // The app opens on a new session: nothing is started, and no folder is known.
     await page.getByTestId('new-session').waitFor({ timeout: 30_000 });
+    // Koda's logo, bundled with the page and allowed by its content policy.
+    await expect.poll(() => page.getByTestId('logo').first().evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
     expect(await page.getByTestId('new-session-folder').textContent()).toBe('Choose a folder');
     await page.getByText('No sessions yet.').waitFor();
 

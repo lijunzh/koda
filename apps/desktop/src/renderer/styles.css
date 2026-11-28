@@ -1060,8 +1060,10 @@ textarea {
 .new-session-body {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 14px;
   padding: 24px;
   text-align: center;
 }
@@ -1764,4 +1766,24 @@ kbd {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   color: var(--muted);
+}
+
+/* Koda's logo: while the app starts, on an empty session, in Settings */
+.logo {
+  display: block;
+  user-select: none;
+}
+.status .logo {
+  margin: 0 0 10px -6px;
+}
+.about {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 14px;
+}
+.about > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }

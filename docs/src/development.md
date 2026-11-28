@@ -119,7 +119,7 @@ koda/
 │   │   ├── file_search.rs  # @ mentions' files, through the server's fuzzyFileSearch
 │   │   ├── diff_render.rs  # Diff preview → ratatui renderer (syntax highlighted)
 │   │   ├── highlight.rs    # Syntax highlighting via syntect
-│   │   ├── startup.rs      # Startup banner rendering
+│   │   ├── startup.rs      # Startup banner: the logo's print in Braille dots
 │   │   ├── input.rs        # @file reference processing + image loading
 │   │   ├── input_history.rs # ↑ / ↓ history, kept in history.jsonl as Codex's TUI keeps it
 │   │   ├── sink.rs         # UiEvent: the engine events the TUI renders
@@ -190,10 +190,10 @@ capture is enabled for scroll wheel; text selection is handled by
 
 ```
 [history panel]                ← ScrollBuffer: scrollable, mouse-selectable
-─── 🐻 ─                        ← separator
+───────                        ← separator
 ⚡> input                      ← tui-textarea, sized to content
 ──────────────────────────────
-model │ auto │ 58% context left │ 🐻 12s  ← status bar
+model │ auto │ 58% context left │ 12s  ← status bar
 [menu_area]                    ← dropdown / approval / wizard (Min(0))
 ```
 
@@ -520,6 +520,17 @@ npm start                 # build into out/ and open the app
   (the fuses turn off the inspector it attaches through): check it by
   starting `Contents/MacOS/Koda` with a scratch `XDG_CONFIG_HOME` and
   reading the page through `--remote-debugging-port`.
+- **The icon** is `assets/icon.svg`: a bear's paw print, cream on an amber
+  tile in macOS's icon grid (an 824-point tile in a 1024 canvas). The
+  packaged app's `assets/icon.icns`, the logo in the README and the manual
+  (`docs/src/assets/koda-logo.png`) and the manual's favicon
+  (`docs/theme/`) are all built from it by `scripts/make-icon.sh`, which
+  needs `rsvg-convert` and macOS's `iconutil`. They're committed, so a
+  release build needs neither; rerun the script after changing the SVG.
+  The page shows the same file (`Logo.tsx`) while the app starts, on an
+  empty session and in Settings. `.github/social-preview.png` is the card
+  for the repository's social preview, drawn from the icon; GitHub takes
+  it only by upload, in the repository's settings.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

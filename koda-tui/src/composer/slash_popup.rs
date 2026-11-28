@@ -177,7 +177,7 @@ pub fn from_input(
             arg_hint: *arg_hint,
         })
         .collect();
-    let mut dd = DropdownState::new(items, "\u{1f43b} Commands");
+    let mut dd = DropdownState::new(items, "Commands");
     if dd.apply_filter(input) {
         Some(dd)
     } else {

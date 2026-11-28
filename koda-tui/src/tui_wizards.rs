@@ -97,10 +97,7 @@ pub(crate) fn handle_diff(buffer: &mut ScrollBuffer) {
     let stat = format!("{stat}{}", untracked_summary(&untracked));
 
     tui_output::blank(buffer);
-    tui_output::emit_line(
-        buffer,
-        Line::styled("  \u{1f43b} Uncommitted Changes", BOLD),
-    );
+    tui_output::emit_line(buffer, Line::styled("  Uncommitted Changes", BOLD));
     tui_output::blank(buffer);
     for line in stat.lines() {
         tui_output::dim_msg(buffer, line.to_string());

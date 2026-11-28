@@ -1,5 +1,7 @@
 # The desktop app
 
+<img src="./assets/koda-logo.png" alt="The app's icon: a bear's paw print" width="96">
+
 Koda's desktop app is a window onto the same [background server](background-server.md)
 as the TUI. A session is in both at once: start it in the app, go on in the
 terminal with `koda resume`, or the other way round. The app follows Claude

@@ -190,12 +190,13 @@ pub fn style_for_extension(ext: &str) -> Style {
     }
 }
 
-// ── Warm palette (koda's bear identity, used by banners) ────────────
+// ── Warm palette (Koda's amber, the logo's; used by banners) ─────────
 
 pub const WARM_TITLE: Style = Style::new()
     .fg(Color::Rgb(229, 192, 123))
     .add_modifier(Modifier::BOLD);
-pub const WARM_ACCENT: Style = Style::new().fg(Color::Rgb(209, 154, 102));
+/// The logo's amber (`#dc9844`), for the print in the banner.
+pub const WARM_ACCENT: Style = Style::new().fg(Color::Rgb(220, 152, 68));
 pub const WARM_MUTED: Style = Style::new().fg(Color::Rgb(124, 111, 100));
 pub const WARM_INFO: Style = Style::new().fg(Color::Rgb(198, 165, 106));
 
