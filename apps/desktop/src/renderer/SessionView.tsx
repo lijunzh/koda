@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import type { Selected } from './App';
 import { call } from './bridge';
@@ -10,9 +10,12 @@ import { type Entry, MenuButton } from './Menu';
 import { PlanPanel } from './Plan';
 import { Requests } from './RequestCards';
 import type { Pending } from './requests';
+import { ListIcon, PanelIcon } from './Icons';
 import { ReviewPanel } from './ReviewPanel';
 import { SessionControls } from './SessionControls';
 import { SessionDetails } from './SessionDetails';
+import { Background } from './SessionExtras';
+import { type SideState, SidePanel, withPane } from './SidePanel';
 import { type ListedSession, statusLabel, title } from './sessions';
 import { runningTurn, type TranscriptState, type View, VIEWS } from './transcript';
 
@@ -63,7 +66,33 @@ export function SessionView({
   onClose,
 }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [reviewing, setReviewing] = useState(false);
+  // The side panel: whether it shows, and the panes open in it.
+  const [sideShown, setSideShown] = useState(false);
+  const [side, setSide] = useState<SideState>({ tabs: [], active: null });
+  const view$ = useRef<HTMLElement>(null);
+  // Cmd+. hides or shows the side panel and Shift+Cmd+D opens Changes in
+  // it, as in Claude Code's desktop app; in split view, for the focused pane.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const pane = view$.current?.closest('.pane');
+      if (pane && !pane.classList.contains('focused') && document.querySelectorAll('.pane').length > 1) return;
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === '.') {
+        e.preventDefault();
+        setSideShown((shown) => !shown);
+      }
+      if (e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        setSide((state) => withPane(state, 'changes'));
+        setSideShown(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const showChanges = () => {
+    setSide((state) => withPane(state, 'changes'));
+    setSideShown(true);
+  };
   const [error, setError] = useState<string | null>(null);
   const session = selected.session;
   const firstPrompt = transcript?.turns.flatMap((turn) => turn.items).find((item) => item.type === 'userMessage');
@@ -108,7 +137,7 @@ export function SessionView({
   ];
 
   return (
-    <main className="session-view" data-testid="session-view" data-view={view}>
+    <main className="session-view" data-testid="session-view" data-view={view} ref={view$}>
       <header>
         <div className="heading">
           <div className="title-row">
@@ -142,17 +171,24 @@ export function SessionView({
             {label && <span data-testid="session-status"> · {label}</span>}
           </p>
         </div>
-        <button className="icon-button" aria-pressed={reviewing} disabled={!transcript} onClick={() => setReviewing((r) => !r)}>
-          Changes
-        </button>
         <button
           className="icon-button"
-          aria-label="Session details"
-          title="Session details"
+          aria-label="Activity panel"
+          title="Activity panel"
           aria-pressed={detailsShown}
           onClick={() => onDetails(!detailsShown)}
         >
-          <span aria-hidden>◨</span>
+          <ListIcon />
+        </button>
+        <button
+          className="icon-button"
+          aria-label="Side panel"
+          title={sideShown ? 'Hide side panel (⌘.)' : 'Show side panel (⌘.)'}
+          aria-pressed={sideShown}
+          disabled={!transcript}
+          onClick={() => setSideShown((shown) => !shown)}
+        >
+          <PanelIcon />
         </button>
         {onClose && (
           <button className="close-pane" aria-label="Close pane" onClick={onClose}>
@@ -187,14 +223,17 @@ export function SessionView({
             />
           </div>
         </div>
-        {reviewing && transcript && (
-          <ReviewPanel
-            key={selected.id}
-            sessionId={selected.id}
-            cwd={folder}
-            transcript={transcript}
-            diffs={diffs}
-            onClose={() => setReviewing(false)}
+        {sideShown && transcript && (
+          <SidePanel
+            state={side}
+            onState={setSide}
+            render={(kind) =>
+              kind === 'changes' ? (
+                <ReviewPanel key={selected.id} sessionId={selected.id} cwd={folder} transcript={transcript} diffs={diffs} />
+              ) : (
+                <Background sessionId={selected.id} pane />
+              )
+            }
           />
         )}
         {detailsShown && controls && (
@@ -204,7 +243,7 @@ export function SessionView({
             controls={controls}
             transcript={transcript}
             diffs={diffs}
-            onChanges={() => setReviewing(true)}
+            onChanges={showChanges}
           />
         )}
       </div>

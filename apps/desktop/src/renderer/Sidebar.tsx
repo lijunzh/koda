@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call } from './bridge';
+import { GearIcon, PlusIcon, SearchIcon } from './Icons';
 import { type Entry, MenuButton, MenuList } from './Menu';
 import { byFolder, folderName, type ListedSession, type SessionsState, statusLabel, title } from './sessions';
 
@@ -87,11 +88,13 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
   return (
     <nav className="sidebar" aria-label="Sessions">
       <div className="sidebar-top">
-        <button className="new-session" onClick={onNew}>
+        <button className="side-action" onClick={onNew}>
+          <PlusIcon />
           New session
         </button>
         {query === null ? (
-          <button className="search-sessions" onClick={() => setQuery('')}>
+          <button className="side-action" onClick={() => setQuery('')}>
+            <SearchIcon />
             Search
           </button>
         ) : (
@@ -199,7 +202,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
           <span />
         )}
         <button className="icon-button" aria-label="Settings" title="Settings (⌘,)" onClick={onSettings}>
-          <span aria-hidden>⚙</span>
+          <GearIcon />
         </button>
       </div>
     </nav>

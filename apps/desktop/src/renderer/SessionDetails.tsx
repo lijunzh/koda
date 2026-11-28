@@ -7,6 +7,7 @@ import type { McpServerStatus } from '../protocol/types.gen';
 import { call } from './bridge';
 import type { ControlsState } from './controls';
 import { parseDiff, type TurnDiffs, turnDiff } from './diffs';
+import { FolderIcon } from './Icons';
 import { Background, GoalLine } from './SessionExtras';
 import { folderName } from './sessions';
 import type { TranscriptState } from './transcript';
@@ -55,12 +56,12 @@ export function SessionDetails({ sessionId, folder, controls, transcript, diffs,
 
   const used = controls.contextLeft === null ? null : 100 - controls.contextLeft;
   return (
-    <aside className="details" data-testid="details" aria-label="Session details">
+    <aside className="details" data-testid="details" aria-label="Activity panel">
       <section className="card">
         <h2>Environment</h2>
         {folder && (
           <p className="card-row" title={folder}>
-            <span aria-hidden>▱</span>
+            <FolderIcon />
             <span className="path">
               {folderName(folder)}
               <span className="meta"> · {folder.slice(0, Math.max(1, folder.lastIndexOf('/')))}</span>

@@ -69,8 +69,11 @@ Click the session's title to rename it. The caret beside it opens the
 session's menu: **Rename**, **Fork** (a copy to go on in, leaving this one
 as it is), **Transcript view**, **Compact** and **Delete** (after asking).
 
-At the right of the conversation is the session's details panel; the button
-at the top right hides or shows it, and a narrow pane leaves it out:
+Two buttons at the top right open what sits beside the conversation. The
+**side panel** (Cmd+.) holds panes as tabs; with none open it lists what you
+can open: **Changes** (Shift+Cmd+D) and **Background tasks**. The
+**Activity panel** is the session's details; a narrow pane leaves it out,
+and it steps aside while the side panel is open unless the window is wide:
 
 | Card | What it shows |
 |---|---|
@@ -96,8 +99,9 @@ window isn't in front.
 
 ## Reviewing changes
 
-**Changes** (at the top right, or a file in the Changes card) opens a pane
-beside the conversation with what a turn changed. Each file is a row with
+**Changes** opens as a pane in the side panel (Shift+Cmd+D, the side
+panel's list, or a file in the Activity panel's Changes card) with what a
+turn changed. Each file is a row with
 its added and removed counts; click the row to fold it. Unchanged lines
 between the changes are folded to a count, and a bar at the left marks each
 added or removed line. While a turn runs the pane updates as Koda edits;

@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call } from './bridge';
+import { FolderIcon } from './Icons';
 import { type Entry, MenuButton } from './Menu';
 import { type Mode, ModeMenu, ModelMenu } from './SessionControls';
 import { byFolder, folderName, type SessionsState } from './sessions';
@@ -143,7 +144,7 @@ export function NewSession({ sessions, onStarted, onClose }: Props) {
           <div className="composer-foot">
             <div className="foot-left">
               <MenuButton label="Folder" entries={folderEntries} up>
-                <span aria-hidden>▱ </span>
+                <FolderIcon />
                 <span data-testid="new-session-folder">{folder ? folderName(folder) : 'Choose a folder'}</span>
                 <span className="caret" aria-hidden>
                   ⌄
