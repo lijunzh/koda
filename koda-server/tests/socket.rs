@@ -565,6 +565,11 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
     let koda = Server::start(config(&server), Duration::from_secs(2)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
+    // `session/started` goes to every client connected when it is sent,
+    // which can be after `session/start` is answered. The first client waits
+    // for it, so the second isn't connected yet to hear it and take it for
+    // the session starting again (macOS runner, 2026-11-28).
+    first.until_method("session/started").await;
     drop(first);
 
     // Still open: attaching gives it as it runs, without starting it again.
