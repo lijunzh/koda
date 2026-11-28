@@ -52,18 +52,40 @@ describe.skipIf(!koda)('session extras', () => {
 
   it('sets a goal, pauses and clears it', async () => {
     const page = await session([]);
+    const t0 = Date.now();
+    await open!.app.evaluate((_e, t0) => {
+      const g = globalThis as unknown as { goalLog: string[]; kodaTestConnection: { on(e: string, f: (b: Array<{ method?: string; id?: unknown; params?: unknown }>) => void): void } };
+      g.goalLog = [];
+      g.kodaTestConnection.on('messages', (batch) => {
+        for (const m of batch) {
+          if (!m.method || /delta|tokenUsage|item\//.test(m.method)) continue;
+          const p = m.params as { goal?: { status?: string; goalId?: string } } | undefined;
+          g.goalLog.push(`${Date.now() - t0}ms ${m.method} ${p?.goal ? `${p.goal.status} ${p.goal.goalId}` : ''}`);
+        }
+      });
+    }, t0);
+    const mark = (what: string) => open!.app.evaluate((_e, [what, t0]) => (globalThis as unknown as { goalLog: string[] }).goalLog.push(`${Date.now() - (t0 as number)}ms TEST ${what}`), [what, t0] as const);
     await page.getByRole('button', { name: 'Set a goal' }).click();
     await page.getByRole('textbox', { name: 'Goal' }).fill('Keep the tests green');
     await page.getByRole('button', { name: 'Set goal' }).click();
+    await mark('set clicked');
     const goal = page.getByTestId('goal');
     await expect.poll(() => goal.textContent(), { timeout: 30_000 }).toContain('Keep the tests green');
     const pause = goal.getByRole('button', { name: 'Pause' });
     if (await pause.count()) {
       await pause.click();
+      await mark('pause clicked');
       await expect.poll(() => goal.textContent(), { timeout: 30_000 }).toMatch(/paused|done|blocked/);
     }
     await goal.getByRole('button', { name: 'Clear' }).click();
-    await page.getByRole('button', { name: 'Set a goal' }).waitFor({ timeout: 30_000 });
+    await mark('clear clicked');
+    try {
+      await page.getByRole('button', { name: 'Set a goal' }).waitFor({ timeout: 15_000 });
+    } catch (e) {
+      console.log('GOALBAR', await page.getByTestId('session-bar').textContent());
+      console.log('GOALLOG\n' + (await open!.app.evaluate(() => (globalThis as unknown as { goalLog: string[] }).goalLog.join('\n'))));
+      throw e;
+    }
   });
 
   it('forks the session into a copy it opens', async () => {
