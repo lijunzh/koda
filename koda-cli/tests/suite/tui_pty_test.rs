@@ -1081,15 +1081,29 @@ const DOWN: &str = "\x1b[B";
 /// In an open picker, press Down until the highlighted line shows `text`.
 /// Pickers move with the arrow keys only, and Down wraps.
 fn highlight(tui: &mut Tui, text: &str) {
-    for _ in 0..40 {
-        let screen = tui.screen();
-        if screen
+    let on = |screen: &str| {
+        screen
             .lines()
             .any(|line| line.trim_start().starts_with('\u{203a}') && line.contains(text))
-        {
-            return;
+    };
+    for _ in 0..40 {
+        let screen = tui.screen();
+        if on(&screen) {
+            // The list may still be loading or reordering: the row counts
+            // once the highlight stays on it (a picked fork once landed on
+            // the original on a busy macOS runner, 2026-11-27).
+            std::thread::sleep(Duration::from_millis(300));
+            if on(&tui.screen()) {
+                return;
+            }
+            continue;
         }
         tui.type_text(DOWN);
+        // Read again once the move is drawn, so one press isn't seen twice.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while tui.screen() == screen && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     panic!("never highlighted {text:?}:\n{}", tui.screen());
 }
