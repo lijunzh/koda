@@ -1,6 +1,7 @@
 // Every koda-cli integration test, one module per former test binary.
 
 mod anthropic_stream_failure_test;
+mod archive_test;
 mod cli_test;
 mod config_dir_test;
 mod context_count_test;

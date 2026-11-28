@@ -2247,6 +2247,75 @@ async fn the_tui_works_on_the_shared_server() {
     assert!(tui.exits());
 }
 
+/// `koda archive` from another terminal while a window has the session
+/// open on the shared server: the command reaches that server, the window
+/// says the session was archived, and its next prompt isn't sent to it but
+/// comes back with the way to unarchive it. After `koda unarchive`, the
+/// same window goes on with the session. Only the running TUI on the
+/// shared server hears another client's `session/archived`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_window_is_told_its_session_was_archived_and_goes_on_once_unarchived() {
+    let server = scripted_model(vec![]).await;
+    let home = home();
+    let _stop = StopServer(home.path());
+    let mut tui = Tui::start_shared(home.path(), &server.url(), &[], IDLE_HINT);
+    tui.submit_and_finish("remember the colour", "All done.");
+    let session = {
+        use koda_state::session_store::SessionStore;
+        let project = std::fs::canonicalize(home.path()).unwrap();
+        let db = koda_state::db::Database::init(&home.path().join(".config/koda"))
+            .await
+            .unwrap();
+        db.list_sessions(10, &project).await.unwrap()[0].id.clone()
+    };
+    let koda = |command: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_koda"))
+            .arg("--project-root")
+            .arg(home.path())
+            .args([command, &session[..8]])
+            .env("HOME", home.path())
+            .env("XDG_CONFIG_HOME", home.path().join(".config"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "koda {command}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+
+    assert_eq!(koda("archive"), format!("Archived session {session}."));
+    tui.wait_for_screen("This session was archived");
+    tui.submit("and the shape");
+    tui.wait_for_screen("is archived. Run `koda unarchive");
+    assert_eq!(
+        model_calls(&server).await.len(),
+        1,
+        "nothing went to the archived session"
+    );
+    assert!(
+        input_box(&tui.screen()).contains("andtheshape"),
+        "the prompt comes back to the input box:\n{}",
+        tui.screen()
+    );
+
+    let restored = koda("unarchive");
+    assert!(
+        restored.starts_with("Unarchived session ") && restored.contains(&session),
+        "{restored}"
+    );
+    // The prompt is still in the input box.
+    tui.type_text("\r");
+    let sent = wait_for_model_call(&server, 2).await;
+    assert!(sent.contains("remember the colour"), "history lost: {sent}");
+    assert!(sent.contains("and the shape"), "{sent}");
+    tui.wait_for_screen_without(BUSY_PROMPT);
+    tui.type_text("/exit\r");
+    assert!(tui.exits());
+}
+
 /// `koda resume` of a session whose turn runs on the shared server, in
 /// another window, as a goal's does: the TUI opens it at once, from what
 /// the resume answer says the session runs with, and follows that turn. It

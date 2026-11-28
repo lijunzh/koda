@@ -55,8 +55,44 @@ pub(crate) async fn resolve(client: &InProcessClient, typed: &str) -> anyhow::Re
     pick(typed, sessions.iter().map(|s| s.id.as_str())).map(str::to_string)
 }
 
-/// Every session of this project, most recent first, page by page.
+/// The full id `typed` names for `koda archive` or, with `archived`, for
+/// `koda unarchive`: a full id as it is, and anything shorter among this
+/// project's sessions that aren't archived, or among its archived ones, as
+/// Codex looks a session up in its active or its archived collection.
+pub async fn resolve_for_archive(
+    client: &InProcessClient,
+    typed: &str,
+    archived: bool,
+) -> anyhow::Result<String> {
+    let typed = typed.trim();
+    anyhow::ensure!(!typed.is_empty(), "no session id given");
+    if is_full_id(typed) {
+        return Ok(typed.to_string());
+    }
+    let sessions = sessions(client, archived).await?;
+    let matches: Vec<&str> = sessions
+        .iter()
+        .map(|s| s.id.as_str())
+        .filter(|id| id.starts_with(typed))
+        .collect();
+    match matches[..] {
+        [only] => Ok(only.to_string()),
+        [] => {
+            let scope = if archived { "archived" } else { "active" };
+            anyhow::bail!("No {scope} session found matching '{typed}'.")
+        }
+        _ => anyhow::bail!("'{typed}' matches more than one session; give more of the id."),
+    }
+}
+
+/// Every session of this project that isn't archived, most recent first.
 pub(crate) async fn all_sessions(client: &InProcessClient) -> anyhow::Result<Vec<Session>> {
+    sessions(client, false).await
+}
+
+/// This project's sessions, most recent first, page by page: the archived
+/// ones, or the ones that aren't.
+async fn sessions(client: &InProcessClient, archived: bool) -> anyhow::Result<Vec<Session>> {
     let mut sessions = Vec::new();
     let mut cursor = None;
     loop {
@@ -78,6 +114,7 @@ pub(crate) async fn all_sessions(client: &InProcessClient) -> anyhow::Result<Vec
                     SessionSourceKind::SubAgent,
                     SessionSourceKind::Unknown,
                 ]),
+                archived: archived.then_some(true),
                 ..Default::default()
             })
             .await

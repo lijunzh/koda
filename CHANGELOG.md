@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`koda archive <SESSION>` puts a session away without deleting it, and `koda unarchive <SESSION>` brings it back,** as `codex archive` and `codex unarchive` do. An archived session stays stored, but `/resume`, `koda resume` and `--last` no longer offer it, and resuming it by ID says to unarchive it first. A session that is open is closed first: a turn running in it stops, saved as interrupted, and a window that had it open says it was archived and goes on with it once it is unarchived. The sessions of its sub-agents are archived and restored with it. `SESSION` is an ID or its first characters; sessions aren't found by name yet, and the TUI has no `/archive` yet.
+- **The client protocol archives sessions as Codex's does.** `session/archive` and `session/unarchive` (Codex's `thread/archive` and `thread/unarchive`) are followed by `session/archived` and `session/unarchived`, one for each session changed, to every client. `session/list` takes `archived`: `true` lists only archived sessions, and without it they are left out. `session/read` and `session/fork` still work on an archived session; `session/resume` is refused until it is unarchived. See [Archiving a session](docs/src/serve.md#archiving-a-session).
+
 ### Changed
 
 - **The desktop app's window has Claude Code's top bar.** On a Mac the title bar is gone: the window's own buttons sit in the app's top bar, which drags the window. Beside them are a button that hides or shows the session list (Cmd+B; remembered between launches), and Back and Forward (Cmd+[ and Cmd+]), which step through the sessions you were in, in the order you used them, including the other pane of a split view and the new-session screen.

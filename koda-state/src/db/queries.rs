@@ -429,6 +429,58 @@ fn preview_of(text: &str) -> String {
         .collect()
 }
 
+impl Database {
+    /// Archive session `session_id` and its descendants, or bring them
+    /// back, in one transaction: the ids it changed, `session_id` first,
+    /// then the descendants, the deepest first. Nothing when `session_id`
+    /// already is as asked, or names no session; a descendant that already
+    /// is stays as it was.
+    async fn set_archived(&self, session_id: &str, archived: bool) -> Result<Vec<String>> {
+        let mut tx = self.pool.begin_immediate().await?;
+        // The session and the sub-agents' sessions under it, each with how
+        // far down it is. `UNION` and a depth limit, so rows that name each
+        // other as parent (which nothing writes) can't loop for ever.
+        let subtree: Vec<(String, i64, bool)> = sqlx::query_as(
+            "WITH RECURSIVE subtree(id, depth) AS (
+               SELECT id, 0 FROM sessions WHERE id = ?
+               UNION
+               SELECT s.id, t.depth + 1 FROM sessions s
+                 JOIN subtree t ON s.parent_session_id = t.id
+                WHERE t.depth < 64
+             )
+             SELECT t.id, MIN(t.depth) AS level, s.archived_at IS NOT NULL
+               FROM subtree t JOIN sessions s ON s.id = t.id
+              GROUP BY t.id
+              ORDER BY (t.id = ?) DESC, level DESC, s.rowid",
+        )
+        .bind(session_id)
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let root_changes = subtree
+            .first()
+            .is_some_and(|(id, _, is)| id == session_id && *is != archived);
+        if !root_changes {
+            return Ok(Vec::new());
+        }
+        let set = if archived {
+            "UPDATE sessions SET archived_at = datetime('now') WHERE id = ?"
+        } else {
+            "UPDATE sessions SET archived_at = NULL WHERE id = ?"
+        };
+        let mut changed = Vec::new();
+        for (id, _, is) in subtree {
+            if is == archived {
+                continue;
+            }
+            sqlx::query(set).bind(&id).execute(&mut *tx).await?;
+            changed.push(id);
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+}
+
 // ── SessionStore trait ──────────────────────────────────────────────────────────────
 
 /// A session's summary: [`SessionInfoRow`]'s columns, before a filter, all
@@ -444,6 +496,7 @@ macro_rules! session_info_select {
         s.preview,
         s.project_root, s.provider, s.base_url, s.model,
         s.source, s.originator, s.forked_from_id, s.parent_session_id, s.ephemeral,
+        CAST(strftime('%s', s.archived_at) AS INTEGER) as archived_unix,
         s.rowid as sequence
      FROM sessions s"
     };
@@ -1032,7 +1085,8 @@ impl SessionStore for Database {
         let root = project_root.to_string_lossy().to_string();
         let rows: Vec<SessionInfoRow> = sqlx::query_as(concat!(
             session_info_select!(),
-            " WHERE s.project_root = ? OR s.project_root IS NULL
+            " WHERE (s.project_root = ? OR s.project_root IS NULL)
+               AND s.archived_at IS NULL
              ORDER BY s.created_at DESC, s.rowid DESC
              LIMIT ? OFFSET ?"
         ))
@@ -1057,6 +1111,11 @@ impl SessionStore for Database {
         };
         let mut sql = sqlx::QueryBuilder::<sqlx::Sqlite>::new(session_info_select!());
         sql.push(" WHERE s.ephemeral = 0");
+        sql.push(if query.archived {
+            " AND s.archived_at IS NOT NULL"
+        } else {
+            " AND s.archived_at IS NULL"
+        });
         if let Some(roots) = &query.project_roots {
             sql.push(" AND (s.project_root IS NULL OR s.project_root IN (");
             let mut list = sql.separated(", ");
@@ -1188,6 +1247,14 @@ impl SessionStore for Database {
         }
 
         Ok(existed)
+    }
+
+    async fn archive_session(&self, session_id: &str) -> Result<Vec<String>> {
+        self.set_archived(session_id, true).await
+    }
+
+    async fn unarchive_session(&self, session_id: &str) -> Result<Vec<String>> {
+        self.set_archived(session_id, false).await
     }
 
     async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {

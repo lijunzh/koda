@@ -224,6 +224,8 @@ fn help_pages_fit_100_columns_and_stand_alone() {
         vec!["exec", "fork"],
         vec!["resume"],
         vec!["fork"],
+        vec!["archive"],
+        vec!["unarchive"],
         vec!["serve"],
         vec!["mcp"],
         vec!["mcp", "add"],

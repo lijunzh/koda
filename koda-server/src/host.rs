@@ -22,9 +22,10 @@ use koda_protocol::ServerNotification;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
 use koda_protocol::session::{
-    SessionDeleteResponse, SessionDeletedNotification, SessionListParams, SessionListResponse,
-    SessionStartParams, SessionStartResponse, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
-    SortDirection,
+    SessionArchiveResponse, SessionArchivedNotification, SessionDeleteResponse,
+    SessionDeletedNotification, SessionListParams, SessionListResponse, SessionStartParams,
+    SessionStartResponse, SessionUnarchiveResponse, SessionUnarchivedNotification,
+    SessionUnsubscribeResponse, SessionUnsubscribeStatus, SortDirection,
 };
 use koda_protocol::state::{SandboxState, StateReadResponse};
 use koda_state::db::Database;
@@ -275,6 +276,8 @@ fn ordered_session(request: &rpc::Request) -> Option<String> {
         "session/resume",
         "session/fork",
         "session/delete",
+        "session/archive",
+        "session/unarchive",
         "session/name/set",
         "session/settings/update",
         "session/compact/start",
@@ -377,6 +380,10 @@ impl Host {
                     cwd,
                     config,
                 } = params;
+                if let Err(archived) = self.refuse_archived(&session_id).await {
+                    let _ = reply.send(Err(archived));
+                    return;
+                }
                 // Without a folder, the session's own, as Codex's
                 // `thread/resume` falls back to the thread's stored cwd: a
                 // client that resumes by id (the desktop app) gets the
@@ -629,6 +636,22 @@ impl Host {
                 );
                 return;
             }
+            ClientRequest::SessionArchive { params, .. } => {
+                let archived = self.archive_session(params.session_id).await;
+                self.answer_then_tell(reply, archived, |session_id| {
+                    ServerNotification::SessionArchived(SessionArchivedNotification { session_id })
+                });
+                return;
+            }
+            ClientRequest::SessionUnarchive { params, .. } => {
+                let restored = self.unarchive_session(params.session_id).await;
+                self.answer_then_tell(reply, restored, |session_id| {
+                    ServerNotification::SessionUnarchived(SessionUnarchivedNotification {
+                        session_id,
+                    })
+                });
+                return;
+            }
             ClientRequest::SessionNameSet { params, .. } => {
                 let _ = reply.send(self.set_name(params).await.and_then(to_json));
                 return;
@@ -808,6 +831,7 @@ impl Host {
             providers: params
                 .model_providers
                 .filter(|providers| !providers.is_empty()),
+            archived: params.archived.unwrap_or(false),
             by_updated,
             ascending: params.sort_direction == Some(SortDirection::Asc),
             after,
@@ -993,8 +1017,6 @@ impl Host {
         }
     }
 
-    /// Delete session `id`, closing it first if it is open, as Codex's
-    /// `thread/delete` does, and say so with `session/deleted`.
     /// `session/name/set`: store the name, and tell an open session its
     /// first prompt no longer titles it.
     async fn set_name(
@@ -1060,20 +1082,146 @@ impl Host {
         Ok(koda_protocol::session::SessionNameSetResponse {})
     }
 
-    async fn delete_session(&self, id: String) -> Result<SessionDeleteResponse, ErrorObject> {
-        use koda_state::session_store::SessionStore;
-        let open = self.sessions.lock().await.remove(&id);
+    /// Close session `id` if it is open here, before it is deleted or
+    /// archived, as Codex shuts a loaded thread down first: its running
+    /// turn stops, which withdraws the requests still waiting in it
+    /// (`serverRequest/resolved`), and its task ends.
+    async fn close_for_removal(&self, id: &str) {
+        let open = self.sessions.lock().await.remove(id);
         if let Some(session) = open {
             self.handles
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .remove(&id);
+                .remove(id);
             let (done, stopped) = oneshot::channel();
             let _ = session.send(SessionCommand::Shutdown { done: Some(done) });
             // Dropped once the session's task has ended, its turn stopped.
             let _ = tokio::time::timeout(SESSION_STOP, stopped).await;
-            self.closed(&id);
+            self.closed(id);
         }
+    }
+
+    /// Answer `reply` with what `done` gives, then tell every client of
+    /// each session it names with `notice`, as Codex answers
+    /// `thread/archive` before its `thread/archived`s.
+    fn answer_then_tell<T: serde::Serialize>(
+        &self,
+        reply: oneshot::Sender<Answer>,
+        done: Result<(T, Vec<String>), ErrorObject>,
+        notice: impl Fn(String) -> ServerNotification,
+    ) {
+        let (answer, sessions) = match done {
+            Ok((answer, sessions)) => (to_json(answer), sessions),
+            Err(e) => (Err(e), Vec::new()),
+        };
+        let _ = reply.send(answer);
+        for session_id in sessions {
+            let _ = self
+                .context
+                .events
+                .send(Outgoing::Notification(notice(session_id)));
+        }
+    }
+
+    /// Stored session `id`, for `session/archive` and `session/unarchive`.
+    async fn stored(
+        &self,
+        id: &str,
+    ) -> Result<koda_state::session_store::SessionInfo, ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        self.context
+            .db
+            .get_session(id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?
+            .ok_or_else(|| invalid(format!("no session {id:?}")))
+    }
+
+    /// `session/resume` of an archived session is refused, in Codex's
+    /// words for `thread/resume`. A session that isn't stored is left to
+    /// the open, which says so.
+    async fn refuse_archived(&self, id: &str) -> Result<(), ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let stored = self
+            .context
+            .db
+            .get_session(id)
+            .await
+            .map_err(|e| internal(format!("couldn't read the session: {e:#}")))?;
+        if stored.is_some_and(|stored| stored.archived_unix.is_some()) {
+            return Err(invalid(format!(
+                "session {id} is archived. Run `koda unarchive {id}` to unarchive it first."
+            )));
+        }
+        Ok(())
+    }
+
+    /// `session/archive`: archive session `id` and the sessions of the
+    /// sub-agents it ran, as Codex's `thread/archive` does. One that is
+    /// open is closed first, whatever it is doing: its running turn stops
+    /// and its waiting requests are withdrawn. Returns the sessions
+    /// archived, for their `session/archived`.
+    async fn archive_session(
+        &self,
+        id: String,
+    ) -> Result<(SessionArchiveResponse, Vec<String>), ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let already = || invalid(format!("session {id} is archived"));
+        if self.stored(&id).await?.archived_unix.is_some() {
+            return Err(already());
+        }
+        self.close_for_removal(&id).await;
+        // Not while another process writes it, as Codex's `thread/archive`
+        // takes the thread's writer lock.
+        let _writer = session::take_writer(&self.context.db, &id).await?;
+        let archived = self
+            .context
+            .db
+            .archive_session(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't archive the session: {e:#}")))?;
+        // Another client archived it meanwhile.
+        if archived.is_empty() {
+            return Err(already());
+        }
+        // A sub-agent's session a client had opened by its id.
+        for descendant in archived.iter().skip(1) {
+            self.close_for_removal(descendant).await;
+        }
+        Ok((SessionArchiveResponse {}, archived))
+    }
+
+    /// `session/unarchive`: bring session `id` back, with the sessions of
+    /// the sub-agents it ran, as Codex's `thread/unarchive` does, and
+    /// answer with it as `session/read` gives it. It isn't opened. Returns
+    /// the sessions restored, for their `session/unarchived`.
+    async fn unarchive_session(
+        &self,
+        id: String,
+    ) -> Result<(SessionUnarchiveResponse, Vec<String>), ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let not_archived = || invalid(format!("session {id} is not archived"));
+        if self.stored(&id).await?.archived_unix.is_none() {
+            return Err(not_archived());
+        }
+        let restored = self
+            .context
+            .db
+            .unarchive_session(&id)
+            .await
+            .map_err(|e| internal(format!("couldn't unarchive the session: {e:#}")))?;
+        if restored.is_empty() {
+            return Err(not_archived());
+        }
+        let session = self.with_status(session::describe(&self.stored(&id).await?));
+        Ok((SessionUnarchiveResponse { session }, restored))
+    }
+
+    /// Delete session `id`, closing it first if it is open, as Codex's
+    /// `thread/delete` does, and say so with `session/deleted`.
+    async fn delete_session(&self, id: String) -> Result<SessionDeleteResponse, ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        self.close_for_removal(&id).await;
         // Not while another process writes it, as Codex's `thread/delete`
         // takes the thread's writer lock. An id that names no session is
         // left to the lookup below.

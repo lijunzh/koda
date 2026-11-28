@@ -523,6 +523,40 @@ struct RouterState {
     /// end (`serve/stop` with `forUpdate` and `afterTurns`): new turns are
     /// refused until then.
     update: Option<String>,
+    /// Sessions deleted, or archived and not brought back: closed in the
+    /// host, with no client to come for what their last moments still send.
+    closed: HashSet<String>,
+}
+
+/// What changes the list of sessions, which goes to every client, as Codex
+/// sends a thread's start, rename, delete, archive and status to every
+/// connection: a client that lists sessions hears of ones another client
+/// makes, and of what each is doing.
+const TOLD_TO_EVERYONE: &[&str] = &[
+    "session/started",
+    "session/name/updated",
+    "session/deleted",
+    "session/archived",
+    "session/unarchived",
+    "session/status/changed",
+];
+
+impl RouterState {
+    /// Session `session` is no longer open in the host: its subscribers,
+    /// its waiting requests and what it ran with go.
+    fn forget(&mut self, session: &str) {
+        self.subscribers.remove(session);
+        self.activity.remove(session);
+        self.open.remove(session);
+        self.running.remove(session);
+        self.held.remove(session);
+        for (id, _) in self.pending.remove(session).unwrap_or_default() {
+            if let Some(timer) = self.timers.remove(&id.to_string()) {
+                timer.abort();
+            }
+        }
+        self.live.remove(session);
+    }
 }
 
 /// Requests that start a turn, which a server making way for a newer Koda
@@ -573,6 +607,13 @@ impl Router {
             }
             return;
         };
+        // A session deleted or archived was closed first, with everything
+        // it had to say sent before. What still comes of it (a turn that
+        // took too long to stop, a background agent's request withdrawn as
+        // it goes) has nobody to go to, and isn't kept for a client to come.
+        if state.closed.contains(&session) && !TOLD_TO_EVERYONE.contains(&method) {
+            return;
+        }
         // A request waits until a client answers it, Koda resolves it, or
         // the wait runs out; a client that attaches is sent it again.
         if value.get("id").is_some() && !method.is_empty() {
@@ -621,17 +662,21 @@ impl Router {
         if state.update.is_some() && working(&state) == 0 {
             self.stop_requested.notify_one();
         }
-        // What changes the list of sessions goes to every client, as Codex
-        // sends a thread's start, rename, delete and status to every
-        // connection: a client that lists sessions hears of ones another
-        // client makes, and of what each is doing.
-        if matches!(
-            method,
-            "session/started"
-                | "session/name/updated"
-                | "session/deleted"
-                | "session/status/changed"
-        ) {
+        if TOLD_TO_EVERYONE.contains(&method) {
+            match method {
+                // Closed in the host: nobody is subscribed to it any more,
+                // as Codex drops a thread's subscriptions, and an archived
+                // one brought back is opened again by `session/resume`,
+                // not joined.
+                "session/deleted" | "session/archived" => {
+                    state.forget(&session);
+                    state.closed.insert(session.clone());
+                }
+                "session/unarchived" => {
+                    state.closed.remove(&session);
+                }
+                _ => {}
+            }
             for outbox in state.connections.values() {
                 outbox.push(line.clone());
             }
@@ -889,15 +934,7 @@ impl Router {
                 if !unchanged || !idle(&state, &session) {
                     return;
                 }
-                state.subscribers.remove(&session);
-                state.activity.remove(&session);
-                state.open.remove(&session);
-                for (id, _) in state.pending.remove(&session).unwrap_or_default() {
-                    if let Some(timer) = state.timers.remove(&id.to_string()) {
-                        timer.abort();
-                    }
-                }
-                state.live.remove(&session);
+                state.forget(&session);
             }
             tracing::info!("koda serve: closing idle session {session}");
             if let Err(e) = router
@@ -1496,6 +1533,59 @@ mod tests {
             );
         }
         server.await.unwrap();
+    }
+
+    /// A session archived or deleted is closed: what its last moments
+    /// still send (a turn slow to stop, a request withdrawn as a
+    /// background agent goes) isn't kept for the next client, as a new
+    /// session's first messages are, and a request among it starts no wait
+    /// for an answer. Unarchived, it is a session a client may come for
+    /// again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn what_a_closed_session_still_sends_is_not_kept() {
+        let (commands, _host) = tokio::sync::mpsc::channel(1);
+        let router = Arc::new(Router {
+            state: Mutex::default(),
+            handle: RequestHandle {
+                commands,
+                next_id: Arc::default(),
+            },
+            unload_delay: Duration::from_secs(60),
+            approval_wait: Duration::from_secs(60),
+            stopping: tokio::sync::watch::Sender::new(false),
+            stop_requested: tokio::sync::Notify::new(),
+        });
+        let told = |method: &str| {
+            serde_json::json!({"jsonrpc": "2.0", "method": method, "params": {"sessionId": "s"}})
+                .to_string()
+        };
+        let asked = serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "item/toolCall/requestApproval",
+            "params": {"sessionId": "s"},
+        })
+        .to_string();
+        let kept = |router: &Router| router.lock().held.get("s").map_or(0, Vec::len);
+
+        // A session with no client yet: what it says waits for one.
+        router.deliver(told("turn/started"));
+        assert_eq!(kept(&router), 1);
+
+        for closing in ["session/archived", "session/deleted"] {
+            router.deliver(told(closing));
+            router.deliver(told("turn/completed"));
+            router.deliver(asked.clone());
+            let state = router.lock();
+            assert!(!state.held.contains_key("s"), "{closing}");
+            assert!(state.pending.is_empty(), "{closing}");
+            assert!(state.timers.is_empty(), "{closing}");
+            assert!(!state.running.contains("s"), "{closing}");
+            drop(state);
+            if closing == "session/archived" {
+                router.deliver(told("session/unarchived"));
+                router.deliver(told("turn/started"));
+                assert_eq!(kept(&router), 1, "unarchived, it is kept again");
+            }
+        }
     }
 
     #[test]

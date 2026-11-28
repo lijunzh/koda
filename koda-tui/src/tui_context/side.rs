@@ -78,6 +78,8 @@ pub(crate) struct SideState {
     /// A review (`/review`) rather than a side conversation: what it
     /// reviews, as the banner and results name it.
     pub(crate) review: Option<String>,
+    /// The main session was archived meanwhile, and the host closed it.
+    pub(crate) main_archived: bool,
 }
 
 impl SideState {
@@ -96,6 +98,7 @@ impl SideState {
             boundary_sent: false,
             main_settings,
             review,
+            main_archived: false,
         }
     }
 }
@@ -252,6 +255,20 @@ impl TuiContext {
             Outgoing::Notification(ServerNotification::SessionSettingsUpdated(updated)) => {
                 side.main_settings = updated.session_settings.clone();
             }
+            // Another client archived it: the host has closed it.
+            Outgoing::Notification(ServerNotification::SessionArchived(_)) => {
+                side.main_archived = true;
+                side.main_turn = None;
+                side.waiting.clear();
+                tui_output::warn_msg(
+                    &mut self.scroll_buffer,
+                    format!(
+                        "The main session was archived. Run `koda unarchive {}` to go on \
+                         with it.",
+                        side.main.id
+                    ),
+                );
+            }
             _ => {}
         }
         true
@@ -265,7 +282,14 @@ impl TuiContext {
         use koda_client::protocol::session::SessionDeleteParams;
         let side = self.side.take()?;
         let left = std::mem::replace(&mut self.session, side.main);
-        self.host_session = self.session.id.clone();
+        // An archived main session is closed on the host: the next prompt
+        // opens it again first, which the host refuses until `koda
+        // unarchive`.
+        self.host_session = if side.main_archived {
+            String::new()
+        } else {
+            self.session.id.clone()
+        };
         if let Err(e) = self
             .client
             .request::<methods::SessionDelete>(SessionDeleteParams {

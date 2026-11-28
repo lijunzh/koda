@@ -162,6 +162,8 @@ text.
   `unknown`. A session started with `ephemeral`, such as the TUI's side
   conversations and reviews, is never listed.
 - **`modelProviders`** keeps the sessions of those providers.
+- **`archived`**, when `true`, gives only archived sessions. Without it, or
+  with `false`, only the ones that aren't, as Codex's `thread/list`.
 - **`sortKey`** is `created_at` (the default) or `updated_at`, and
   **`sortDirection`** `desc` (the default, newest first) or `asc`.
 - **`limit`** is 50 without one. Pass the answer's `nextCursor` as `cursor`,
@@ -180,11 +182,50 @@ stored session that isn't open, `{"type": "idle"}`, or `{"type": "active",
 request) and `waitingOnUserInput` (the model's question) among the flags.
 
 Every client hears `session/started`, `session/name/updated`,
-`session/deleted` and `session/status/changed` for every session, as Codex
+`session/deleted`, `session/archived`, `session/unarchived` and
+`session/status/changed` for every session, as Codex
 sends them to every connection, so a list a client shows stays right when
-another client makes, renames or deletes a session, and shows what each is
-doing. `koda exec --json` leaves `session/status/changed` out. A session's turns and requests go only to the clients that
+another client makes, renames, archives or deletes a session, and shows what
+each is doing. `koda exec --json` leaves `session/status/changed` out. A session's turns and requests go only to the clients that
 have it open.
+
+## Archiving a session
+
+`session/archive` puts a stored session away and `session/unarchive` brings
+it back, as Codex's `thread/archive` and `thread/unarchive` do:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"session/archive","params":{"sessionId":"<id>"}}
+{"jsonrpc":"2.0","id":7,"result":{}}
+{"jsonrpc":"2.0","method":"session/archived","params":{"sessionId":"<id>"}}
+
+{"jsonrpc":"2.0","id":8,"method":"session/unarchive","params":{"sessionId":"<id>"}}
+{"jsonrpc":"2.0","id":8,"result":{"session":{"id":"<id>","status":{"type":"notLoaded"}}}}
+{"jsonrpc":"2.0","method":"session/unarchived","params":{"sessionId":"<id>"}}
+```
+
+- **An archived session** is left out of `session/list` unless `archived` is
+  `true`. `session/read`, `session/turns/list` and `session/fork` still work
+  on it (the fork isn't archived). `session/resume` is refused with
+  `-32600`: "session <id> is archived. Run `koda unarchive <id>` to
+  unarchive it first."
+- **An open session is closed first,** whatever it is doing, in every
+  client: its running turn stops (`turn/completed`, `interrupted`), the
+  requests waiting in it are withdrawn (`serverRequest/resolved`), and it
+  becomes `notLoaded` (`session/status/changed`). No client stays
+  subscribed to it. Then `session/archived` follows.
+- **Sub-agents' sessions** (the ones whose `parentSessionId` leads to it)
+  are archived and unarchived with it. Every client hears one
+  `session/archived` or `session/unarchived` for each session changed, the
+  session's own first. Forks aren't touched.
+- **`session/unarchive`** answers with the session as `session/read` gives
+  it, and doesn't open it: `session/resume` does.
+- **Refused with `-32600`:** archiving an archived session ("session <id> is
+  archived"), unarchiving one that isn't ("session <id> is not archived"), an
+  ID that names no session, and a session another process is writing.
+
+The `Session` object has no archived field, as Codex's `Thread` has none: a
+client knows from the list it asked for and from the two notifications.
 
 ## A session's earlier turns
 

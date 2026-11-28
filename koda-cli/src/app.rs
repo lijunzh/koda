@@ -317,6 +317,14 @@ enum Command {
     /// The original session is left unchanged. With --worktree and an id, the
     /// copy opens in a new Git worktree.
     Fork(ResumeArgs),
+    /// Archive a saved session by id.
+    ///
+    /// An archived session stays saved, but `koda resume` no longer lists
+    /// or opens it until `koda unarchive` brings it back. If it is open,
+    /// it is closed first, and a turn running in it stops.
+    Archive(SessionArchiveArgs),
+    /// Unarchive a saved session by id.
+    Unarchive(SessionArchiveArgs),
     /// Manage the MCP servers every session starts.
     ///
     /// Sessions already open pick up a change after `/mcp reconnect`.
@@ -345,6 +353,27 @@ enum Command {
         #[arg(hide = true, trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+}
+
+/// `koda archive` and `koda unarchive`: which session, and where Koda's
+/// host is, as Codex's `codex archive <SESSION>` takes its remote options.
+#[derive(clap::Args, Debug)]
+struct SessionArchiveArgs {
+    /// Session id, or its first characters.
+    ///
+    /// A full id names any session. A shorter one is looked for among the
+    /// sessions of the current directory, or of the one `koda -C <DIR>`
+    /// names before the command.
+    #[arg(value_name = "SESSION")]
+    target: String,
+
+    /// Run in this process instead of on the background server.
+    #[arg(long, conflicts_with = "remote")]
+    no_daemon: bool,
+
+    /// Connect to a background server at this address (unix://PATH).
+    #[arg(long, value_name = "ADDR")]
+    remote: Option<String>,
 }
 
 /// `koda resume`'s flags: which session, a prompt, and `koda`'s own.
@@ -603,7 +632,13 @@ pub(crate) async fn run() -> Result<()> {
     let mut tui_images = Vec::new();
     let mut pick_session = false;
     let mut fork = false;
-    if matches!(cli.command, Some(Command::Serve(_) | Command::Mcp(_))) && !root_images.is_empty() {
+    // `koda archive` or `koda unarchive`: the session, and which of the two.
+    let mut archiving: Option<(String, bool)> = None;
+    if matches!(
+        cli.command,
+        Some(Command::Serve(_) | Command::Mcp(_) | Command::Archive(_) | Command::Unarchive(_))
+    ) && !root_images.is_empty()
+    {
         eprintln!("error: --image goes with a prompt: koda, koda resume or koda exec");
         std::process::exit(2);
     }
@@ -710,6 +745,29 @@ pub(crate) async fn run() -> Result<()> {
                 std::process::exit(2);
             }
             mcp_cli = Some(mcp);
+            None
+        }
+        Some(command @ (Command::Archive(_) | Command::Unarchive(_))) => {
+            let (args, unarchive) = match command {
+                Command::Archive(args) => (args, false),
+                Command::Unarchive(args) => (args, true),
+                _ => unreachable!("matched above"),
+            };
+            let name = if unarchive { "unarchive" } else { "archive" };
+            if let Some(error) = archive_refusal(name, &session, &flags, tui_prompt.is_some()) {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
+            // Where the host is, given before the subcommand or after it.
+            session.no_daemon |= args.no_daemon;
+            if args.remote.is_some() {
+                session.remote = args.remote;
+            }
+            if session.no_daemon && session.remote.is_some() {
+                eprintln!("error: give --no-daemon or --remote, not both");
+                std::process::exit(2);
+            }
+            archiving = Some((args.target, unarchive));
             None
         }
         _ => {
@@ -882,6 +940,13 @@ pub(crate) async fn run() -> Result<()> {
     // `koda mcp`: the stored servers, through a host, then exit.
     if let Some(mcp) = mcp_cli {
         return mcp.run(project_root).await;
+    }
+
+    // `koda archive` and `koda unarchive`: one request to the host the TUI
+    // would use, then exit.
+    if let Some((target, unarchive)) = archiving {
+        let backend = tui_backend(&session, run_overrides, &config_dir)?;
+        return archive_session(&backend, &project_root, &config_dir, &target, unarchive).await;
     }
 
     // `koda serve`: on stdio, stdout is the protocol, so warnings go to
@@ -1193,6 +1258,118 @@ fn mcp_refusal(session: &SessionFlags, flags: &ConfigFlags, prompt: bool) -> Opt
              Only -C (--cd) and -c apply."
         )
     })
+}
+
+/// Why `koda archive` or `koda unarchive` refuses a flag given before it:
+/// it opens no session, so only where the host is and `-C` apply.
+fn archive_refusal(
+    command: &str,
+    session: &SessionFlags,
+    flags: &ConfigFlags,
+    prompt: bool,
+) -> Option<String> {
+    let mut given: Vec<&str> = session
+        .given()
+        .into_iter()
+        .filter(|flag| !matches!(*flag, "--no-daemon" | "--remote"))
+        .collect();
+    given.extend(flags.given_beyond_project_root());
+    if prompt {
+        given.push("a prompt");
+    }
+    given.first().map(|flag| {
+        format!(
+            "koda {command} doesn't take {flag}; it takes a session id. \
+             Only -C (--cd), -c, --no-daemon and --remote apply."
+        )
+    })
+}
+
+/// `koda archive <SESSION>` and `koda unarchive <SESSION>`, as Codex's
+/// `codex archive` and `codex unarchive`: find the session, ask the host
+/// (`session/archive`, `session/unarchive`) and say what was done. The
+/// host is the one the TUI would use: the shared server, started when
+/// nothing answers, so a session open there is closed there and its
+/// clients hear of it; or this process, with `--no-daemon`.
+async fn archive_session(
+    backend: &koda_tui::backend::Backend,
+    project_root: &Path,
+    home: &Path,
+    target: &str,
+    unarchive: bool,
+) -> Result<()> {
+    use koda_client::protocol::methods;
+    use koda_client::protocol::session::{SessionArchiveParams, SessionUnarchiveParams};
+    let client_info = koda_client::protocol::initialize::ClientInfo {
+        name: if unarchive {
+            "koda-unarchive"
+        } else {
+            "koda-archive"
+        }
+        .to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        title: None,
+    };
+    let client = match backend {
+        koda_tui::backend::Backend::InProcess => {
+            koda_client::InProcessClient::start(koda_client::StartArgs {
+                config_file: koda_tui::user_config::file()?,
+                home: home.to_path_buf(),
+                project_root: project_root.to_path_buf(),
+                client_info,
+            })
+            .await?
+        }
+        koda_tui::backend::Backend::Shared { socket, start } => {
+            let how = koda_client::ensure::Ensure {
+                socket,
+                project_root,
+                koda: std::env::current_exe().context("couldn't find koda to start koda serve")?,
+                manage: *start,
+                running_turns: None,
+                client_info,
+            };
+            match koda_client::ensure::ensure(&how).await {
+                Ok((client, _)) => client,
+                Err(not_ready) => {
+                    anyhow::bail!("{}", not_ready.message(env!("CARGO_PKG_VERSION"), socket))
+                }
+            }
+        }
+    };
+    // The host's own words say what went wrong.
+    let host_error = |e: koda_client::RequestError| match e {
+        koda_client::RequestError::Server { error, .. } => anyhow::anyhow!(error.message),
+        other => anyhow::anyhow!(other),
+    };
+    let done = async {
+        let session_id =
+            koda_tui::session_id::resolve_for_archive(&client, target, unarchive).await?;
+        if unarchive {
+            let restored = client
+                .request::<methods::SessionUnarchive>(SessionUnarchiveParams {
+                    session_id: session_id.clone(),
+                })
+                .await
+                .map_err(host_error)?;
+            anyhow::Ok(match restored.session.name {
+                Some(name) => format!("Unarchived session {name} ({session_id})."),
+                None => format!("Unarchived session {session_id}."),
+            })
+        } else {
+            client
+                .request::<methods::SessionArchive>(SessionArchiveParams {
+                    session_id: session_id.clone(),
+                })
+                .await
+                .map_err(host_error)?;
+            anyhow::Ok(format!("Archived session {session_id}."))
+        }
+    }
+    .await;
+    client.shutdown().await;
+    println!("{}", done?);
+    Ok(())
 }
 
 /// Where the TUI's host is, as Codex's TUI picks: Koda's shared server by

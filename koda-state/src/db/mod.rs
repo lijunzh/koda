@@ -78,9 +78,9 @@ fn folder_of(path: &Path) -> &Path {
 /// transaction. They only add: an older Koda that opens a newer file runs
 /// its own checks, finds what it needs, and leaves the rest alone, as
 /// Codex's migrator ignores migrations it doesn't know.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 /// Sets [`SCHEMA_VERSION`]; a pragma takes no bound value.
-const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 2";
+const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 3";
 
 impl Database {
     /// Access the underlying connection pool (for tests and raw queries).
@@ -178,10 +178,32 @@ impl Database {
         if found < 2 {
             Self::session_origins(&mut tx).await?;
         }
+        if found < 3 {
+            Self::session_archive(&mut tx).await?;
+        }
         if found < SCHEMA_VERSION {
             sqlx::query(SET_SCHEMA_VERSION).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Version 3: when a session was archived, as Codex's `threads` table
+    /// keeps `archived_at`; `NULL` for one that isn't, which is every
+    /// session from before it.
+    async fn session_archive(conn: &mut sqlx::SqliteConnection) -> Result<()> {
+        // Checked, like version 2's: a file whose version was lost may
+        // have it already.
+        let present: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM pragma_table_info('sessions') WHERE name = 'archived_at'",
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        if present.is_none() {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN archived_at TEXT")
+                .execute(&mut *conn)
+                .await?;
+        }
         Ok(())
     }
 
@@ -561,6 +583,7 @@ pub(crate) struct SessionInfoRow {
     pub forked_from_id: Option<String>,
     pub parent_session_id: Option<String>,
     pub ephemeral: bool,
+    pub archived_unix: Option<i64>,
     pub sequence: i64,
 }
 
@@ -584,6 +607,7 @@ impl From<SessionInfoRow> for SessionInfo {
             forked_from_id: r.forked_from_id,
             parent_session_id: r.parent_session_id,
             ephemeral: r.ephemeral,
+            archived_unix: r.archived_unix,
             sequence: r.sequence,
         }
     }
