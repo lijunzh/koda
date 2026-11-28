@@ -15,7 +15,7 @@ use koda_core::config::{KodaConfig, ProviderType};
 use koda_server::socket::{Options, ServeError, serve_with_config};
 use koda_server::stdio::ServeArgs;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
-use koda_test_utils::openai::{model, text, tool_call, usage};
+use koda_test_utils::openai::{chat_requests, model, text, tool_call, usage};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -2185,6 +2185,356 @@ async fn sessions_are_listed_across_folders_by_kind() {
     assert_eq!(ids(&second).len(), 1);
     assert_ne!(ids(&first), ids(&second));
     assert!(second["nextCursor"].is_null(), "{second}");
+    koda.stop().await;
+}
+
+// ── session/search ──────────────────────────────────────────────────────
+
+/// Run a turn in `session` with `input` to its end: its id, and what the
+/// client was sent of it.
+async fn run_turn(client: &mut Client, session: &str, input: Value) -> (String, Vec<Value>) {
+    let started = client
+        .request("turn/start", json!({"sessionId": session, "input": input}))
+        .await
+        .unwrap();
+    let turn = started["turn"]["id"].as_str().unwrap().to_string();
+    (turn, client.until_method("turn/completed").await)
+}
+
+/// [`run_turn`] with a typed prompt.
+async fn say(client: &mut Client, session: &str, prompt: &str) -> (String, Vec<Value>) {
+    run_turn(client, session, json!([{"type": "text", "text": prompt}])).await
+}
+
+/// What `session/search` found for `params`: each session's id.
+fn found_ids(found: &Value) -> Vec<String> {
+    found["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["session"]["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// `session/search` finds what the user typed, what the model answered and
+/// what a tool was called with, in either case, once per session at the
+/// first place it was said; a tool's output only when asked; and never the
+/// contents of a file attached to a prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_search_finds_what_a_session_said_and_where() {
+    let server = model(vec![
+        text("The Heliotrope setting lives in config.toml."),
+        text("Shown: heliotrope, again."),
+        read_file("call-read", "log.txt"),
+        text("It is read."),
+    ])
+    .await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let project = koda._dir.as_ref().unwrap().path().join("project");
+    std::fs::write(project.join("log.txt"), "the vermilion line\n").unwrap();
+    std::fs::write(project.join("notes.txt"), "a periwinkle note\n").unwrap();
+    let mut client = Client::ready(&koda).await;
+
+    let talk = client.start_session().await;
+    let (first_turn, first) = say(&mut client, &talk, "Where is the heliotrope configured?").await;
+    let item_of = |lines: &[Value], kind: &str| {
+        lines
+            .iter()
+            .find(|l| l["method"] == "item/completed" && l["params"]["item"]["type"] == kind)
+            .unwrap_or_else(|| panic!("no {kind} in {lines:?}"))["params"]["item"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (asked, answered) = (
+        item_of(&first, "userMessage"),
+        item_of(&first, "agentMessage"),
+    );
+    say(&mut client, &talk, "show the heliotrope again").await;
+
+    let work = client.start_session().await;
+    run_turn(
+        &mut client,
+        &work,
+        json!([
+            {"type": "text", "text": "read the log"},
+            {"type": "mention", "name": "notes.txt", "path": "notes.txt"},
+        ]),
+    )
+    .await;
+    // The model was sent the attached file, so it is in the session's
+    // stored messages.
+    let sent = chat_requests(&server).await;
+    assert!(
+        sent.iter()
+            .any(|request| request.to_string().contains("a periwinkle note")),
+        "{sent:?}"
+    );
+
+    // One result for the session, at the first of its three mentions.
+    let found = client
+        .request("session/search", json!({"searchTerm": "  HELIOTROPE "}))
+        .await
+        .unwrap();
+    assert_eq!(found["data"].as_array().unwrap().len(), 1, "{found}");
+    let result = &found["data"][0];
+    assert_eq!(result["session"]["id"], talk.as_str(), "{found}");
+    assert_eq!(
+        result["session"]["preview"],
+        "Where is the heliotrope configured?"
+    );
+    assert_eq!(result["matched"], "user", "{found}");
+    assert_eq!(result["turnId"], first_turn.as_str(), "{found}");
+    assert_eq!(result["itemId"], asked.as_str(), "{found}");
+    assert_eq!(result["snippet"], "Where is the heliotrope configured?");
+    assert!(found["nextCursor"].is_null(), "{found}");
+
+    let found = client
+        .request(
+            "session/search",
+            json!({"searchTerm": "lives in CONFIG.toml"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found_ids(&found), std::slice::from_ref(&talk), "{found}");
+    assert_eq!(found["data"][0]["matched"], "assistant", "{found}");
+    assert_eq!(found["data"][0]["itemId"], answered.as_str(), "{found}");
+    assert_eq!(
+        found["data"][0]["snippet"],
+        "The Heliotrope setting lives in config.toml."
+    );
+
+    // A tool's call is searched; what it returned, only when asked.
+    let found = client
+        .request("session/search", json!({"searchTerm": "log.txt"}))
+        .await
+        .unwrap();
+    assert_eq!(found_ids(&found), std::slice::from_ref(&work), "{found}");
+    assert_eq!(found["data"][0]["matched"], "toolCall", "{found}");
+    assert_eq!(found["data"][0]["itemId"], "call-read", "{found}");
+    assert_eq!(found["data"][0]["snippet"], "Read file_path log.txt");
+    let found = client
+        .request("session/search", json!({"searchTerm": "vermilion"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        found["data"],
+        json!([]),
+        "tool output isn't searched unasked"
+    );
+    let found = client
+        .request(
+            "session/search",
+            json!({"searchTerm": "vermilion", "includeToolOutput": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found_ids(&found), std::slice::from_ref(&work), "{found}");
+    assert_eq!(found["data"][0]["matched"], "toolOutput", "{found}");
+    assert_eq!(found["data"][0]["itemId"], "call-read", "{found}");
+    assert!(
+        found["data"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("the vermilion line"),
+        "{found}"
+    );
+
+    // The attached file is no part of what the user typed.
+    let found = client
+        .request(
+            "session/search",
+            json!({"searchTerm": "periwinkle", "includeToolOutput": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found["data"], json!([]), "{found}");
+
+    // A term is required, and a cursor is one of its own.
+    for term in ["", "  \n"] {
+        let (code, message) = refusal(
+            client
+                .request("session/search", json!({"searchTerm": term}))
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(code, -32600, "{message}");
+        assert!(message.contains("non-empty searchTerm"), "{message}");
+    }
+    let (code, message) = refusal(
+        client
+            .request(
+                "session/search",
+                json!({"searchTerm": "heliotrope", "cursor": "nope"}),
+            )
+            .await
+            .unwrap_err(),
+    );
+    assert_eq!(code, -32600, "{message}");
+    assert!(
+        message.contains("not a cursor from session/search"),
+        "{message}"
+    );
+    koda.stop().await;
+}
+
+/// `session/search` covers the sessions `session/list` would: every folder
+/// unless told one, a person's sessions unless asked for a sub-agent's, an
+/// archived session only when asked, an ephemeral one never. It pages from
+/// its last session, in the list's order. A session from before turn
+/// records is found in its messages.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_search_covers_the_sessions_a_list_would() {
+    use koda_state::session_store::{Role, SessionOrigin, SessionStore, source};
+    let server = model(vec![text("One."), text("Two."), text("Three.")]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let dir = koda._dir.as_ref().unwrap().path().to_path_buf();
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut client = Client::ready(&koda).await;
+
+    let here = client.start_session().await;
+    say(&mut client, &here, "the quokka, here").await;
+    let started = client
+        .request("session/start", json!({"cwd": other}))
+        .await
+        .unwrap();
+    let there = started["session"]["id"].as_str().unwrap().to_string();
+    let other = started["session"]["cwd"].as_str().unwrap().to_string();
+    say(&mut client, &there, "the quokka, there").await;
+    let put_away = client.start_session().await;
+    say(&mut client, &put_away, "the quokka, put away").await;
+    client
+        .request("session/archive", json!({"sessionId": put_away}))
+        .await
+        .unwrap();
+    // A side conversation with all `here` said.
+    let side = client
+        .request(
+            "session/fork",
+            json!({"sessionId": here, "ephemeral": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        side["session"]["turns"].as_array().unwrap().len(),
+        1,
+        "{side}"
+    );
+
+    // A sub-agent's session and one from before turn records, as core
+    // stored them: messages, and no turns.
+    let db = koda_state::db::Database::init(&dir.join("config"))
+        .await
+        .unwrap();
+    let project = dir.join("project");
+    let child = db
+        .create_session_from(
+            "explore",
+            &project,
+            &SessionOrigin {
+                source: Some(source::SUB_AGENT.into()),
+                parent_session_id: Some(here.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let older = db.create_session("default", &project).await.unwrap();
+    for (session, prompt) in [
+        (&child, "find the quokka"),
+        (&older, "an older Quokka question"),
+    ] {
+        db.insert_message(session, &Role::User, Some(prompt), None, None, None)
+            .await
+            .unwrap();
+        db.insert_message(session, &Role::Assistant, Some("Found."), None, None, None)
+            .await
+            .unwrap();
+    }
+
+    let search = |extra: Value| {
+        let mut params = json!({"searchTerm": "quokka", "sortDirection": "asc"});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        params
+    };
+    let found = client
+        .request("session/search", search(json!({})))
+        .await
+        .unwrap();
+    assert_eq!(
+        found_ids(&found),
+        [here.clone(), there.clone(), older.clone()],
+        "{found}"
+    );
+    // The older session's turn is the one rebuilt from its messages.
+    let rebuilt = client
+        .request(
+            "session/read",
+            json!({"sessionId": older, "includeTurns": true}),
+        )
+        .await
+        .unwrap();
+    let rebuilt = &rebuilt["session"]["turns"][0];
+    assert_eq!(found["data"][2]["matched"], "user", "{found}");
+    assert_eq!(found["data"][2]["turnId"], rebuilt["id"], "{found}");
+    assert_eq!(
+        found["data"][2]["itemId"], rebuilt["items"][0]["id"],
+        "{found}"
+    );
+    assert_eq!(found["data"][2]["snippet"], "an older Quokka question");
+
+    let archived = client
+        .request("session/search", search(json!({"archived": true})))
+        .await
+        .unwrap();
+    assert_eq!(found_ids(&archived), [put_away], "{archived}");
+    let sub_agents = client
+        .request(
+            "session/search",
+            search(json!({"sourceKinds": ["subAgent"]})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found_ids(&sub_agents), [child], "{sub_agents}");
+    let one_folder = client
+        .request("session/search", search(json!({"cwd": other})))
+        .await
+        .unwrap();
+    assert_eq!(
+        found_ids(&one_folder),
+        std::slice::from_ref(&there),
+        "{one_folder}"
+    );
+
+    // One per page: each goes on from the one before, to the end.
+    let mut paged = Vec::new();
+    let mut cursor = Value::Null;
+    loop {
+        let mut page = search(json!({"limit": 1}));
+        if !cursor.is_null() {
+            page["cursor"] = cursor;
+        }
+        let found = client.request("session/search", page).await.unwrap();
+        assert_eq!(found["data"].as_array().unwrap().len(), 1, "{found}");
+        paged.extend(found_ids(&found));
+        cursor = found["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+        assert!(paged.len() < 3, "a page after the last: {found}");
+    }
+    assert_eq!(paged, [here, there.clone(), older]);
+
+    // `session/list` takes a term too, for a session's name and first
+    // prompt, not what was answered in it.
+    let listed = listed_ids(&mut client, json!({"searchTerm": " QUOKKA, THERE "})).await;
+    assert_eq!(listed, [there]);
+    let listed = listed_ids(&mut client, json!({"searchTerm": "Two."})).await;
+    assert!(listed.is_empty(), "{listed:?}");
     koda.stop().await;
 }
 

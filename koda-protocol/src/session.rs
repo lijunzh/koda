@@ -357,6 +357,13 @@ pub struct SessionListParams {
     /// returned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<bool>,
+    /// Only sessions whose name or preview contains this text, as Codex's
+    /// `thread/list` takes `searchTerm`. ASCII letters match in either
+    /// case, other letters only as written (Codex's match case exactly).
+    /// Spaces around it are dropped; empty is as without one. What was
+    /// said in a session is searched with `session/search`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_term: Option<String>,
 }
 
 /// `session/list`'s `cwd`: one folder or several. Codex's
@@ -419,6 +426,113 @@ pub struct SessionListResponse {
     /// no more, as Codex's `nextCursor`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+}
+
+/// `session/search`: the stored sessions in which something was said, one
+/// result per session, in `session/list`'s order. Codex's `thread/search`.
+///
+/// A session matches when `searchTerm` occurs, letters in either case, in
+/// one text of its conversation: what the user typed (not the files
+/// attached to it), what the model answered, or a tool call's name and
+/// arguments; and a tool's output when `includeToolOutput` asks. The
+/// model's reasoning isn't searched. A session started with `ephemeral` is
+/// never found, and an archived one only with `archived`. Every provider's
+/// sessions are searched.
+///
+/// A session from before Koda stored turns (0.6.4 and earlier) is searched
+/// as `session/read` gives it: its user messages are the text the model
+/// read, attached files included.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionSearchParams {
+    /// What to look for: one piece of text, taken as written (no
+    /// wildcards, no words to combine). Spaces around it are dropped; it
+    /// can't be empty, or longer than 1000 characters.
+    pub search_term: String,
+    /// Where to go on from: an earlier answer's `nextCursor`, as on
+    /// `session/list`; send the same term, filters and order with it.
+    /// Without one, the first page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// How many sessions at most: 25 without one, at most 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// What to order by; without one, when each was created, as on
+    /// `session/list`. Results aren't ranked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_key: Option<SessionSortKey>,
+    /// Which way; without one, newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort_direction: Option<SortDirection>,
+    /// Only sessions that came to be one of these ways. Without any, as on
+    /// `session/list`, the ones a person started: `cli`, `appServer` and
+    /// `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kinds: Option<Vec<SessionSourceKind>>,
+    /// Optional archived filter; when set to true, only archived sessions
+    /// are returned. If false or null, only non-archived sessions are
+    /// returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
+    /// Only the sessions of this folder, or of these, as `session/list`
+    /// takes `cwd`; without one, every folder's. Koda's own: Codex's
+    /// `thread/search` has no folder filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<SessionListCwd>,
+    /// Also search what tools returned: file contents, command output.
+    /// Off without it, since a term found there is seldom what the session
+    /// was about. Koda's own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_tool_output: bool,
+}
+
+/// The answer to `session/search`. Codex's `ThreadSearchResponse`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchResponse {
+    /// The sessions found, one entry each.
+    pub data: Vec<SessionSearchResult>,
+    /// Opaque; pass it as `cursor` for the next page. Absent when there are
+    /// no more, as Codex's `nextCursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// A session `session/search` found, with the first place in it the term
+/// occurs. Codex's `ThreadSearchResult`, which has the thread and the
+/// snippet; where the match is (`turnId`, `itemId`, `matched`) is Koda's
+/// own, so a client can open the session at it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSearchResult {
+    /// The session, as `session/list` gives it.
+    pub session: Session,
+    /// The text around the match, as Codex cuts it: up to 48 characters
+    /// before it and 96 after, runs of spaces and line breaks as one
+    /// space, with `...` at an end that was cut.
+    pub snippet: String,
+    /// The turn the match is in, as `session/turns/list` names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// The item the match is in: the message, or the tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    /// Which of the item's texts matched.
+    pub matched: SessionSearchMatch,
+}
+
+/// The text of an item that `session/search` matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionSearchMatch {
+    /// What the user typed.
+    User,
+    /// What the model answered.
+    Assistant,
+    /// A tool call's name or arguments.
+    ToolCall,
+    /// A tool call's output.
+    ToolOutput,
 }
 
 /// `session/delete`: delete a stored session. An open one is closed first,

@@ -30,6 +30,8 @@ mod live_turn;
 mod mcp;
 mod memory;
 mod session;
+mod session_search;
+mod session_text;
 mod settings;
 mod skills;
 #[cfg(unix)]

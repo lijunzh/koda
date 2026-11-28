@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **The client protocol searches sessions by what was said in them.** `session/search` (Codex's `thread/search`) takes a `searchTerm` and returns the sessions in which it occurs, one result each: the session as `session/list` gives it, a snippet of the text around the first match, and where the match is (`turnId`, `itemId`, and whether it is in what the user typed, what the model answered or a tool call). It looks through what the user typed, the model's answers and each tool call's name and arguments, letters in either case, across every folder unless `cwd` names one; `includeToolOutput` adds what tools returned. Archived sessions are found only with `archived`, sub-agents' only when asked for, and side conversations and reviews never. `session/list` takes a `searchTerm` too, for a session's name and first prompt. Koda's own clients don't use either yet. See [Searching sessions](docs/src/serve.md#searching-sessions).
+
 ### Changed
 
 - **Koda has a logo, and the desktop app its own icon:** a bear's paw print, cream on an amber tile, in place of Electron's default icon in the Dock, Launchpad and Finder. Inside the app the print stands alone, amber on the page in light and dark, while it starts, on an empty session and in Settings. The README and the manual carry it too, and the manual has a favicon.

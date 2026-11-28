@@ -134,6 +134,13 @@ client_requests! {
         params: crate::session::SessionListParams,
         response: crate::session::SessionListResponse,
     },
+    /// The stored sessions whose conversation contains a text, one result
+    /// each with the text around the first match, as Codex's
+    /// `thread/search` finds threads.
+    SessionSearch => "session/search" {
+        params: crate::session::SessionSearchParams,
+        response: crate::session::SessionSearchResponse,
+    },
     /// A stored session, without opening it, with its turns when asked.
     SessionRead => "session/read" {
         params: crate::session::SessionReadParams,
