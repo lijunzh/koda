@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Koda's mark: the icon's paw print alone, in the tile's amber, for the app's own pages, where
+     it sits on the page's background in light and dark (as Claude's mark is its icon's shape in
+     the accent colour, without the tile). The shapes are icon.svg's: change them in both. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-450 -450 900 900" width="900" height="900">
+  <title>Koda</title>
+  <g fill="#dc9844" transform="rotate(22) translate(0 60)">
+    <!-- the pad -->
+    <path d="M0 -220C70 -220 120 -180 150 -120C175 -70 215 -50 245 -10C285 45 275 150 215 195C165 232 95 215 60 190C35 172 -35 172 -60 190C-95 215 -165 232 -215 195C-275 150 -285 45 -245 -10C-215 -50 -175 -70 -150 -120C-120 -180 -70 -220 0 -220Z"/>
+    <!-- the toes, left to right -->
+    <path transform="translate(-288 -152) rotate(-30) translate(0 89.6)" d="M0 0C-69.2 0.0 -73.3 -89.6 -41.5 -149.4C-19.4 -199.2 9.3 -231.6 20.8 -249.0C34.2 -214.1 63.6 -149.4 67.8 -82.2C72.6 -24.9 42.9 0.0 0.0 0.0Z"/>
+    <path transform="translate(-156 -292) rotate(-13) translate(0 90.7)" d="M0 0C-70.0 0.0 -74.2 -90.7 -42.0 -151.2C-19.6 -201.6 9.5 -234.4 21.0 -252.0C34.7 -216.7 64.4 -151.2 68.6 -83.2C73.5 -25.2 43.4 0.0 0.0 0.0Z"/>
+    <path transform="translate(0 -356) rotate(0) translate(0 95.3)" d="M0 0C-73.5 0.0 -77.9 -95.3 -44.1 -158.8C-20.6 -211.7 0.0 -246.1 0.0 -264.6C22.0 -227.5 67.6 -158.8 72.0 -87.3C77.2 -26.5 45.6 0.0 0.0 0.0Z"/>
+    <path transform="translate(156 -292) rotate(13) translate(0 87.1)" d="M0 0C-67.2 0.0 -71.2 -87.1 -40.3 -145.1C-18.8 -193.5 -9.1 -224.9 -20.2 -241.9C7.1 -208.0 61.8 -145.1 65.8 -79.8C70.5 -24.2 41.7 0.0 0.0 0.0Z"/>
+    <path transform="translate(288 -152) rotate(30) translate(0 82.1)" d="M0 0C-63.3 0.0 -67.1 -82.1 -38.0 -136.8C-17.7 -182.4 -8.6 -212.1 -19.0 -228.0C6.7 -196.1 58.3 -136.8 62.1 -75.3C66.5 -22.8 39.3 0.0 0.0 0.0Z"/>
+  </g>
+</svg>
