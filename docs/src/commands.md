@@ -238,7 +238,7 @@ Names the session, as Codex's `/rename` does; `/resume` lists it by that
 name. Without one, the first 50 characters of your first prompt are its
 title, and a name you give is never replaced by it.
 
-## `/confidential [off]`
+## `/confidential [off | brief …]`
 
 Marks the session confidential: when another session's model searches or
 reads your sessions, only one on a local model (LM Studio, Ollama, vLLM or
@@ -252,6 +252,21 @@ session on a local model that reads a confidential one becomes confidential
 itself, and the TUI says so when it happens. It isn't encryption, and this
 session's own provider still gets its conversation
 ([Confidential sessions](./sessions.md#confidential-sessions)).
+
+`/confidential brief` is about the one line a model on a remote provider is
+told of the session in place of its text, such as "Planning a household
+budget" ([The brief](./sessions.md#the-brief)):
+
+| Command | What it does |
+|---|---|
+| `/confidential brief` | Shows the brief, and the draft a local model wrote if one waits |
+| `/confidential brief accept` | Makes the draft the brief |
+| `/confidential brief <text>` | Sets your own: one line, 100 characters at most |
+| `/confidential brief clear` | Removes the brief, and a draft with it |
+
+A local model drafts the brief after a turn, and the TUI says so in one line
+when the draft arrives for this session. No model is told a draft until you
+accept it. `/status` shows the brief.
 
 ## `/rewind [N]`
 

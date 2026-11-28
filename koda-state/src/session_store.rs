@@ -444,6 +444,13 @@ pub struct SessionInfo {
     /// The user marked it confidential, or it read a session that is: its
     /// text goes to no model on a remote provider but its own.
     pub confidential: bool,
+    /// A confidential session's brief: the one line a model on a remote
+    /// provider is told of it, which the user accepted or wrote. `None`
+    /// without one, and for a session that isn't confidential.
+    pub confidential_brief: Option<String>,
+    /// A brief a local model drafted, waiting for the user to accept, edit
+    /// or discard it. No model is shown it.
+    pub confidential_brief_draft: Option<String>,
     /// Its place in the order sessions were made, which orders the
     /// sessions of one second in a list.
     pub sequence: i64,
@@ -525,7 +532,8 @@ pub trait SessionStore: Send + Sync {
     /// starts in (`koda fork --worktree` opens it in a new checkout). One
     /// transaction; `source` is left as it was. The copy records `source`
     /// as what it was forked from, and `origin` as who forked it. A copy of
-    /// a confidential session is confidential: it holds the same text.
+    /// a confidential session is confidential: it holds the same text. It
+    /// starts without its source's brief or draft, to get its own.
     async fn fork_session(
         &self,
         source: &str,
@@ -556,12 +564,24 @@ pub trait SessionStore: Send + Sync {
     /// ([`Self::mark_confidential_with_forks`] reaches them); one made
     /// afterwards starts with its source's mark ([`Self::fork_session`]),
     /// and a sub-agent's session with its parent's
-    /// ([`Self::create_session_from`]).
+    /// ([`Self::create_session_from`]). Taking the mark off takes the
+    /// session's brief and its draft with it.
     async fn set_session_confidential(
         &self,
         session_id: &str,
         confidential: bool,
     ) -> Result<Vec<String>>;
+    /// Set a confidential session's brief, the one line a model on a
+    /// remote provider is told of it, or clear it with `None`; either way
+    /// the draft waiting for the user goes, so after a clear the session
+    /// has neither. Whether it was set: `false` for a session that isn't
+    /// confidential, or isn't stored, which is left as it was.
+    async fn set_confidential_brief(&self, session_id: &str, brief: Option<&str>) -> Result<bool>;
+    /// Store `draft` as the brief waiting for the user, if the session is
+    /// confidential and has neither a brief nor a draft: one statement, so
+    /// two processes that drafted at once store one draft. Whether this
+    /// call stored it.
+    async fn offer_confidential_brief_draft(&self, session_id: &str, draft: &str) -> Result<bool>;
     /// Mark a session confidential as the user does: the session and its
     /// sub-agents' sessions ([`Self::set_session_confidential`]), and with
     /// them every stored session forked from it, and from those, each

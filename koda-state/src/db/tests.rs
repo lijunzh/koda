@@ -2101,11 +2101,13 @@ async fn test_open_drops_the_owned_files_table() {
 }
 
 /// The file as Koda 0.7.12 left it: version 0, sessions without the columns
-/// versions 2 to 4 add.
+/// versions 2 to 5 add.
 async fn as_koda_0_7_12_left_it(db: &Database) {
     for sql in [
         "DROP INDEX idx_sessions_root_recent",
         "DROP INDEX idx_sessions_recent",
+        "ALTER TABLE sessions DROP COLUMN confidential_brief_draft",
+        "ALTER TABLE sessions DROP COLUMN confidential_brief",
         "ALTER TABLE sessions DROP COLUMN confidential",
         "ALTER TABLE sessions DROP COLUMN archived_at",
         "ALTER TABLE sessions DROP COLUMN source",
@@ -2160,7 +2162,7 @@ async fn an_older_file_is_brought_to_the_current_version() {
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 4);
+    assert_eq!(schema_version(&db).await, 5);
     let parent = db.get_session("parent").await.unwrap().unwrap();
     assert_eq!(parent.preview.as_deref(), Some("fix the test"));
     assert_eq!(parent.source, None, "who started it was never recorded");
@@ -2182,7 +2184,7 @@ async fn an_older_file_is_brought_to_the_current_version() {
     // Opening it again changes nothing.
     drop(db);
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 4);
+    assert_eq!(schema_version(&db).await, 5);
 }
 
 /// Two Kodas opening an older file at once take turns: both open, and the
@@ -2195,7 +2197,7 @@ async fn two_processes_can_open_an_older_file_at_once() {
     let path = tmp.path().join("test.db");
     let (a, b) = tokio::join!(Database::open(&path), Database::open(&path));
     let (a, _b) = (a.unwrap(), b.unwrap());
-    assert_eq!(schema_version(&a).await, 4);
+    assert_eq!(schema_version(&a).await, 5);
 }
 
 /// A newer Koda's file opens as it is: this version adds nothing to it and
@@ -2221,6 +2223,8 @@ async fn a_version_2_file_gains_the_archive_column() {
     let (db, tmp) = setup().await;
     let session = db.create_session("default", tmp.path()).await.unwrap();
     for sql in [
+        "ALTER TABLE sessions DROP COLUMN confidential_brief_draft",
+        "ALTER TABLE sessions DROP COLUMN confidential_brief",
         "ALTER TABLE sessions DROP COLUMN confidential",
         "ALTER TABLE sessions DROP COLUMN archived_at",
         "PRAGMA user_version = 2",
@@ -2230,7 +2234,7 @@ async fn a_version_2_file_gains_the_archive_column() {
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 4);
+    assert_eq!(schema_version(&db).await, 5);
     let listed = db.list_sessions(10, tmp.path()).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].archived_unix, None);
@@ -2248,6 +2252,8 @@ async fn a_version_3_file_gains_the_confidential_column() {
     db.set_session_title(&session, "Parser work").await.unwrap();
     db.archive_session(&put_away).await.unwrap();
     for sql in [
+        "ALTER TABLE sessions DROP COLUMN confidential_brief_draft",
+        "ALTER TABLE sessions DROP COLUMN confidential_brief",
         "ALTER TABLE sessions DROP COLUMN confidential",
         "PRAGMA user_version = 3",
     ] {
@@ -2256,7 +2262,7 @@ async fn a_version_3_file_gains_the_confidential_column() {
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 4);
+    assert_eq!(schema_version(&db).await, 5);
     let stored = db.get_session(&session).await.unwrap().unwrap();
     assert_eq!(stored.title.as_deref(), Some("Parser work"));
     assert!(!stored.confidential);
@@ -2276,8 +2282,180 @@ async fn a_version_3_file_gains_the_confidential_column() {
         .unwrap();
     drop(db);
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 4);
+    assert_eq!(schema_version(&db).await, 5);
     assert_eq!(db.confidential_sessions().await.unwrap().len(), 1);
+}
+
+/// A file from before a confidential session had a brief (version 4) gains
+/// the two columns: its sessions are as they were, a confidential one
+/// still confidential with neither a brief nor a draft, and each can be
+/// given one.
+#[tokio::test]
+async fn a_version_4_file_gains_the_brief_columns() {
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    db.set_session_confidential(&session, true).await.unwrap();
+    for sql in [
+        "ALTER TABLE sessions DROP COLUMN confidential_brief_draft",
+        "ALTER TABLE sessions DROP COLUMN confidential_brief",
+        "PRAGMA user_version = 4",
+    ] {
+        sqlx::query(sql).execute(db.pool()).await.unwrap();
+    }
+    drop(db);
+
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 5);
+    let stored = db.get_session(&session).await.unwrap().unwrap();
+    assert!(stored.confidential);
+    assert_eq!(stored.confidential_brief, None);
+    assert_eq!(stored.confidential_brief_draft, None);
+    assert!(
+        db.set_confidential_brief(&session, Some("Budget planning"))
+            .await
+            .unwrap()
+    );
+
+    // A file whose version was lost has the columns already: opening it
+    // adds nothing and keeps the brief.
+    sqlx::query("PRAGMA user_version = 4")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    drop(db);
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 5);
+    let stored = db.get_session(&session).await.unwrap().unwrap();
+    assert_eq!(
+        stored.confidential_brief.as_deref(),
+        Some("Budget planning")
+    );
+}
+
+/// A draft of a brief is stored only for a confidential session that has
+/// neither a brief nor a draft, so a second draft for it changes nothing.
+/// Setting the brief takes the draft away; clearing it leaves neither, and
+/// the session takes a draft again. A session that isn't confidential, or
+/// isn't stored, takes neither.
+#[tokio::test]
+async fn a_brief_draft_is_stored_only_while_the_session_needs_one() {
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    let briefs = async |id: &str| {
+        let stored = db.get_session(id).await.unwrap().unwrap();
+        (stored.confidential_brief, stored.confidential_brief_draft)
+    };
+    let some = |text: &str| Some(text.to_string());
+
+    // Not confidential: nothing is stored.
+    assert!(
+        !db.offer_confidential_brief_draft(&session, "Budget planning")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.set_confidential_brief(&session, Some("Budget planning"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(briefs(&session).await, (None, None));
+
+    db.set_session_confidential(&session, true).await.unwrap();
+    assert!(
+        db.offer_confidential_brief_draft(&session, "Budget planning")
+            .await
+            .unwrap()
+    );
+    // A second process drafted too: the first draft stays.
+    assert!(
+        !db.offer_confidential_brief_draft(&session, "Another draft")
+            .await
+            .unwrap()
+    );
+    assert_eq!(briefs(&session).await, (None, some("Budget planning")));
+
+    assert!(
+        db.set_confidential_brief(&session, Some("Planning a budget"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(briefs(&session).await, (some("Planning a budget"), None));
+    // With a brief it needs no draft.
+    assert!(
+        !db.offer_confidential_brief_draft(&session, "Another draft")
+            .await
+            .unwrap()
+    );
+    assert_eq!(briefs(&session).await, (some("Planning a budget"), None));
+
+    // Cleared, with a draft waiting or not, it has neither.
+    assert!(db.set_confidential_brief(&session, None).await.unwrap());
+    assert_eq!(briefs(&session).await, (None, None));
+    assert!(
+        db.offer_confidential_brief_draft(&session, "Another draft")
+            .await
+            .unwrap()
+    );
+    assert!(db.set_confidential_brief(&session, None).await.unwrap());
+    assert_eq!(briefs(&session).await, (None, None));
+
+    for missing in [
+        db.offer_confidential_brief_draft("no-such-session", "A draft")
+            .await,
+        db.set_confidential_brief("no-such-session", Some("A brief"))
+            .await,
+    ] {
+        assert!(!missing.unwrap());
+    }
+}
+
+/// Unmarking a session takes its brief and its draft with the mark, so
+/// marking it again starts with neither. A fork is confidential like its
+/// source but copies neither: it gets a brief of its own. Marking a session
+/// that is already confidential leaves its brief alone.
+#[tokio::test]
+async fn a_brief_goes_with_the_mark_and_is_not_copied_by_a_fork() {
+    use crate::session_store::SessionOrigin;
+    let (db, tmp) = setup().await;
+    let briefs = async |id: &str| {
+        let stored = db.get_session(id).await.unwrap().unwrap();
+        (stored.confidential_brief, stored.confidential_brief_draft)
+    };
+    let some = |text: &str| Some(text.to_string());
+    let with_brief = db.create_session("default", tmp.path()).await.unwrap();
+    let with_draft = db.create_session("default", tmp.path()).await.unwrap();
+    for id in [&with_brief, &with_draft] {
+        db.set_session_confidential(id, true).await.unwrap();
+    }
+    db.set_confidential_brief(&with_brief, Some("Planning a budget"))
+        .await
+        .unwrap();
+    db.offer_confidential_brief_draft(&with_draft, "Budget planning")
+        .await
+        .unwrap();
+
+    for source in [&with_brief, &with_draft] {
+        let fork = db
+            .fork_session(source, "a fork", tmp.path(), &SessionOrigin::default())
+            .await
+            .unwrap();
+        assert!(db.get_session(&fork).await.unwrap().unwrap().confidential);
+        assert_eq!(briefs(&fork).await, (None, None), "a fork of {source}");
+    }
+    // The sources keep theirs, through a fork and a second mark.
+    db.set_session_confidential(&with_brief, true)
+        .await
+        .unwrap();
+    db.mark_confidential_with_forks(&with_draft).await.unwrap();
+    assert_eq!(briefs(&with_brief).await, (some("Planning a budget"), None));
+    assert_eq!(briefs(&with_draft).await, (None, some("Budget planning")));
+
+    for id in [&with_brief, &with_draft] {
+        db.set_session_confidential(id, false).await.unwrap();
+        assert_eq!(briefs(id).await, (None, None), "unmarked");
+        db.set_session_confidential(id, true).await.unwrap();
+        assert_eq!(briefs(id).await, (None, None), "marked again");
+    }
 }
 
 /// Marking a session confidential marks the sessions of the sub-agents it

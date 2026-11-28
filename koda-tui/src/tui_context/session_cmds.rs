@@ -140,6 +140,15 @@ impl TuiContext {
             .await
             .ok();
         let confidential = read.as_ref().is_some_and(|read| read.session.confidential);
+        // What models on remote providers are told of a confidential
+        // session, or that a draft of it waits.
+        let brief = read.as_ref().and_then(|read| {
+            let session = &read.session;
+            let waiting = || "none yet; a draft is waiting (/confidential brief)".to_string();
+            let set = session.confidential_brief.as_ref();
+            set.map(|brief| format!("\"{brief}\""))
+                .or_else(|| session.confidential_brief_draft.as_ref().map(|_| waiting()))
+        });
         let name = read.and_then(|read| read.session.name);
         let settings = &self.settings;
         let model = match &settings.alias {
@@ -186,6 +195,9 @@ impl TuiContext {
         if confidential {
             let said = "yes: only a local model can read it from another session";
             rows.insert(2, ("Confidential", said.to_string()));
+            if let Some(brief) = brief {
+                rows.insert(3, ("Brief", brief));
+            }
         }
         tui_output::emit_line(&mut self.scroll_buffer, Line::default());
         for (label, value) in rows {
@@ -230,15 +242,26 @@ impl TuiContext {
     /// one, when another session's model searches or reads the user's
     /// sessions. Koda's own; the nearest in a peer is Codex's
     /// `thread/memoryMode/set`, which its TUI has no command for.
+    /// `/confidential brief` is the session's brief ([`Self::brief`]).
     pub(crate) async fn mark_confidential(&mut self, arg: &str) {
         use koda_client::protocol::session::SessionConfidentialSetParams;
-        let confidential = match arg.trim() {
+        let arg = arg.trim();
+        if let Some(rest) = arg
+            .strip_prefix("brief")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.brief(rest.trim()).await;
+            return;
+        }
+        let confidential = match arg {
             "" | "on" => true,
             "off" => false,
             _ => {
                 tui_output::dim_msg(
                     &mut self.scroll_buffer,
-                    "Usage: /confidential marks this session, /confidential off unmarks it.".into(),
+                    "Usage: /confidential marks this session, /confidential off unmarks it, \
+                     /confidential brief shows what models on remote providers are told of it."
+                        .into(),
                 );
                 return;
             }
@@ -271,6 +294,110 @@ impl TuiContext {
                      Its forks keep their own marks."
                         .to_string()
                 };
+                tui_output::ok_msg(&mut self.scroll_buffer, said);
+            }
+            Err(e) => tui_output::err_msg(&mut self.scroll_buffer, format!("{e}")),
+        }
+    }
+
+    /// `/confidential brief`: a confidential session's brief, the one line
+    /// a model on a remote provider is told of it in place of its text
+    /// (`session/confidential/brief/set`). Bare, it shows the brief and
+    /// the draft a local model wrote, if one waits; `accept` makes the
+    /// draft the brief, `clear` leaves none, and any other text is the
+    /// brief. A draft is shown to no model until it is accepted.
+    async fn brief(&mut self, arg: &str) {
+        use koda_client::protocol::session::{
+            SessionConfidentialBriefSetParams, SessionReadParams,
+        };
+        let session_id = self.session.id.clone();
+        // What the session has now: whether it is confidential at all,
+        // the brief a bare command shows and the draft `accept` takes.
+        let read = self
+            .client
+            .request::<methods::SessionRead>(SessionReadParams {
+                session_id: session_id.clone(),
+                include_turns: false,
+            })
+            .await;
+        let (confidential, brief, draft) = match read {
+            Ok(read) => (
+                read.session.confidential,
+                read.session.confidential_brief,
+                read.session.confidential_brief_draft,
+            ),
+            Err(e) => {
+                tui_output::err_msg(&mut self.scroll_buffer, format!("{e}"));
+                return;
+            }
+        };
+        if !confidential {
+            tui_output::dim_msg(
+                &mut self.scroll_buffer,
+                "This session isn't confidential, so it has no brief. /confidential marks it."
+                    .into(),
+            );
+            return;
+        }
+        let brief = match arg {
+            "" => {
+                let said = match &brief {
+                    Some(brief) => format!(
+                        "Brief: \"{brief}\". Models on remote providers are told this of the \
+                         session, and none of its text."
+                    ),
+                    None => "No brief: models on remote providers are told only that this \
+                             confidential session exists."
+                        .to_string(),
+                };
+                tui_output::dim_msg(&mut self.scroll_buffer, said);
+                if let Some(draft) = &draft {
+                    tui_output::dim_msg(&mut self.scroll_buffer, draft_line(draft));
+                }
+                tui_output::dim_msg(
+                    &mut self.scroll_buffer,
+                    "/confidential brief <text> sets it, /confidential brief clear removes it."
+                        .into(),
+                );
+                return;
+            }
+            "accept" => match draft {
+                Some(draft) => Some(draft),
+                None => {
+                    tui_output::dim_msg(
+                        &mut self.scroll_buffer,
+                        "No draft to accept. A local model drafts one after its next turn; \
+                         /confidential brief <text> sets your own."
+                            .into(),
+                    );
+                    return;
+                }
+            },
+            "clear" => None,
+            text => Some(text.to_string()),
+        };
+        let set = self
+            .client
+            .request::<methods::SessionConfidentialBriefSet>(SessionConfidentialBriefSetParams {
+                session_id: session_id.clone(),
+                brief: brief.clone(),
+            })
+            .await;
+        match set {
+            Ok(_) => {
+                let said = match &brief {
+                    Some(brief) => format!(
+                        "Brief set: models on remote providers are told \"{}\" of this \
+                         session. /confidential brief clear removes it.",
+                        brief.trim()
+                    ),
+                    None => "Brief cleared: models on remote providers are told only that \
+                             this confidential session exists."
+                        .to_string(),
+                };
+                // The host's notice of it is this, and isn't said again.
+                let brief = brief.map(|brief| brief.trim().to_string());
+                self.brief_set = Some((session_id, brief));
                 tui_output::ok_msg(&mut self.scroll_buffer, said);
             }
             Err(e) => tui_output::err_msg(&mut self.scroll_buffer, format!("{e}")),
@@ -388,4 +515,12 @@ impl TuiContext {
             pasted_images: Vec::new(),
         })
     }
+}
+
+/// What the TUI says of a draft of the session's brief, and how to take it.
+pub(crate) fn draft_line(draft: &str) -> String {
+    format!(
+        "A local model drafted this session's brief for models on remote providers: \"{draft}\". \
+         /confidential brief accept uses it; no model is shown it until then."
+    )
 }

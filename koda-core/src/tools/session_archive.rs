@@ -20,7 +20,8 @@
 //! and tells a caller on a local provider when reading one has made it
 //! confidential too. Neither tool has an argument that changes this, as OpenClaw's
 //! tools have none that lifts an exclusion. What this module adds is the
-//! wording, none of it from a confidential session's content.
+//! wording, none of it from a confidential session's content: a session's
+//! line ends with its brief only when the user accepted one for it.
 
 use crate::providers::ToolDefinition;
 use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult, wrap_result};
@@ -144,14 +145,18 @@ pub struct SessionHits {
 }
 
 /// A confidential session, as a caller that may not read it is told of it:
-/// nothing that comes from what was said in it. Not its title, which Koda
-/// takes from the first prompt.
+/// nothing taken from what was said in it. Not its title, which Koda
+/// takes from the first prompt. Its brief is the user's to give: the one
+/// line they accepted or wrote for models on remote providers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfidentialSession {
     /// Its full id; a line shows the start of it.
     pub id: String,
     /// When it was last written, in Unix seconds.
     pub last_active_unix: i64,
+    /// The brief the user accepted for it: what kind of work it is, on
+    /// one line. Never a draft the user hasn't accepted.
+    pub brief: Option<String>,
 }
 
 /// The confidential sessions kept from a caller on a remote provider.
@@ -454,19 +459,25 @@ fn day_of(unix: i64) -> String {
         .map_or_else(|_| "?".to_string(), |at| at.date().to_string())
 }
 
-/// A confidential session on one line, with nothing of what it says.
+/// A confidential session on one line, with nothing of what it says but
+/// the brief the user accepted for it, when it has one.
 fn confidential_line(session: &ConfidentialSession) -> String {
     let id: String = session.id.chars().take(CONFIDENTIAL_ID_CHARS).collect();
-    format!(
+    let mut line = format!(
         "Confidential session {id}, last active {}",
         day_of(session.last_active_unix)
-    )
+    );
+    if let Some(brief) = &session.brief {
+        line.push_str(": ");
+        line.push_str(brief);
+    }
+    line
 }
 
 /// The notice a search from a remote provider ends with: the caller's
 /// folder's confidential sessions, how many more there are, and what to
-/// do. Built from the sessions' ids and dates alone, so it is the same for
-/// every query.
+/// do. Built from the sessions' ids, dates and accepted briefs alone, so
+/// it is the same for every query.
 fn withheld_text(withheld: &Withheld) -> String {
     let mut text = String::new();
     for session in &withheld.listed {
@@ -993,6 +1004,7 @@ mod tests {
             id: id.to_string(),
             // Days from 2026-11-20 00:00:00 UTC.
             last_active_unix: 1_795_132_800 + day * 86_400,
+            brief: None,
         }
     }
 
@@ -1110,6 +1122,53 @@ mod tests {
             "Confidential session 0a1b2c3d, last active 2026-11-20\n\
              A confidential session can be read only from a session on a local model, or after \
              the user unmarks it."
+        );
+    }
+
+    /// A confidential session with a brief the user accepted says it after
+    /// its id and day, in a search's notice and in place of a read; one
+    /// without is the id and day alone.
+    #[tokio::test]
+    async fn a_confidential_sessions_line_ends_with_its_brief() {
+        let how = "A confidential session can be read only from a session on a local model, or \
+                   after the user unmarks it.";
+        let with_brief = ConfidentialSession {
+            brief: Some("Planning a household budget".to_string()),
+            ..confidential("0a1b2c3d-aaaa-bbbb-cccc-000000000001", 1)
+        };
+        let without = confidential("9f8e7d6c-aaaa-bbbb-cccc-000000000002", 0);
+        let archive = Canned {
+            hits: SessionHits {
+                withheld: Some(Withheld {
+                    listed: vec![with_brief.clone(), without],
+                    total: 2,
+                }),
+                ..Default::default()
+            },
+            confidential: Some(with_brief),
+            ..Default::default()
+        };
+        let found = search_sessions(Some(&archive), &json!({"query": "okapi"}))
+            .await
+            .unwrap();
+        let (_, notice) = found.split_once("\n\n").expect("a notice");
+        assert_eq!(
+            notice,
+            format!(
+                "Confidential session 0a1b2c3d, last active 2026-11-21: Planning a household \
+                 budget\n\
+                 Confidential session 9f8e7d6c, last active 2026-11-20\n{how}"
+            )
+        );
+        let read = read_session(Some(&archive), &json!({"session_id": "0a1b2c3d"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            read,
+            format!(
+                "Confidential session 0a1b2c3d, last active 2026-11-21: Planning a household \
+                 budget\n{how}"
+            )
         );
     }
 

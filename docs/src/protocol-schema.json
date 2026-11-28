@@ -3245,6 +3245,20 @@
           "description": "The user marked it confidential (`session/confidential/set`), or it\nread a session that is: its text goes to no model on a remote\nprovider but its own. Koda's own; `session/confidential/updated`\nfollows each change.",
           "type": "boolean"
         },
+        "confidentialBrief": {
+          "description": "A confidential session's brief: the one line a model on a remote\nprovider is told of it, in place of its text, which the user\naccepted or wrote (`session/confidential/brief/set`). Absent\nwithout one. Koda's own; `session/confidential/brief/updated`\nfollows each change.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidentialBriefDraft": {
+          "description": "A brief a local model drafted for a confidential session, waiting\nfor the user to accept, edit or discard it\n(`session/confidential/brief/set`). No model is shown a draft.\nAbsent without one. Koda's own.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "contextWindow": {
           "description": "The context window in tokens.",
           "format": "uint64",
@@ -3467,6 +3481,59 @@
     },
     "SessionCompactStartResponse": {
       "description": "The answer to `session/compact/start`.",
+      "type": "object"
+    },
+    "SessionConfidentialBriefSetParams": {
+      "additionalProperties": false,
+      "description": "`session/confidential/brief/set`: set a confidential session's brief,\nor clear it. Koda's own.\n\nThe brief is the one line a model on a remote provider is told of a\nconfidential session in place of its text: what kind of work it is,\nwith no details. With it, the session's line in `SearchSessions`'s\nnotice and `ReadSession`'s answer reads `Confidential session\n<id>, last active <date>: <brief>`; without one, the line ends at the\ndate.\n\nKoda drafts a brief on a local model, never a remote one, and keeps\nthe draft apart (`Session.confidentialBriefDraft`): no model is shown a\ndraft. This request is how the user accepts one, by sending its text,\nwrites their own, or discards it.\n\n- **A text** becomes the brief and the draft goes. It is the user's own\n  wording, so only its shape is checked: one line, and at most\n  [`MAX_CONFIDENTIAL_BRIEF`] characters once the white space around it\n  is taken off.\n- **`null`** clears the brief and the draft, and the session's line is\n  the id and date alone again.\n\nWorks on any stored confidential session, open or not, archived or\nnot. `session/confidential/brief/updated` follows, to every client.",
+      "properties": {
+        "brief": {
+          "description": "The brief, or `null` for none. One or the other must be given, so\na request that leaves it out by mistake clears nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "brief"
+      ],
+      "type": "object"
+    },
+    "SessionConfidentialBriefSetResponse": {
+      "description": "The answer to `session/confidential/brief/set`.",
+      "type": "object"
+    },
+    "SessionConfidentialBriefUpdatedNotification": {
+      "description": "`session/confidential/brief/updated`: a confidential session's brief\nand draft as they are now, for every client: after\n`session/confidential/brief/set`, and when Koda has a draft from a\nlocal model. Koda's own. Unmarking a session clears both without one of\nthese: `session/confidential/updated` says the mark is off.",
+      "properties": {
+        "brief": {
+          "description": "The brief models on remote providers are told, or `null`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "draft": {
+          "description": "The draft waiting for the user, or `null`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
       "type": "object"
     },
     "SessionConfidentialSetParams": {
@@ -6644,6 +6711,14 @@
         "$ref": "#/$defs/SessionCompactStartResponse"
       }
     },
+    "session/confidential/brief/set": {
+      "params": {
+        "$ref": "#/$defs/SessionConfidentialBriefSetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionConfidentialBriefSetResponse"
+      }
+    },
     "session/confidential/set": {
       "params": {
         "$ref": "#/$defs/SessionConfidentialSetParams"
@@ -6935,6 +7010,11 @@
     "session/backgroundTerminals/exited": {
       "params": {
         "$ref": "#/$defs/BackgroundTerminalsExitedNotification"
+      }
+    },
+    "session/confidential/brief/updated": {
+      "params": {
+        "$ref": "#/$defs/SessionConfidentialBriefUpdatedNotification"
       }
     },
     "session/confidential/updated": {

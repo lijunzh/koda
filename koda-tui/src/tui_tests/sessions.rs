@@ -10,7 +10,7 @@ use koda_test_utils::network::FakeLlmServer;
 use koda_test_utils::openai::{text, tool_calls};
 use serde_json::json;
 
-use super::{asked_write, ctrl, esc, go, picker_lines, wait_for_go};
+use super::{asked_write, ctrl, esc, go, json_reply, picker_lines, wait_for_go};
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui};
 
 /// `/new` starts a session with none of the last one's history.
@@ -231,6 +231,106 @@ async fn confidential_marks_and_unmarks_the_session() {
     .await;
 }
 
+/// `/confidential brief` is about what models on remote providers are told
+/// of a confidential session. A local model's draft is said in one line
+/// when it arrives, with how to accept it; bare, the command shows the
+/// brief and the draft; `accept` makes the draft the brief, a text sets
+/// the user's own and `clear` removes it, each said once; `/status` shows
+/// the brief. A session that isn't confidential has none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn confidential_brief_shows_accepts_sets_and_clears_the_brief() {
+    use koda_state::session_store::SessionStore;
+    let replies = vec![text("All done."), json_reply("\"Planning a trip\"")];
+    let tui = TestTui::start(replies).await;
+    tui.run(async |driver: Driver| {
+        let briefs = async || {
+            let id = driver.sessions().await[0].clone();
+            let stored = driver.db().await.get_session(&id).await.unwrap().unwrap();
+            (stored.confidential_brief, stored.confidential_brief_draft)
+        };
+        let some = |text: &str| Some(text.to_string());
+        driver.submit("/confidential brief").await;
+        driver
+            .wait_for_screen("This session isn't confidential, so it has no brief.")
+            .await;
+        driver.submit("/confidential brief Planning").await;
+        driver
+            .wait_for_screen_that(
+                |screen| screen.matches("so it has no brief").count() == 2,
+                "the brief refused again",
+            )
+            .await;
+
+        // Marked while idle on its local model, which has answered: the
+        // model drafts the brief, and the TUI says so.
+        driver
+            .submit_and_finish("plan the okapi trip", "All done.")
+            .await;
+        driver.submit("/confidential").await;
+        driver
+            .wait_for_screen("A local model drafted this session's brief")
+            .await;
+        let screen = driver.screen();
+        assert!(
+            screen.contains("\"Planning a trip\"") && screen.contains("/confidential brief accept"),
+            "{screen}"
+        );
+        assert_eq!(briefs().await, (None, some("Planning a trip")));
+        let asked = driver.model_call(2).await;
+        assert!(asked.contains("plan the okapi trip"), "{asked}");
+
+        driver.submit("/confidential brief").await;
+        driver
+            .wait_for_screen("No brief: models on remote providers are told only that")
+            .await;
+        driver.submit("/confidential brief accept").await;
+        driver
+            .wait_for_screen("Brief set: models on remote providers are told \"Planning a trip\"")
+            .await;
+        assert_eq!(briefs().await, (some("Planning a trip"), None));
+        driver.submit("/status").await;
+        driver.wait_for_screen("Instructions").await;
+        let screen = driver.screen();
+        let row = format!("{:<13}\"Planning a trip\"", "Brief");
+        assert!(screen.contains(&row), "{screen}");
+        // The host's notice of the set came before `/status` was answered:
+        // it isn't said as another client's.
+        assert!(!screen.contains("from another client"), "{screen}");
+
+        driver
+            .submit("/confidential brief  Booking travel for a family ")
+            .await;
+        driver
+            .wait_for_screen("are told \"Booking travel for a family\"")
+            .await;
+        assert_eq!(briefs().await, (some("Booking travel for a family"), None));
+        driver.submit("/confidential brief").await;
+        driver
+            .wait_for_screen("Brief: \"Booking travel for a family\".")
+            .await;
+        let screen = driver.screen();
+        assert!(!screen.contains("from another client"), "{screen}");
+
+        driver.submit("/confidential brief clear").await;
+        driver.wait_for_screen("Brief cleared").await;
+        assert_eq!(briefs().await, (None, None));
+        driver.submit("/confidential brief accept").await;
+        driver.wait_for_screen("No draft to accept.").await;
+        // The server's own refusal, as it words it.
+        driver
+            .submit(&format!("/confidential brief {}", "long ".repeat(21)))
+            .await;
+        driver
+            .wait_for_screen("a brief is at most 100 characters")
+            .await;
+        assert_eq!(briefs().await, (None, None));
+        assert_eq!(driver.model_calls().await, 2, "the turn and one draft");
+        driver
+    })
+    .await;
+}
+
 /// `/confidential` in a session that was forked marks the fork too, since
 /// it holds a copy of the conversation, and says so; `/confidential off`
 /// unmarks the session alone.
@@ -284,6 +384,8 @@ async fn the_picker_marks_a_confidential_session_and_reading_one_is_said() {
     let replies = vec![
         text("All done."),
         text("The zebra crossing is the safe place."),
+        // Marked while idle on its local model: its brief is drafted.
+        json_reply("Crossing a road"),
         tool_calls(&[("call_1", "SearchSessions", json!({"query": "zebra"}))]),
         text("Found it."),
     ];
@@ -296,6 +398,9 @@ async fn the_picker_marks_a_confidential_session_and_reading_one_is_said() {
                 .await;
             driver.submit("/confidential").await;
             driver.wait_for_screen("Marked confidential").await;
+            driver
+                .wait_for_screen("A local model drafted this session's brief")
+                .await;
             driver
         })
         .await;
@@ -334,7 +439,7 @@ async fn the_picker_marks_a_confidential_session_and_reading_one_is_said() {
             1,
             "{screen}"
         );
-        let sent = driver.model_call(4).await;
+        let sent = driver.model_call(5).await;
         assert!(
             sent.contains("The zebra crossing is the safe place.")
                 && sent.contains("This session is now confidential too"),

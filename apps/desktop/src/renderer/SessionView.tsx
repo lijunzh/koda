@@ -16,7 +16,7 @@ import { SessionControls } from './SessionControls';
 import { SessionDetails } from './SessionDetails';
 import { Background } from './SessionExtras';
 import { type SideState, SidePanel, withPane } from './SidePanel';
-import { CONFIDENTIAL_TIP, type ListedSession, statusLabel, title } from './sessions';
+import { type Brief, confidentialTip, type ListedSession, MAX_BRIEF, statusLabel, title } from './sessions';
 import { runningTurn, type TranscriptState, type TurnView, type View, VIEWS } from './transcript';
 
 /** Claude Code's names for its desktop views. */
@@ -33,6 +33,8 @@ interface Props {
   listed?: ListedSession;
   /** Whether the session is marked confidential. */
   confidential: boolean;
+  /** Its brief for models on remote providers, and a draft of one waiting for the user. */
+  brief: Brief;
   transcript: TranscriptState | null;
   view: View;
   onView(view: View): void;
@@ -63,6 +65,7 @@ export function SessionView({
   at,
   listed,
   confidential,
+  brief,
   transcript,
   view,
   onView,
@@ -77,6 +80,8 @@ export function SessionView({
   onClose,
 }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
+  // The brief as it is being typed, in the box under the title; `null` when the box is shut.
+  const [briefing, setBriefing] = useState<string | null>(null);
   // The side panel: whether it shows, and the panes open in it.
   const [sideShown, setSideShown] = useState(false);
   const [side, setSide] = useState<SideState>({ tabs: [], active: null });
@@ -118,6 +123,10 @@ export function SessionView({
   const running = transcript ? runningTurn(transcript) : undefined;
   const failed = (e: Error) => setError(e.message);
   const unarchive = () => void call('session/unarchive', { sessionId: selected.id }).catch(failed);
+  // The brief models on remote providers are told of the session: a text
+  // the user accepted or typed, or none.
+  const setBrief = (text: string | null) =>
+    void call('session/confidential/brief/set', { sessionId: selected.id, brief: text }).catch(failed);
 
   // What can be done with the session, behind the caret beside its title.
   const menu: Entry[] = [
@@ -138,6 +147,17 @@ export function SessionView({
         : 'Only a local model can read it from another session',
       onPick: () => void call('session/confidential/set', { sessionId: selected.id, confidential: !confidential }).catch(failed),
     },
+    ...(confidential
+      ? [
+          {
+            type: 'item',
+            id: 'brief',
+            label: 'Edit brief…',
+            description: 'What models on remote providers are told of it',
+            onPick: () => setBriefing(brief.brief ?? ''),
+          } satisfies Entry,
+        ]
+      : []),
     { type: 'separator' },
     {
       type: 'submenu',
@@ -193,7 +213,7 @@ export function SessionView({
                 }}
               />
             )}
-            {confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
+            {confidential && <ConfidentialMark tip={confidentialTip(brief.brief)} />}
             <MenuButton label="Session menu" entries={menu} className="icon-button">
               <span aria-hidden>⌄</span>
             </MenuButton>
@@ -202,6 +222,33 @@ export function SessionView({
             {folder && <code data-testid="session-folder">{folder}</code>}
             {label && <span data-testid="session-status"> · {label}</span>}
           </p>
+          {confidential && briefing !== null && (
+            <input
+              className="brief-box"
+              aria-label="Brief for models on remote providers"
+              placeholder="What kind of work this session is; empty for none"
+              autoFocus
+              maxLength={MAX_BRIEF}
+              value={briefing}
+              onChange={(e) => setBriefing(e.target.value)}
+              onBlur={() => setBriefing(null)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setBriefing(null);
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  setBrief(briefing.trim() || null);
+                  setBriefing(null);
+                }
+              }}
+            />
+          )}
+          {confidential && briefing === null && brief.draft && (
+            <p className="brief-draft" data-testid="brief-draft">
+              <span className="brief-text">Brief for sessions on remote models: &quot;{brief.draft}&quot;</span>
+              <button onClick={() => setBrief(brief.draft)}>Accept</button>
+              <button onClick={() => setBriefing(brief.draft)}>Edit</button>
+              <button onClick={() => setBrief(null)}>Discard</button>
+            </p>
+          )}
         </div>
         <button
           className="icon-button"

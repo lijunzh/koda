@@ -1,7 +1,7 @@
 // The session list's state, from the server's answers and notifications.
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../src/protocol/types.gen';
-import { byFolder, confidentialAfter, EMPTY, folderName, listed, listedPage, statusLabel, title, withMessages, withPage, withSession } from '../src/renderer/sessions';
+import { briefAfter, briefOf, byFolder, confidentialAfter, confidentialTip, CONFIDENTIAL_TIP, EMPTY, folderName, listed, listedPage, NO_BRIEF, statusLabel, title, withMessages, withPage, withSession } from '../src/renderer/sessions';
 
 function session(id: string, extra: Partial<Session> = {}): Session {
   return { id, createdAt: 1, updatedAt: 1, ephemeral: false, preview: '', turns: [], ...extra } as Session;
@@ -117,6 +117,46 @@ describe('session list', () => {
     expect(confidentialAfter(true, 'a', [told('a', false)])).toBe(false);
     expect(confidentialAfter(false, 'a', [told('a', true), told('a', false), told('b', true)])).toBe(false);
     expect(confidentialAfter(false, 'a', [told('b', true)])).toBe(false);
+  });
+
+  it("gives a pane its session's brief and draft: the last word about them, and none once the mark is off", () => {
+    const told = (sessionId: string, brief: string | null, draft: string | null) =>
+      note('session/confidential/brief/updated', { sessionId, brief, draft });
+    const unmarked = (sessionId: string) => note('session/confidential/updated', { sessionId, confidential: false });
+    expect(briefOf(session('a'))).toEqual(NO_BRIEF);
+    expect(briefOf(session('a', { confidentialBrief: 'Planning a trip', confidentialBriefDraft: 'Travel' }))).toEqual({
+      brief: 'Planning a trip',
+      draft: 'Travel',
+    });
+    const drafted = briefAfter(NO_BRIEF, 'a', [told('a', null, 'Planning a trip'), told('b', 'Elsewhere', null)]);
+    expect(drafted).toEqual({ brief: null, draft: 'Planning a trip' });
+    // Accepted: the draft is gone. Cleared: both are.
+    expect(briefAfter(drafted, 'a', [told('a', 'Planning a trip', null)])).toEqual({ brief: 'Planning a trip', draft: null });
+    expect(briefAfter(drafted, 'a', [told('a', null, null)])).toEqual(NO_BRIEF);
+    // Marking says nothing of the brief; unmarking takes it and the draft.
+    expect(briefAfter(drafted, 'a', [note('session/confidential/updated', { sessionId: 'a', confidential: true })])).toBe(drafted);
+    expect(briefAfter(drafted, 'a', [unmarked('b')])).toBe(drafted);
+    expect(briefAfter({ brief: 'Planning a trip', draft: null }, 'a', [unmarked('a')])).toEqual(NO_BRIEF);
+    expect(briefAfter(drafted, 'a', [unmarked('a'), told('a', null, 'Again')])).toEqual({ brief: null, draft: 'Again' });
+  });
+
+  it("keeps a listed session's brief for its lock to say, never a draft", () => {
+    let state = withPage(EMPTY, { data: [session('a', { confidential: true, confidentialBriefDraft: 'A draft' })] }, true);
+    const brief = () => state.byId.get('a')!.brief;
+    expect(brief()).toBeNull();
+    state = withMessages(state, [note('session/confidential/brief/updated', { sessionId: 'a', brief: null, draft: 'Another draft' })]);
+    expect(brief()).toBeNull();
+    state = withMessages(state, [
+      note('session/confidential/brief/updated', { sessionId: 'a', brief: 'Planning a trip', draft: null }),
+      note('session/confidential/brief/updated', { sessionId: 'elsewhere', brief: 'Not listed', draft: null }),
+    ]);
+    expect(brief()).toBe('Planning a trip');
+    expect(confidentialTip(brief())).toBe(`${CONFIDENTIAL_TIP}. Models on remote providers are told: "Planning a trip"`);
+    expect(confidentialTip(null)).toBe(CONFIDENTIAL_TIP);
+    // The mark coming off takes the brief with it.
+    state = withMessages(state, [note('session/confidential/updated', { sessionId: 'a', confidential: false })]);
+    expect(brief()).toBeNull();
+    expect(listedPage({ data: [session('c', { confidential: true, confidentialBrief: 'Taxes' })] })[0].brief).toBe('Taxes');
   });
 
   it('shows the Archived list what the session list would show', () => {

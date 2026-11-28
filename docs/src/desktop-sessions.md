@@ -69,6 +69,20 @@ Your own list and Search show the session as before, and it is still
 stored in plain text on this machine
 ([Sessions](./sessions.md#confidential-sessions) has the whole rule).
 
+A model on a remote provider is told only that a confidential session
+exists, unless you give the session a **brief**: one line that says what
+kind of work it is, such as "Planning a household budget". A local model
+drafts one after a turn, never a remote one, and the draft waits in a quiet
+line under the session's title: *Brief for sessions on remote models:
+"…"*, with **Accept**, **Edit** and **Discard**. No model is told it until
+you accept it. **Edit** turns the line into a box: Enter saves what you
+typed as the brief, Esc leaves the draft waiting. **Edit brief…**, in the
+menu beside the title of a confidential session, opens the same box on the
+brief it has; saved empty, the brief is removed. Hover the lock for the
+brief in use. A draft you discard doesn't come back until the background
+server restarts or you unmark the session and mark it again
+([The brief](./sessions.md#the-brief)).
+
 ## Archiving a session
 
 **Archive**, in a session's **…** menu or the menu beside its title, puts a

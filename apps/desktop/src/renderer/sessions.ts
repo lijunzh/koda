@@ -2,7 +2,8 @@
 // notifications. The server sends every connection the sessions others start,
 // rename, delete, run and mark confidential (`session/started`,
 // `session/name/updated`, `session/deleted`, `session/archived`,
-// `session/status/changed`, `session/confidential/updated`), so the
+// `session/status/changed`, `session/confidential/updated`,
+// `session/confidential/brief/updated`), so the
 // list stays current without opening any session. An archived session leaves
 // the list, as Claude Code's desktop app puts it away; the Archived list is
 // asked for on its own (`session/list` with `archived`).
@@ -18,10 +19,52 @@ export interface ListedSession {
   status: SessionStatus | null;
   /** Marked confidential: its row and its title show a lock. */
   confidential: boolean;
+  /** A confidential session's brief, which the lock says; `null` without one. */
+  brief: string | null;
 }
 
 /** What the lock on a confidential session says. */
 export const CONFIDENTIAL_TIP = 'Confidential: only a local model can read this session from another session';
+
+/** What the lock says of a session with `brief`: also what models on remote providers are told of it. */
+export function confidentialTip(brief?: string | null): string {
+  return brief ? `${CONFIDENTIAL_TIP}. Models on remote providers are told: "${brief}"` : CONFIDENTIAL_TIP;
+}
+
+/**
+ * A confidential session's brief, the one line models on remote providers
+ * are told of it, and the draft of one a local model wrote, which waits
+ * for the user and is shown to no model.
+ */
+export interface Brief {
+  brief: string | null;
+  draft: string | null;
+}
+
+export const NO_BRIEF: Brief = { brief: null, draft: null };
+
+/** The longest brief the server takes, in characters. */
+export const MAX_BRIEF = 100;
+
+/** `session`'s brief and draft, as it was read. */
+export function briefOf(session: Session): Brief {
+  return { brief: session.confidentialBrief ?? null, draft: session.confidentialBriefDraft ?? null };
+}
+
+/**
+ * Session `id`'s brief and draft after `batch`: the last
+ * `session/confidential/brief/updated` for it says both, and a mark that
+ * comes off takes both with it, which the server doesn't say again.
+ */
+export function briefAfter(brief: Brief, id: string, batch: readonly RpcMessage[]): Brief {
+  for (const message of batch) {
+    const params = message.params as { sessionId?: string; confidential?: boolean; brief?: string | null; draft?: string | null } | undefined;
+    if (params?.sessionId !== id) continue;
+    if (message.method === 'session/confidential/brief/updated') brief = { brief: params.brief ?? null, draft: params.draft ?? null };
+    if (message.method === 'session/confidential/updated' && params.confidential !== true) brief = NO_BRIEF;
+  }
+  return brief;
+}
 
 export interface SessionsState {
   byId: ReadonlyMap<string, ListedSession>;
@@ -52,6 +95,7 @@ function entry(session: Session, before?: ListedSession): ListedSession {
     status: session.status ?? before?.status ?? null,
     // A session always says: the server leaves the field out for one that isn't.
     confidential: session.confidential === true,
+    brief: session.confidentialBrief ?? null,
   };
 }
 
@@ -99,7 +143,16 @@ export function withMessages(state: SessionsState, batch: readonly RpcMessage[],
       case 'session/confidential/updated': {
         const current = (byId ?? state.byId).get(params?.sessionId as string);
         const confidential = params?.confidential === true;
-        if (current && current.confidential !== confidential) edit().set(current.id, { ...current, confidential });
+        // A brief goes with the mark.
+        if (current && current.confidential !== confidential) {
+          edit().set(current.id, { ...current, confidential, brief: confidential ? current.brief : null });
+        }
+        break;
+      }
+      case 'session/confidential/brief/updated': {
+        const current = (byId ?? state.byId).get(params?.sessionId as string);
+        const brief = (params?.brief as string | null | undefined) ?? null;
+        if (current && current.brief !== brief) edit().set(current.id, { ...current, brief });
         break;
       }
       case 'session/deleted':

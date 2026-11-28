@@ -540,6 +540,37 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A confidential session's brief: the draft waiting under the title, and the box it is edited in */
+.brief-draft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+}
+.brief-draft .brief-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.brief-draft button {
+  flex: none;
+  background: none;
+  padding: 1px 6px;
+  color: var(--muted);
+}
+.brief-draft button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.brief-box {
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 3px 0 0;
+}
 .session-view > .problem,
 .session-view > .detail {
   padding: 0 24px;

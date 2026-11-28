@@ -127,6 +127,9 @@ server_notifications! {
     SessionNameUpdated => "session/name/updated" (crate::session::SessionNameUpdatedNotification),
     /// A session was marked confidential, or unmarked.
     SessionConfidentialUpdated => "session/confidential/updated" (crate::session::SessionConfidentialUpdatedNotification),
+    /// A confidential session's brief was set or cleared, or a draft of
+    /// one is waiting for the user.
+    SessionConfidentialBriefUpdated => "session/confidential/brief/updated" (crate::session::SessionConfidentialBriefUpdatedNotification),
     /// What a session is doing changed.
     SessionStatusChanged => "session/status/changed" (crate::session::SessionStatusChangedNotification),
     SessionSettingsUpdated => "session/settings/updated" (crate::session::SessionSettingsUpdatedNotification),

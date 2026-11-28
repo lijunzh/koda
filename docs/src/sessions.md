@@ -39,6 +39,13 @@ koda unarchive a3f8bc
 /confidential
 /confidential off
 
+# What models on remote providers are told of it instead: see, accept a
+# local model's draft, write your own, remove
+/confidential brief
+/confidential brief accept
+/confidential brief Planning a household budget
+/confidential brief clear
+
 # Delete a session permanently
 /resume delete a3f8bc
 ```
@@ -128,7 +135,8 @@ sensitive.
   more there are, and that they can be read from a session on a local model
   or after you unmark them. The notice is the same whatever was searched
   for, and says nothing taken from a session: no title, no text, no folder.
-  No argument of either tool changes this.
+  A line ends with the session's [brief](#the-brief) only once you have
+  accepted one. No argument of either tool changes this.
 - **A session that reads one becomes confidential.** When a session on a
   local model is given a confidential session's text, by a search result
   or a read, Koda marks that session too, before the text is handed over:
@@ -158,6 +166,67 @@ sensitive.
 - **Your own view doesn't change.** `/resume`, its search, the desktop
   app's list and Search show a confidential session like any other, with a
   lock on its row. The mark is about what a model is given.
+
+### The brief
+
+An id and a date tell a model on a remote provider nothing about a
+confidential session. A **brief** is one line you let it be told in place
+of the session's text: what kind of work the session is, with no details,
+such as "Planning a household budget". With a brief, the session's line in
+`SearchSessions`'s notice and in `ReadSession`'s answer reads
+
+```text
+Confidential session 1a2b3c4d, last active 2026-11-20: Planning a household budget
+```
+
+and without one it ends at the date.
+
+- **A local model drafts it, never a remote one.** Koda asks a
+  [local model](#what-counts-as-a-local-model) for one line of at most
+  twelve words that names no person, company, project or file and holds no
+  number, path, identifier or quotation. It is given what you and the
+  assistant said in the session, your messages first, up to about 8,000
+  characters, and no tool call or output.
+- **No model is shown a draft.** The draft is stored apart from the brief
+  and waits for you. The TUI says when one arrives for the session you are
+  in: `/confidential brief` shows it, `/confidential brief accept` makes it
+  the brief, `/confidential brief <text>` sets your own words and
+  `/confidential brief clear` removes the brief. In the desktop app the
+  draft waits under the session's title with **Accept**, **Edit** and
+  **Discard**, and **Edit brief…** is in the title's menu.
+- **A draft with a detail in it is thrown away,** not shown to you: one
+  that holds a path, a file's or a host's name, a URL, an email address,
+  or four digits in a row. Koda tells this from the line's shape, so it
+  can't know a name from a word: read a draft before you accept it. A
+  brief you type yourself is yours, and is checked only for being one line
+  of 100 characters at most.
+- **Koda loads no model for it.** A draft is asked only of a model that
+  has just answered a turn:
+  - **When you mark a session** that is idle on a local model, and that
+    model has answered a turn since the session was opened, it is asked at
+    once.
+  - **After a turn ends on a local model** and its session is idle, that
+    model is asked for up to two of the sessions still waiting for a
+    draft, in any folder, the most recently active first (not after a
+    `koda exec` run, which is over with its turn). A confidential
+    session on a remote provider, or one marked while no local model was
+    in use, gets its draft this way, the next time you use a local model.
+
+  Until then the session's line is its id and its date.
+- **It keeps out of a turn's way.** One draft is asked for at a time. None
+  is asked while a turn runs at that model's endpoint in the same Koda,
+  and a turn that starts there stops the request, which is made again
+  after a later turn. A request gets 30 seconds. A failed one is made
+  again after later turns, three times in all, and a draft thrown away
+  once more, until Koda (or the background server) restarts.
+- **Discarding is your answer.** After you discard a draft or clear a
+  brief, Koda drafts no other for that session until it restarts, or you
+  unmark the session and mark it again.
+- **It goes with the mark.** Unmarking a session removes its brief and its
+  draft. A fork starts with neither and gets a draft of its own.
+
+A brief is told to remote providers: that is what it is for. Don't put in
+it what you marked the session to keep.
 
 ### What counts as a local model
 
@@ -198,7 +267,8 @@ with, with no lookup of names:
   always has. The mark covers what other models can read.
 
 Over the protocol it is `session/confidential/set`
-([Marking a session confidential](./serve.md#marking-a-session-confidential)).
+([Marking a session confidential](./serve.md#marking-a-session-confidential)),
+and the brief is `session/confidential/brief/set`.
 
 ## Session title
 

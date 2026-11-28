@@ -117,6 +117,15 @@ pub(crate) enum SessionCommand {
         name: String,
         done: oneshot::Sender<Result<(), String>>,
     },
+    /// What a one-off request to the session's model goes by, if that
+    /// model is at rest: the session's config when no turn runs and the
+    /// model has answered a turn since the session opened or changed
+    /// models, so it is loaded as far as Koda can tell. `None` during a
+    /// turn and before the first. For a confidential session's brief
+    /// (the host's `confidential_brief`).
+    ModelAtRest {
+        reply: oneshot::Sender<Option<Box<KodaConfig>>>,
+    },
 }
 
 impl SessionCommand {
@@ -139,7 +148,8 @@ impl SessionCommand {
             | Self::ReloadMcp { .. }
             | Self::Shutdown { .. }
             | Self::FlushHistory { .. }
-            | Self::Named { .. } => {}
+            | Self::Named { .. }
+            | Self::ModelAtRest { .. } => {}
             #[cfg(test)]
             Self::Panic => {}
         }
@@ -151,6 +161,17 @@ pub(crate) enum GoalRequest {
     Set(koda_protocol::goal::SessionGoalSetParams),
     Get,
     Clear,
+}
+
+/// What the host hears of every session's turns, so it can use a local
+/// model while that model is idle (to draft a confidential session's
+/// brief) and get out of the way of the next turn. Neither call waits.
+pub(crate) trait TurnWatch: Send + Sync {
+    /// A turn is starting on `config`'s provider and endpoint.
+    fn turn_starting(&self, config: &KodaConfig);
+    /// A session has gone idle after a turn that ended without an error:
+    /// the model in `config` has just answered and has nothing to do.
+    fn went_idle(&self, config: &KodaConfig);
 }
 
 /// What every session on a host shares.
@@ -170,6 +191,8 @@ pub(crate) struct SessionContext {
     /// Set once the first session has checked this run's effort and
     /// thinking budget against its model ([`crate::settings::check_run_reasoning`]).
     pub run_checked: Arc<std::sync::atomic::AtomicBool>,
+    /// Told when a session's turn starts and when a session goes idle.
+    pub turns: Arc<dyn TurnWatch>,
 }
 
 /// A session, open and ready for a turn.
@@ -202,6 +225,7 @@ pub(crate) async fn open(
         open_requests,
         statuses,
         run_checked,
+        turns,
     } = context;
 
     let resumed = resume.is_some();
@@ -541,6 +565,12 @@ pub(crate) async fn open(
             folder_instructions: std::collections::HashSet::new(),
             check: None,
             checkin: crate::goal::CheckIn::default(),
+            turns,
+            // A `koda exec` run is over with its turn: nothing is started
+            // behind it on its model, for the next run to wait on.
+            says_idle: origin.source.as_deref() != Some(koda_state::session_store::source::EXEC),
+            answered: false,
+            turn_ended: false,
             _writer: writer,
         },
         restored_usage,
@@ -583,6 +613,17 @@ pub(crate) struct SessionTask {
     check: Option<String>,
     /// The goal waiting on background commands, and when to check in.
     checkin: crate::goal::CheckIn,
+    /// The host, told of this session's turns.
+    turns: Arc<dyn TurnWatch>,
+    /// Whether the host is told when this session goes idle after a turn:
+    /// not for one `koda exec` opened.
+    says_idle: bool,
+    /// The session's model has answered a turn since the session opened
+    /// or changed models: it is loaded, as far as Koda can tell.
+    answered: bool,
+    /// A turn has ended without an error and the host hasn't been told
+    /// the session is idle since.
+    turn_ended: bool,
     /// This process's hold on the session, released once the task has
     /// ended and its turns are stored.
     _writer: koda_state::writer_lock::WriterLockGuard,
@@ -687,6 +728,11 @@ impl SessionTask {
                         .set_session_title(&self.session.id, &name)
                         .await;
                     let _ = done.send(stored.map_err(|e| format!("{e:#}")));
+                    Next::Idle
+                }
+                SessionCommand::ModelAtRest { reply } => {
+                    let at_rest = self.answered.then(|| Box::new(self.config.clone()));
+                    let _ = reply.send(at_rest);
                     Next::Idle
                 }
                 SessionCommand::UpdateSettings { params, reply } => {
@@ -891,7 +937,17 @@ impl SessionTask {
             next = match next {
                 Next::Idle => match self.continue_goal().await {
                     Some(next) => next,
-                    None => return true,
+                    None => {
+                        // Idle after a turn, with nothing from the client
+                        // waiting: the model has nothing to do.
+                        if self.waiting.is_none()
+                            && std::mem::take(&mut self.turn_ended)
+                            && self.says_idle
+                        {
+                            self.turns.went_idle(&self.config);
+                        }
+                        return true;
+                    }
                 },
                 Next::Stop => return false,
                 Next::Compact(reply) => self.compact(reply).await,
@@ -942,6 +998,8 @@ impl SessionTask {
                 .await
                 .map_err(|e| internal(format!("couldn't record the model: {e:#}")))?;
             self.session.update_provider(&next);
+            // Another model, which may not be loaded.
+            self.answered = false;
         }
         if let Some(asked) = params.mode {
             self.session.mode = asked;
@@ -1373,6 +1431,8 @@ impl SessionTask {
 
     /// Run a turn to its end, reading the client's commands meanwhile.
     async fn run_turn(&mut self, turn_id: String, work: Work) -> Next {
+        self.turns.turn_starting(&self.config);
+        self.turn_ended = false;
         // A prompt's turn marked its start before its message was stored.
         if !matches!(work, Work::Prompt(_)) {
             self.mark_turn_start(&turn_id, None).await;
@@ -1419,6 +1479,8 @@ impl SessionTask {
             held,
             check,
             checkin,
+            answered,
+            turn_ended,
             ..
         } = self;
         // For `session/name/set` during the turn, which holds the session.
@@ -1595,6 +1657,10 @@ impl SessionTask {
                                                 let stored = db.set_session_title(&session_id, &name).await;
                                                 let _ = done.send(stored.map_err(|e| format!("{e:#}")));
                                             }
+                                            // The model is answering this turn.
+                                            Some(SessionCommand::ModelAtRest { reply }) => {
+                                                let _ = reply.send(None);
+                                            }
                                             // Told to stop, or the host is gone: stop the turn and
                                             // let it wind down. It bounds that itself.
                                             Some(SessionCommand::Shutdown { done }) => {
@@ -1647,6 +1713,11 @@ impl SessionTask {
         let error = result.err().inspect(|e| {
             tracing::warn!("turn {turn_id} ended with an error: {e}");
         });
+        // The model answered: it is loaded, and idle once the session is.
+        if error.is_none() {
+            *answered = true;
+            *turn_ended = true;
+        }
         sink.end_turn(error).await;
         // What the turn did counts toward the session's goal.
         if steerable && config.goals {
@@ -1774,6 +1845,8 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
         parent_session_id: stored.parent_session_id.clone(),
         ephemeral: stored.ephemeral,
         confidential: stored.confidential,
+        confidential_brief: stored.confidential_brief.clone(),
+        confidential_brief_draft: stored.confidential_brief_draft.clone(),
         turns: Vec::new(),
     }
 }

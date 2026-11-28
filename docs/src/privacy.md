@@ -22,7 +22,10 @@ are collected or transmitted anywhere.
   only to [local models](./sessions.md#what-counts-as-a-local-model) (LM
   Studio, Ollama, vLLM or llama.cpp on your own machine or network); its
   forks and a session that reads it are marked too, its sub-agents run
-  only on such a model or its own, and its model saves no notes. The mark
+  only on such a model or its own, and its model saves no notes. A model on
+  a remote provider is told of it only an id, a date and, once you have
+  accepted one, its [brief](./sessions.md#the-brief): one line a local
+  model drafted or you wrote. The mark
   isn't encryption: the session stays in the database as plain text
 - Version checks query crates.io only (no Koda-specific server)
 - With an Anthropic key, the Claude aliases ask Anthropic's Models API for the

@@ -76,6 +76,19 @@ pub struct Session {
     /// follows each change.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub confidential: bool,
+    /// A confidential session's brief: the one line a model on a remote
+    /// provider is told of it, in place of its text, which the user
+    /// accepted or wrote (`session/confidential/brief/set`). Absent
+    /// without one. Koda's own; `session/confidential/brief/updated`
+    /// follows each change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidential_brief: Option<String>,
+    /// A brief a local model drafted for a confidential session, waiting
+    /// for the user to accept, edit or discard it
+    /// (`session/confidential/brief/set`). No model is shown a draft.
+    /// Absent without one. Koda's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidential_brief_draft: Option<String>,
     /// What it is doing now, as Codex's `Thread.status`;
     /// `session/status/changed` follows each change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -876,6 +889,78 @@ pub struct SessionConfidentialSetResponse {
 
 fn is_zero(count: &u32) -> bool {
     *count == 0
+}
+
+/// The longest brief `session/confidential/brief/set` takes, in
+/// characters, and the longest draft Koda keeps.
+pub const MAX_CONFIDENTIAL_BRIEF: usize = 100;
+
+/// `session/confidential/brief/set`: set a confidential session's brief,
+/// or clear it. Koda's own.
+///
+/// The brief is the one line a model on a remote provider is told of a
+/// confidential session in place of its text: what kind of work it is,
+/// with no details. With it, the session's line in `SearchSessions`'s
+/// notice and `ReadSession`'s answer reads `Confidential session
+/// <id>, last active <date>: <brief>`; without one, the line ends at the
+/// date.
+///
+/// Koda drafts a brief on a local model, never a remote one, and keeps
+/// the draft apart (`Session.confidentialBriefDraft`): no model is shown a
+/// draft. This request is how the user accepts one, by sending its text,
+/// writes their own, or discards it.
+///
+/// - **A text** becomes the brief and the draft goes. It is the user's own
+///   wording, so only its shape is checked: one line, and at most
+///   [`MAX_CONFIDENTIAL_BRIEF`] characters once the white space around it
+///   is taken off.
+/// - **`null`** clears the brief and the draft, and the session's line is
+///   the id and date alone again.
+///
+/// Works on any stored confidential session, open or not, archived or
+/// not. `session/confidential/brief/updated` follows, to every client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionConfidentialBriefSetParams {
+    /// The session, by its full id.
+    pub session_id: String,
+    /// The brief, or `null` for none. One or the other must be given, so
+    /// a request that leaves it out by mistake clears nothing.
+    #[serde(deserialize_with = "given")]
+    #[schemars(required, schema_with = "text_or_null")]
+    pub brief: Option<String>,
+}
+
+/// A field that may be `null` and may not be left out.
+fn given<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+}
+
+/// The schema of such a field: `required` alone would say it is never
+/// `null`.
+fn text_or_null(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type": ["string", "null"]})
+}
+
+/// The answer to `session/confidential/brief/set`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfidentialBriefSetResponse {}
+
+/// `session/confidential/brief/updated`: a confidential session's brief
+/// and draft as they are now, for every client: after
+/// `session/confidential/brief/set`, and when Koda has a draft from a
+/// local model. Koda's own. Unmarking a session clears both without one of
+/// these: `session/confidential/updated` says the mark is off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfidentialBriefUpdatedNotification {
+    /// The session.
+    pub session_id: String,
+    /// The brief models on remote providers are told, or `null`.
+    pub brief: Option<String>,
+    /// The draft waiting for the user, or `null`.
+    pub draft: Option<String>,
 }
 
 /// `session/confidential/updated`: a session was marked confidential or

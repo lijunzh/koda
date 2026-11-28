@@ -17,6 +17,10 @@
 //! confidential itself before the text is given ([`Host::mark_reader`]):
 //! its own transcript holds that text from then on. No argument of either
 //! tool changes any of this.
+//!
+//! What a caller on a remote provider is told of a confidential session
+//! may end with its brief, one line the user accepted for that purpose;
+//! [`super::confidential_brief`] is where briefs are drafted and set.
 
 use std::sync::Weak;
 
@@ -47,12 +51,17 @@ const MAX_ID_MATCHES: i64 = 16;
 const MAX_WITHHELD_LISTED: usize = 5;
 
 /// Whether session `caller`'s model may see `stored` at all: any session a
-/// person started but its own. Not a sub-agent's session or a `koda exec`
-/// run, whose words are their parent's or a script's, nor an ephemeral one,
-/// which its client deletes.
+/// person started but its own ([`a_persons`]).
 fn may_see(caller: &str, stored: &SessionInfo) -> bool {
-    stored.id != caller
-        && !stored.ephemeral
+    stored.id != caller && a_persons(stored)
+}
+
+/// Whether `stored` is a session a person started, which another session's
+/// model may see: not a sub-agent's session or a `koda exec` run, whose
+/// words are their parent's or a script's, nor an ephemeral one, which its
+/// client deletes.
+pub(super) fn a_persons(stored: &SessionInfo) -> bool {
+    !stored.ephemeral
         && stored.parent_session_id.is_none()
         && !matches!(
             stored.source.as_deref(),
@@ -84,11 +93,14 @@ fn may_read(local: bool, stored: &SessionInfo) -> bool {
 }
 
 /// A confidential session as a caller that may not read it is told of it:
-/// its id and when it was last written, nothing that was said in it.
+/// its id, when it was last written and the brief the user accepted for
+/// it, nothing that was said in it. Never a draft of a brief: a model
+/// wrote that from the session's text, and the user hasn't read it yet.
 fn withheld(stored: &SessionInfo) -> ConfidentialSession {
     ConfidentialSession {
         id: stored.id.clone(),
         last_active_unix: stored.updated_unix,
+        brief: stored.confidential_brief.clone(),
     }
 }
 
@@ -521,7 +533,7 @@ impl Host {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::host::HostArgs;
     use koda_core::config::{KodaConfig, ProviderType};
@@ -535,13 +547,14 @@ mod tests {
     use tokio::sync::mpsc;
 
     /// A host on a scratch database, with one session open: the caller.
-    struct Bench {
-        host: Arc<Host>,
-        db: Database,
-        root: PathBuf,
-        caller: String,
+    /// The host's other tests use it too.
+    pub(crate) struct Bench {
+        pub(crate) host: Arc<Host>,
+        pub(crate) db: Database,
+        pub(crate) root: PathBuf,
+        pub(crate) caller: String,
         /// What the host tells its clients.
-        events: mpsc::UnboundedReceiver<crate::events::Outgoing>,
+        pub(crate) events: mpsc::UnboundedReceiver<crate::events::Outgoing>,
         /// Kept while the host runs: its folder, and the other end of its
         /// channel.
         _dir: tempfile::TempDir,
@@ -549,7 +562,7 @@ mod tests {
     }
 
     impl Bench {
-        async fn new() -> Self {
+        pub(crate) async fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().canonicalize().unwrap();
             let db = Database::init(&root).await.unwrap();
@@ -597,10 +610,22 @@ mod tests {
         /// Open a session on `provider` in `folder` and return its id. Its
         /// endpoint is an address nothing listens at, so a session on a
         /// remote provider's kind reaches nobody.
-        async fn open_on(&self, provider: &str, folder: &std::path::Path) -> String {
+        pub(crate) async fn open_on(&self, provider: &str, folder: &std::path::Path) -> String {
+            self.open_at(provider, NOWHERE, folder).await
+        }
+
+        /// Open a session on `provider` at `endpoint` in `folder` and
+        /// return its id: a scripted model server's address, for a
+        /// session that takes turns.
+        pub(crate) async fn open_at(
+            &self,
+            provider: &str,
+            endpoint: &str,
+            folder: &std::path::Path,
+        ) -> String {
             let params = SessionStartParams {
                 model_provider: Some(provider.to_string()),
-                base_url: Some(NOWHERE.to_string()),
+                base_url: Some(endpoint.to_string()),
                 model: Some("test-model".to_string()),
                 cwd: Some(folder.display().to_string()),
                 ..Default::default()
@@ -611,7 +636,7 @@ mod tests {
 
         /// A client's request, decoded and answered as the host answers
         /// any.
-        async fn request(&self, method: &str, params: Value) -> crate::host::Answer {
+        pub(crate) async fn request(&self, method: &str, params: Value) -> crate::host::Answer {
             let (reply, answer) = tokio::sync::oneshot::channel();
             let request = koda_protocol::rpc::Request::new(
                 koda_protocol::rpc::RequestId::Integer(1),
@@ -623,14 +648,18 @@ mod tests {
         }
 
         /// `session/confidential/set` for session `id`, and its answer.
-        async fn set_confidential(&self, id: &str, confidential: bool) -> crate::host::Answer {
+        pub(crate) async fn set_confidential(
+            &self,
+            id: &str,
+            confidential: bool,
+        ) -> crate::host::Answer {
             let params = json!({"sessionId": id, "confidential": confidential});
             self.request("session/confidential/set", params).await
         }
 
         /// Mark session `id`, which has no forks, confidential, or unmark
         /// it, as a client does.
-        async fn mark(&self, id: &str, confidential: bool) {
+        pub(crate) async fn mark(&self, id: &str, confidential: bool) {
             let set = self.set_confidential(id, confidential).await;
             assert_eq!(set, Ok(json!({})), "{id}");
         }
@@ -655,13 +684,17 @@ mod tests {
         }
 
         /// Whether session `id` is stored as confidential.
-        async fn is_confidential(&self, id: &str) -> bool {
+        pub(crate) async fn is_confidential(&self, id: &str) -> bool {
             self.db.get_session(id).await.unwrap().unwrap().confidential
         }
 
         /// A stored session from `origin` whose turns are `turns`: each a
         /// turn id and its items.
-        async fn session(&self, origin: SessionOrigin, turns: &[(&str, Vec<Value>)]) -> String {
+        pub(crate) async fn session(
+            &self,
+            origin: SessionOrigin,
+            turns: &[(&str, Vec<Value>)],
+        ) -> String {
             let id = self
                 .db
                 .create_session_from("default", &self.root, &origin)
@@ -672,7 +705,7 @@ mod tests {
         }
 
         /// Add `turns` to session `id`.
-        async fn say(&self, id: &str, turns: &[(&str, Vec<Value>)]) {
+        pub(crate) async fn say(&self, id: &str, turns: &[(&str, Vec<Value>)]) {
             let records: Vec<TurnRecord> = turns
                 .iter()
                 .flat_map(|(turn_id, items)| {
@@ -687,13 +720,13 @@ mod tests {
         }
 
         /// What the caller's model gets from a call of `tool`.
-        async fn call(&self, tool: &str, args: Value) -> ToolResult {
+        pub(crate) async fn call(&self, tool: &str, args: Value) -> ToolResult {
             self.call_as(&self.caller, tool, args).await
         }
 
         /// What open session `caller`'s model gets from a call of `tool`,
         /// through its own registry.
-        async fn call_as(&self, caller: &str, tool: &str, args: Value) -> ToolResult {
+        pub(crate) async fn call_as(&self, caller: &str, tool: &str, args: Value) -> ToolResult {
             let agent = self.host.agent(caller).unwrap();
             agent
                 .tools
@@ -722,10 +755,10 @@ mod tests {
     }
 
     /// An endpoint nothing listens at.
-    const NOWHERE: &str = "http://127.0.0.1:9/v1";
+    pub(crate) const NOWHERE: &str = "http://127.0.0.1:9/v1";
 
     /// What a caller that may not read confidential sessions is told to do.
-    const HOW: &str = "A confidential session can be read only from a session on a local model, \
+    pub(crate) const HOW: &str = "A confidential session can be read only from a session on a local model, \
                        or after the user unmarks it.";
 
     /// What a result says when it made its caller confidential.
@@ -735,7 +768,7 @@ mod tests {
     /// The notice a search's output ends with, after its results: from its
     /// first confidential session's line, or its count of them, to what to
     /// do. None without one.
-    fn notice(output: &str) -> Option<&str> {
+    pub(crate) fn notice(output: &str) -> Option<&str> {
         let (_, after) = output.split_once("\n\n")?;
         let after = after
             .rsplit_once(">>>\n\n")
@@ -744,7 +777,7 @@ mod tests {
     }
 
     /// A confidential session's line for `id`, with whatever day it has.
-    fn assert_line(line: &str, id: &str) {
+    pub(crate) fn assert_line(line: &str, id: &str) {
         let day = line
             .strip_prefix(&format!("Confidential session {}, last active ", &id[..8]))
             .unwrap_or_else(|| panic!("not {id}'s line: {line}"));
@@ -755,21 +788,21 @@ mod tests {
         );
     }
 
-    fn cli() -> SessionOrigin {
+    pub(crate) fn cli() -> SessionOrigin {
         SessionOrigin {
             source: Some(source::CLI.to_string()),
             ..Default::default()
         }
     }
 
-    fn user(id: &str, text: &str) -> Value {
+    pub(crate) fn user(id: &str, text: &str) -> Value {
         json!({
             "type": "userMessage", "id": id, "clientUserMessageIds": [],
             "content": [{"type": "text", "text": text}],
         })
     }
 
-    fn says(id: &str, text: &str) -> Value {
+    pub(crate) fn says(id: &str, text: &str) -> Value {
         json!({"type": "agentMessage", "id": id, "text": text})
     }
 

@@ -69,6 +69,16 @@ describe('relay', () => {
     expect(refusal('session/confidential/set', { sessionId: 's', confidential: true, cwd: '/' })).toMatch(/not cwd/);
   });
 
+  it('sets a confidential session\'s brief or clears it, naming the session and the text, and nothing else', () => {
+    expect(refusal('session/confidential/brief/set', { sessionId: 's', brief: 'Planning a trip' })).toBeNull();
+    expect(refusal('session/confidential/brief/set', { sessionId: 's', brief: null })).toBeNull();
+    expect(refusal('session/confidential/brief/set', { brief: 'Planning a trip' })).toMatch(/needs a sessionId/);
+    expect(refusal('session/confidential/brief/set', { sessionId: 7, brief: null })).toMatch(/needs a sessionId/);
+    expect(refusal('session/confidential/brief/set', { sessionId: 's' })).toMatch(/needs brief/);
+    expect(refusal('session/confidential/brief/set', { sessionId: 's', brief: 7 })).toMatch(/needs brief/);
+    expect(refusal('session/confidential/brief/set', { sessionId: 's', brief: null, confidential: false })).toMatch(/not confidential/);
+  });
+
   it('searches what was said in sessions, by a term, in the list or the archive', () => {
     expect(refusal('session/search', { searchTerm: 'retry budget' })).toBeNull();
     expect(refusal('session/search', { searchTerm: 'retry', archived: true, limit: 25, sortKey: 'updated_at' })).toBeNull();

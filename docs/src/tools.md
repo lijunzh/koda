@@ -258,6 +258,12 @@ session's model may see.
   and that sentence, as a result, not an error. Nothing in either comes
   from the session: no title, no text, no folder. Neither tool has an
   argument that changes this.
+- **A confidential session's [brief](./sessions.md#the-brief)** ends its
+  line once you have accepted one: `Confidential session 1a2b3c4d, last
+  active 2026-11-20: Planning a household budget`. It is one line you
+  chose to have told, the same for every query. A draft of a brief, which
+  a local model writes from the session's text, is never in a tool's
+  result.
 - **Reading one marks the reader.** A session on a local model that
   gets a confidential session's text, in a search result or a read,
   becomes confidential itself before the result is returned, and the

@@ -313,6 +313,34 @@ impl TuiContext {
                     }
                 }
             }
+            // The session's brief: a draft a local model wrote, which
+            // waits for the user, or a brief set or cleared from another
+            // client. This TUI's own `/confidential brief` has said so
+            // already.
+            ServerNotification::SessionConfidentialBriefUpdated(told)
+                if told.session_id == self.session.id =>
+            {
+                if let Some(draft) = &told.draft {
+                    tui_output::warn_msg(
+                        &mut self.scroll_buffer,
+                        super::session_cmds::draft_line(draft),
+                    );
+                } else {
+                    let now = (told.session_id.clone(), told.brief.clone());
+                    if self.brief_set.as_ref() != Some(&now) {
+                        let said = match &told.brief {
+                            Some(brief) => format!(
+                                "This session's brief was set from another client: \"{brief}\"."
+                            ),
+                            None => {
+                                "This session's brief was cleared from another client.".to_string()
+                            }
+                        };
+                        tui_output::dim_msg(&mut self.scroll_buffer, said);
+                    }
+                    self.brief_set = None;
+                }
+            }
             // Another client archived it (`koda archive`), and the host
             // has closed it. Nothing more is sent to it as an open session:
             // the next prompt opens it again first, which the host refuses

@@ -203,6 +203,10 @@ pub(crate) struct TuiContext {
     /// same is this TUI's own `/confidential` coming back, and isn't said
     /// twice.
     pub(crate) confidential: Option<(String, bool)>,
+    /// The brief this TUI last set for a confidential session, with the
+    /// session: a `session/confidential/brief/updated` that says the same
+    /// is this TUI's own `/confidential brief` coming back.
+    pub(crate) brief_set: Option<(String, Option<String>)>,
     /// Where the host is, for reconnecting to it.
     pub(crate) backend: crate::backend::Backend,
     /// The connection to the shared server is lost and reconnecting gave
@@ -705,6 +709,7 @@ impl TuiContext {
             mcp_stale: true,
             goal: None,
             confidential: None,
+            brief_set: None,
             backend,
             offline: false,
             turn_cut: false,
