@@ -1,7 +1,7 @@
 {
   "name": "koda-desktop",
   "productName": "Koda",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "description": "Koda's desktop app: a window onto the background server",
   "license": "MIT",
