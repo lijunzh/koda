@@ -88,7 +88,9 @@ turns running it changes nothing and says `busy`: run it again with
 **`koda serve --stop`** stops every running turn (each is saved as
 interrupted) and closes every window's connection. Sessions stay stored and
 open again as they were. A `koda` window still open reconnects and starts a
-new server, so quit the windows first if you want it to stay stopped.
+new server, so quit the windows first if you want it to stay stopped. The
+command is done once the server it stopped has gone, whether or not a window
+has started the next one by then.
 
 **`koda serve`** in a terminal runs the server there, with no idle exit,
 until Ctrl+C. Only one server can own the socket, so stop the background one

@@ -1407,8 +1407,13 @@ fn tui_backend(
 }
 
 /// `koda serve --stop`: ask the server at `socket` to stop, and wait until
-/// it has.
+/// it has gone, as `codex app-server daemon stop` waits for the process it
+/// stopped. A client that lost the server may start the next one at the
+/// same socket at once (the TUI and the desktop app do); that one isn't
+/// waited for, or asked anything.
 async fn stop_server(socket: &Path) -> Result<(), String> {
+    // Which process listens there, before it is asked to go.
+    let server = koda_client::ensure::server_pid(socket).await;
     let client = koda_client::InProcessClient::connect(
         socket,
         std::env::current_dir().unwrap_or_default(),
@@ -1433,15 +1438,12 @@ async fn stop_server(socket: &Path) -> Result<(), String> {
     if !answer.stopped {
         return Err(answer.reason.unwrap_or_else(|| "it didn't stop".into()));
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while socket.exists() {
-        if std::time::Instant::now() > deadline {
-            return Err(format!(
-                "koda serve at {} is still stopping",
-                socket.display()
-            ));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let limit = std::time::Duration::from_secs(15);
+    if !koda_client::ensure::wait_until_gone(socket, server, Some(limit)).await {
+        return Err(format!(
+            "koda serve at {} is still stopping",
+            socket.display()
+        ));
     }
     eprintln!("Stopped koda serve at {}", socket.display());
     Ok(())
