@@ -29,6 +29,8 @@ describe.skipIf(!koda)('a new session', () => {
     mkdirSync(project);
     open = await openApp(home);
     const { app, page } = open;
+    // The app's settings and caches are the test's own, not the real app's.
+    expect(await app.evaluate(({ app }) => app.getPath('userData'))).toContain(home);
     // The app opens on a new session: nothing is started, and no folder is known.
     await page.getByTestId('new-session').waitFor({ timeout: 30_000 });
     expect(await page.getByTestId('new-session-folder').textContent()).toBe('Choose a folder');
