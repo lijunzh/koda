@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scratch } from '../helpers';
 import { koda, type OpenApp, openApp, shutDown } from './app';
-import { type Model, scriptedModel, useModel } from './model';
+import { gate, type Model, scriptedModel, useModel } from './model';
 
 let open: OpenApp | undefined;
 let model: Model | undefined;
@@ -24,6 +24,8 @@ describe.skipIf(!koda)('session controls', () => {
   it('shows the plan while a turn runs, the context left, the mode under the prompt box, and renames the session', async () => {
     const home = scratch();
     homes.push(home);
+    // The plan shows only while the turn runs: the reply waits until the plan is checked.
+    const planChecked = gate();
     model = await scriptedModel([
       {
         tool: 'TodoWrite',
@@ -34,7 +36,7 @@ describe.skipIf(!koda)('session controls', () => {
           ],
         },
       },
-      { text: 'Working on the fix. '.repeat(30), pieces: 30, delayMs: 100 },
+      { text: 'Working on the fix. '.repeat(30), pieces: 30, delayMs: 100, after: planChecked },
     ]);
     useModel(home, model);
     const project = path.join(home, 'project');
@@ -57,6 +59,7 @@ describe.skipIf(!koda)('session controls', () => {
     await expect.poll(() => plan.textContent()).toContain('1 step left');
     await page.keyboard.press('Control+T');
     await expect.poll(() => plan.textContent()).toContain('Read the code');
+    planChecked.open();
     // Done: the plan goes, and the details panel says how full the context is.
     await expect.poll(() => page.getByTestId('plan').count(), { timeout: 30_000 }).toBe(0);
     await expect.poll(() => page.getByTestId('context-left').textContent()).toMatch(/\d+% used/);
@@ -68,7 +71,8 @@ describe.skipIf(!koda)('session controls', () => {
       await page.getByRole('menuitemradio', { name }).click();
     };
     await pick(/Plan/);
-    await expect.poll(() => mode.textContent()).toBe('Plan');
+    // The mode shows once the server has changed it and said so.
+    await expect.poll(() => mode.textContent(), { timeout: 30_000 }).toBe('Plan');
     await app.evaluate(({ dialog }) => {
       dialog.showMessageBox = (async () => ({ response: 1, checkboxChecked: false })) as typeof dialog.showMessageBox;
     });
@@ -79,11 +83,13 @@ describe.skipIf(!koda)('session controls', () => {
       dialog.showMessageBox = (async () => ({ response: 0, checkboxChecked: false })) as typeof dialog.showMessageBox;
     });
     await pick(/Auto/);
-    await expect.poll(() => mode.textContent()).toBe('Auto');
+    // Auto is two requests and the dialog away.
+    await expect.poll(() => mode.textContent(), { timeout: 30_000 }).toBe('Auto');
     // A number key picks a mode while the menu is open.
     await mode.click();
     await page.keyboard.press('2');
-    await expect.poll(() => mode.textContent()).toBe('Plan');
+    // As above: the server changes the mode, then says so.
+    await expect.poll(() => mode.textContent(), { timeout: 30_000 }).toBe('Plan');
 
     // Renaming, from the title.
     await page.getByRole('heading', { level: 1 }).click();

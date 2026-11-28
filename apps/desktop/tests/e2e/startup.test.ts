@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { KodaClient } from '../../src/main/koda-client';
 import { scratch } from '../helpers';
-import { type OpenApp, koda, openApp, socketOf, stopServer, shutDown } from './app';
+import { type OpenApp, koda, openApp, socketOf, shutDown } from './app';
 
 const appVersion = (JSON.parse(readFileSync(path.join(__dirname, '../../package.json'), 'utf8')) as { version: string })
   .version;
@@ -70,9 +70,29 @@ describe.skipIf(!koda)('the app and the server', () => {
     expect(await connected.textContent()).toContain(`Connected to Koda ${appVersion}`);
     expect(existsSync(socketOf(h))).toBe(true);
 
-    stopServer(h);
-    // The window reconnects, starting a server again, as the TUI does.
-    await open.page.getByTestId('reconnecting').waitFor({ timeout: 10_000 }).catch(() => {});
+    // What the connection goes through, kept in the main process, so nothing
+    // is missed between two looks at the window.
+    await open.app.evaluate(() => {
+      const g = globalThis as unknown as {
+        states: string[];
+        kodaTestConnection: { on(event: string, f: (status: { state: string }) => void): void };
+      };
+      g.states = [];
+      g.kodaTestConnection.on('status', (status) => g.states.push(status.state));
+    });
+    // Stopped as `koda serve --stop` stops it, without that command's wait for
+    // the socket to go: the app starts a server there at once, so the wait ran
+    // its 15 seconds and the command said the server was still stopping.
+    const other = new KodaClient();
+    await other.connect(socketOf(h));
+    await other.request('initialize', { clientInfo: { name: 'koda-serve-stop', version: appVersion } });
+    expect(await other.request('serve/stop', {})).toMatchObject({ stopped: true });
+    other.close();
+    // The window reconnects, starting a server again, as the TUI does: it has
+    // lost the server, then connected to one.
+    await expect
+      .poll(() => open!.app.evaluate(() => (globalThis as unknown as { states: string[] }).states.join(' ')), { timeout: 30_000 })
+      .toMatch(/reconnecting.* connected$/);
     await connected.waitFor({ timeout: 30_000 });
     expect(existsSync(socketOf(h))).toBe(true);
   });
@@ -105,6 +125,8 @@ describe.skipIf(!koda)('the app and the server', () => {
     await updated.waitFor({ timeout: 30_000 });
     expect(await updated.textContent()).toContain('Koda was updated to 99.0.0');
     expect(await open.page.getByRole('button', { name: 'Restart now' }).isVisible()).toBe(true);
+    // The server answers `serve/stop` before it stops: its socket goes when it has.
+    await expect.poll(() => existsSync(socketOf(h)), { timeout: 30_000 }).toBe(false);
     // The old window doesn't bring back a server of its own version.
     await new Promise((r) => setTimeout(r, 3000));
     expect(existsSync(socketOf(h))).toBe(false);

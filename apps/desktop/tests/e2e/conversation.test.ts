@@ -60,7 +60,10 @@ describe.skipIf(!koda)('the conversation', () => {
 
     // Done: the steps stay, as in Claude Code; the lookups are one row.
     await expect.poll(() => page.getByTestId('lookups').textContent(), { timeout: 30_000 }).toContain('Read 1 file, listed 1 directory');
-    expect(await page.getByTestId('worked').count()).toBe(0);
+    // The turn has ended (Send is back in place of Stop), and its steps are still there, in one row.
+    await page.getByRole('button', { name: 'Send', exact: true }).waitFor({ timeout: 30_000 });
+    expect(await page.getByTestId('lookups').count()).toBe(1);
+    expect(await page.getByTestId('lookups').textContent()).toContain('Read 1 file, listed 1 directory');
     // Clicking the row opens it to its calls and what they printed.
     await page.getByTestId('lookups').getByRole('button').first().click();
     const opened = page.getByTestId('lookup-calls');

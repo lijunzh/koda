@@ -5,9 +5,25 @@ import type { AddressInfo } from 'node:net';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
-/** One reply: text, streamed in pieces, or a tool call; `delayMs` between pieces. */
+/** A gate a test opens: a reply with `after` starts only once it is open. */
+export interface Gate {
+  opened: Promise<void>;
+  open(): void;
+}
+
+export function gate(): Gate {
+  let open!: () => void;
+  const opened = new Promise<void>((resolve) => (open = resolve));
+  return { opened, open };
+}
+
+/**
+ * One reply: text, streamed in pieces, or a tool call; `delayMs` between
+ * pieces. With `after`, the request is taken and the text waits for the gate,
+ * so the turn stays running for as long as the test needs it to.
+ */
 export type Reply =
-  | { text: string; pieces?: number; delayMs?: number }
+  | { text: string; pieces?: number; delayMs?: number; after?: Gate }
   | { tool: string; args: object };
 
 export interface Model {
@@ -52,6 +68,12 @@ export async function scriptedModel(replies: Reply[]): Promise<Model> {
         );
         res.write(line({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }));
       } else {
+        if (reply.after) {
+          // The headers go now, so the server has its answer; the text waits.
+          res.flushHeaders();
+          await reply.after.opened;
+          if (res.destroyed) return;
+        }
         const pieces = reply.pieces ?? 1;
         const size = Math.ceil(reply.text.length / pieces);
         for (let i = 0; i < reply.text.length; i += size) {
@@ -67,7 +89,16 @@ export async function scriptedModel(replies: Reply[]): Promise<Model> {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
-  return { url: `http://127.0.0.1:${port}/v1`, calls: () => calls, bodies: () => bodies.slice(), close: () => server.close() };
+  return {
+    url: `http://127.0.0.1:${port}/v1`,
+    calls: () => calls,
+    bodies: () => bodies.slice(),
+    close: () => {
+      server.close();
+      // A reply still waiting at its gate holds its connection: let it go.
+      server.closeAllConnections();
+    },
+  };
 }
 
 /** A Koda config under `home` that runs new sessions on `model`. */

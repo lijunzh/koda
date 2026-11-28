@@ -48,7 +48,8 @@ describe.skipIf(!koda)('requests', () => {
     await card.waitFor({ timeout: 30_000 });
     expect(await card.textContent()).toContain('rm -f notes.txt');
     expect(await page.getByTestId('working').textContent()).toContain('Waiting for your approval');
-    await expect.poll(() => page.getByRole('navigation').textContent()).toContain('needs you');
+    // The list's mark comes with the server's notice of the session's status, on its own.
+    await expect.poll(() => page.getByRole('navigation').textContent(), { timeout: 30_000 }).toContain('needs you');
     expect(existsSync(notes)).toBe(true);
 
     await card.getByRole('button', { name: 'Yes', exact: true }).click();
