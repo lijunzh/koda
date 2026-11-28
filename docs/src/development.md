@@ -463,6 +463,11 @@ npm start                 # build into out/ and open the app
   main-process action (`setMode` in `src/main/sessions.ts`) after a system
   confirmation. A model picked here is the session's; it isn't saved to
   `config.toml`.
+- **Settings** (`Settings.tsx`, `prefs.ts`): the theme and the transcript
+  width are the page's own, kept in its `localStorage` and applied as
+  `data-theme` and `data-width` on the document before the first paint.
+  The dark tokens apply when the system is dark and no theme is chosen, or
+  when dark is chosen.
 - **The look** (`src/renderer/styles.css`): every colour, corner and gap
   comes from the tokens at the top of the file, set once for light and once
   for dark, after Claude Code's desktop app (neutral white and grey in

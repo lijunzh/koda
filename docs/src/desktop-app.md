@@ -122,6 +122,17 @@ list opens it in the pane you last used; a session that's already open goes
 to its pane. ✕, or Cmd+Ctrl+W, takes a session out of split view. Up to four
 sessions fit side by side.
 
+## Settings
+
+The gear at the bottom of the session list, or Cmd+,, opens Settings:
+
+- **Theme**: follow the system (the default), or always light or dark.
+- **Transcript width**: narrow (the default) or wide.
+
+Both are remembered between launches. Keys, providers and everything else
+about Koda itself are still set with `koda` (`/key`, `/provider`,
+`config.toml`).
+
 ## Updates and the server
 
 The app and the server must be one version. After `brew upgrade koda`:

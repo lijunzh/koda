@@ -22,11 +22,12 @@ interface Props {
   onOpenSession(session: Session): void;
   onNew(): void;
   onMore(): void;
+  onSettings(): void;
   /** The server's version while connected; `null` while reconnecting. */
   connectedTo: string | null;
 }
 
-export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onNew, onMore, connectedTo }: Props) {
+export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onNew, onMore, onSettings, connectedTo }: Props) {
   const [query, setQuery] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -189,11 +190,18 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
           />
         </div>
       )}
-      {connectedTo && (
-        <p className="sidebar-foot" data-testid="connected">
-          Connected to Koda {connectedTo}
-        </p>
-      )}
+      <div className="sidebar-bottom">
+        {connectedTo ? (
+          <p className="sidebar-foot" data-testid="connected">
+            Connected to Koda {connectedTo}
+          </p>
+        ) : (
+          <span />
+        )}
+        <button className="icon-button" aria-label="Settings" title="Settings (⌘,)" onClick={onSettings}>
+          <span aria-hidden>⚙</span>
+        </button>
+      </div>
     </nav>
   );
 }

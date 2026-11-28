@@ -6,6 +6,8 @@ import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
 import { NewSession } from './NewSession';
 import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
+import { applyPrefs, loadPrefs, type Prefs, savePrefs } from './prefs';
+import { Settings } from './Settings';
 import { Sidebar } from './Sidebar';
 import { type View, VIEWS } from './transcript';
 
@@ -44,6 +46,13 @@ export function App() {
   const [pending, setPending] = useState<readonly Pending[]>([]);
   const [planShown, setPlanShown] = useState(true);
   const [detailsShown, setDetailsShown] = useState(true);
+  const [prefs, setPrefs] = useState<Prefs>(() => loadPrefs(window.localStorage));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // The theme and the width are attributes the stylesheet reads.
+  useEffect(() => {
+    applyPrefs(document.documentElement, prefs);
+    savePrefs(window.localStorage, prefs);
+  }, [prefs]);
   // `open` runs after awaits (a new session's dialog): it reads these, not a render's.
   const current = useRef({ panes, focused });
   current.current = { panes, focused };
@@ -175,6 +184,11 @@ export function App() {
         e.preventDefault();
         start();
       }
+      // Cmd+, opens Settings, as everywhere on a Mac.
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
       if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') {
         const { panes, focused } = current.current;
         if (panes.length > 1) {
@@ -215,8 +229,17 @@ export function App() {
         onOpenSession={(session) => open(session.id, { session })}
         onNew={start}
         onMore={more}
+        onSettings={() => setSettingsOpen(true)}
         connectedTo={connected ? status.serverVersion : null}
       />
+      {settingsOpen && (
+        <Settings
+          prefs={prefs}
+          onPrefs={setPrefs}
+          version={connected ? status.serverVersion : null}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
       <div className="main-column">
         {reconnecting && <ServerLine status={status} />}
         <div

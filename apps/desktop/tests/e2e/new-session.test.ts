@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!koda)('a new session', () => {
-  it('asks for a folder once, starts with the first prompt in the mode picked, and offers the folder again', async () => {
+  it('asks for a folder once, starts with the first prompt in the mode picked, offers the folder again; Settings set the theme', async () => {
     const home = scratch();
     homes.push(home);
     model = await scriptedModel([{ text: 'First answer.' }, { text: 'Second answer.' }]);
@@ -68,5 +68,24 @@ describe.skipIf(!koda)('a new session', () => {
     await page.getByTestId('agent-message').filter({ hasText: 'Second answer.' }).waitFor({ timeout: 30_000 });
     expect(await app.evaluate(() => (globalThis as { folderDialogs?: number }).folderDialogs ?? 0)).toBe(1);
     await page.getByRole('navigation').getByRole('button', { name: /Beta question/ }).waitFor();
+
+    // Settings: the theme follows the system until one is chosen, and the choice is kept.
+    const theme = () => page.evaluate(() => document.documentElement.dataset.theme ?? 'system');
+    expect(await theme()).toBe('system');
+    await page.getByRole('button', { name: 'Settings' }).click();
+    const settings = page.getByTestId('settings');
+    await settings.getByRole('group', { name: 'Theme' }).getByRole('button', { name: 'Dark' }).click();
+    expect(await theme()).toBe('dark');
+    await page.emulateMedia({ colorScheme: 'light' });
+    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(26, 26, 25)');
+    await settings.getByRole('group', { name: 'Transcript width' }).getByRole('button', { name: 'Wide' }).click();
+    expect(await page.evaluate(() => document.documentElement.dataset.width)).toBe('wide');
+    expect(await page.evaluate(() => window.localStorage.getItem('koda.prefs'))).toBe('{"theme":"dark","width":"wide"}');
+    await page.keyboard.press('Escape');
+    expect(await page.getByTestId('settings').count()).toBe(0);
+    // Cmd+, opens it again.
+    await page.keyboard.press('Meta+,');
+    await page.getByTestId('settings').getByRole('group', { name: 'Theme' }).getByRole('button', { name: 'System' }).click();
+    expect(await theme()).toBe('system');
   });
 });

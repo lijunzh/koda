@@ -8,6 +8,8 @@
   line-height: 1.45;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --radius: 8px;
+  /* How wide the conversation and the prompt box run. */
+  --column: 760px;
   --radius-lg: 12px;
 
   --bg: #ffffff;
@@ -29,8 +31,9 @@
   --blue: #2563eb;
   --shadow: 0 8px 28px rgb(0 0 0 / 0.14);
 }
+/* Dark, when the system is and the user hasn't chosen light; or when they chose dark. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --bg: #1a1a19;
     --bg-side: #262624;
     --surface: #212120;
@@ -50,6 +53,30 @@
     --blue: #6aa3f8;
     --shadow: 0 8px 28px rgb(0 0 0 / 0.5);
   }
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #1a1a19;
+  --bg-side: #262624;
+  --surface: #212120;
+  --raised: #30302e;
+  --menu: #2b2b29;
+  --hover: rgb(255 255 255 / 0.06);
+  --selected: rgb(255 255 255 / 0.11);
+  --border: rgb(255 255 255 / 0.1);
+  --text: #ecebe8;
+  --muted: #a09e98;
+  --accent: #4f8df7;
+  --problem: #e0a84a;
+  --danger: #f2726b;
+  --green: #58b77f;
+  --purple: #b08af2;
+  --amber: #e0a84a;
+  --blue: #6aa3f8;
+  --shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+:root[data-theme='light'] {
+  color-scheme: light;
 }
 body {
   margin: 0;
@@ -517,7 +544,7 @@ textarea {
 .turn {
   content-visibility: auto;
   contain-intrinsic-size: auto 400px;
-  max-width: 760px;
+  max-width: var(--column);
   margin: 0 auto;
 }
 .row {
@@ -671,7 +698,7 @@ textarea {
   padding: 4px 24px 16px;
 }
 .bottom > * {
-  max-width: 760px;
+  max-width: var(--column);
   margin-left: auto;
   margin-right: auto;
 }
@@ -1381,4 +1408,79 @@ textarea {
 .radio-only {
   display: inline-flex;
   border-radius: 999px;
+}
+
+:root[data-width='wide'] {
+  --column: 1080px;
+}
+
+/* Settings, over the app */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.45);
+}
+.settings {
+  width: min(820px, calc(100vw - 80px));
+  height: min(560px, calc(100vh - 80px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.settings > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  min-height: 0;
+}
+.settings-body nav {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border);
+}
+.settings-foot {
+  margin-top: auto;
+  padding: 0 10px;
+}
+.settings-body section {
+  padding: 8px 24px;
+  overflow-y: auto;
+}
+.settings-body h2 {
+  font-size: 14px;
+  margin: 12px 0 4px;
+}
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 8px;
+}
+.sidebar-bottom .sidebar-foot {
+  padding: 0 6px;
+  margin: 0;
 }
