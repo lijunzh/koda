@@ -74,3 +74,19 @@ export const FolderIcon = () => (
     <path d="M2 5.2c0-.9.7-1.6 1.6-1.6h2.5l1.5 1.6h4.8c.9 0 1.6.7 1.6 1.6v4.4c0 .9-.7 1.6-1.6 1.6H3.6c-.9 0-1.6-.7-1.6-1.6z" />
   </Icon>
 );
+export const SidebarIcon = () => (
+  <Icon>
+    <rect x="2" y="3" width="12" height="10" rx="2" />
+    <path d="M6 3v10" />
+  </Icon>
+);
+export const BackIcon = () => (
+  <Icon>
+    <path d="M9.8 3.8 5.6 8l4.2 4.2" />
+  </Icon>
+);
+export const ForwardIcon = () => (
+  <Icon>
+    <path d="m6.2 3.8 4.2 4.2-4.2 4.2" />
+  </Icon>
+);

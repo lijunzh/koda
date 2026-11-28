@@ -16,7 +16,7 @@ describe('prefs', () => {
 
   it('remembers what was set', () => {
     const s = storage();
-    const set = { theme: 'dark', width: 'wide', view: 'verbose', notifications: false, keepAwake: true } as const;
+    const set = { theme: 'dark', width: 'wide', view: 'verbose', notifications: false, keepAwake: true, sidebar: false } as const;
     savePrefs(s, set);
     expect(loadPrefs(s)).toEqual(set);
   });

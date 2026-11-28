@@ -30,6 +30,13 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
 
 ## The window
 
+- **The top bar** drags the window; on a Mac the window's own buttons sit
+  in it. Beside them are three of the app's: hide or show the session list
+  (Cmd+B), and **Back** and **Forward** (Cmd+[ and Cmd+]), which step
+  through the sessions you were in, in the order you used them, as a
+  browser does with pages. Moving to another pane of a split view and
+  opening the new-session screen count too. The app remembers whether the
+  list was hidden.
 - **The session list**, on the left, shows every folder's sessions, the most
   recently active first. A small spinner marks a session whose turn is
   running, and *needs you* one that waits for an approval or an answer. The

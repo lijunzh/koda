@@ -43,6 +43,8 @@ const VIEWS: Array<{ value: DefaultView; label: string }> = [
 const SHORTCUTS: Array<[string, string]> = [
   ['⌘N', 'New session'],
   ['⌘,', 'Settings'],
+  ['⌘B', 'Hide or show the sidebar'],
+  ['⌘[  ⌘]', 'Back and Forward'],
   ['Enter', 'Send, or add to the running turn'],
   ['Shift Enter', 'A new line in the prompt'],
   ['Esc', 'Stop the turn; close a menu'],

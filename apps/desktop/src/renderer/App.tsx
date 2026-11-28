@@ -4,12 +4,14 @@ import { call, type RpcMessage, type ServerStatus } from './bridge';
 import { type Listener, Pane } from './Pane';
 import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
+import { back, canGoBack, canGoForward, forget, forward, here, type History, START, visit } from './history';
 import { NewSession } from './NewSession';
 import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
 import { applyPrefs, loadPrefs, type Prefs, savePrefs } from './prefs';
 import { Settings } from './Settings';
 import { Sidebar } from './Sidebar';
 import { type View, VIEWS } from './transcript';
+import { WindowTools } from './WindowTools';
 
 /** The open session: its id at once, the session once the server has opened it. */
 export interface Selected {
@@ -49,6 +51,18 @@ export function App() {
   // The view the app opens in is a setting; Ctrl+O changes it for now.
   const [view, setView] = useState<View>(prefs.view);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Where the window has been, for Back and Forward.
+  const [history, setHistory] = useState<History>(START);
+  // On a Mac the window's own buttons sit in the app's top bar, except in
+  // full screen, which has none: the stylesheet leaves them room.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.platform = window.koda.platform;
+    return window.koda.onFullScreen((full) => {
+      if (full) root.dataset.fullscreen = '';
+      else delete root.dataset.fullscreen;
+    });
+  }, []);
   // The theme and the width are attributes the stylesheet reads.
   useEffect(() => {
     applyPrefs(document.documentElement, prefs);
@@ -56,8 +70,12 @@ export function App() {
     void window.koda.setAppPrefs({ notifications: prefs.notifications, keepAwake: prefs.keepAwake }).catch(() => {});
   }, [prefs]);
   // `open` runs after awaits (a new session's dialog): it reads these, not a render's.
-  const current = useRef({ panes, focused });
-  current.current = { panes, focused };
+  const current = useRef({ panes, focused, history });
+  current.current = { panes, focused, history };
+  // Whatever the focused pane shows is where the window is: opening a
+  // session, starting one and moving to another pane all count.
+  const shown = panes[focused]?.id ?? null;
+  useEffect(() => setHistory((h) => visit(h, shown)), [shown]);
   const listeners = useRef(new Set<Listener>());
   const subscribe = useCallback((listener: Listener) => {
     listeners.current.add(listener);
@@ -132,6 +150,7 @@ export function App() {
 
   /** A deleted session's panes close; the last one is left empty. */
   const closeSession = (id: string) => {
+    setHistory((h) => forget(h, id));
     setPanes((all) => {
       const left = all.filter((p) => p.id !== id);
       if (left.length === all.length) return all;
@@ -178,8 +197,23 @@ export function App() {
     setPanes((all) => all.map((p, i) => (i === focused ? { key: nextKey++, id: null } : p)));
   }, []);
 
+  /** Back or Forward: to the session shown before or after, in its pane if it has one still. */
+  const travel = useCallback(
+    (step: (history: History) => History) => {
+      const next = step(current.current.history);
+      if (next === current.current.history) return;
+      setHistory(next);
+      const place = here(next);
+      if (place) open(place);
+      else start();
+    },
+    [open, start],
+  );
+  const toggleSidebar = useCallback(() => setPrefs((p) => ({ ...p, sidebar: !p.sidebar })), []);
+
   // Cmd+N starts a session and Cmd+Ctrl+W takes the focused one out of
-  // split view, as in Claude Code's desktop app.
+  // split view, as in Claude Code's desktop app; so do Cmd+B for the
+  // sidebar and Cmd+[ and Cmd+] for Back and Forward.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'n') {
@@ -190,6 +224,13 @@ export function App() {
       if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key === ',') {
         e.preventDefault();
         setSettingsOpen(true);
+      }
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+        const act = e.key.toLowerCase() === 'b' ? toggleSidebar : e.key === '[' ? () => travel(back) : e.key === ']' ? () => travel(forward) : null;
+        if (act) {
+          e.preventDefault();
+          act();
+        }
       }
       if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') {
         const { panes, focused } = current.current;
@@ -202,7 +243,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [start]);
+  }, [start, travel, toggleSidebar]);
 
   const answer = async (id: number | string, result: unknown) => {
     await window.koda.respond(id, result);
@@ -214,6 +255,7 @@ export function App() {
   if (!connected && !reconnecting) {
     return (
       <main className="status">
+        <div className="window-band" />
         <h1>Koda</h1>
         <ServerLine status={status} />
       </main>
@@ -221,8 +263,18 @@ export function App() {
   }
   const openIds = panes.flatMap((p) => (p.id ? [p.id] : []));
   return (
-    <div className="layout">
+    <div className={prefs.sidebar ? 'layout' : 'layout no-sidebar'}>
+      <div className="window-band" />
+      <WindowTools
+        sidebarShown={prefs.sidebar}
+        onSidebar={toggleSidebar}
+        canGoBack={canGoBack(history)}
+        canGoForward={canGoForward(history)}
+        onBack={() => travel(back)}
+        onForward={() => travel(forward)}
+      />
       <Sidebar
+        hidden={!prefs.sidebar}
         sessions={sessions}
         openIds={openIds}
         selectedId={panes[focused]?.id ?? null}

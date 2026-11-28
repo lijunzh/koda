@@ -13,6 +13,8 @@ export interface RpcMessage {
 }
 
 interface KodaBridge {
+  platform: string;
+  onFullScreen(listener: (full: boolean) => void): () => void;
   status(): Promise<ServerStatus>;
   onStatus(listener: (status: ServerStatus) => void): () => void;
   request(method: string, params: unknown): Promise<unknown>;

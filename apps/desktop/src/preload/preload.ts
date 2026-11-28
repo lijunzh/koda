@@ -4,6 +4,14 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 contextBridge.exposeInMainWorld('koda', {
+  /** The system the app runs on: on a Mac the window's buttons sit in the app's own top bar. */
+  platform: process.platform,
+  /** Called when the window goes full screen or leaves it. Returns a function that stops it. */
+  onFullScreen: (listener: (full: boolean) => void) => {
+    const handler = (_event: IpcRendererEvent, full: boolean) => listener(full === true);
+    ipcRenderer.on('koda:fullScreen', handler);
+    return () => ipcRenderer.removeListener('koda:fullScreen', handler);
+  },
   /** Where the server is and whether it runs this app's version. */
   status: () => ipcRenderer.invoke('koda:status'),
   /** Called with the server status whenever it changes. Returns a function that stops it. */

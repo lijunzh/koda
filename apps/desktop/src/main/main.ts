@@ -257,6 +257,12 @@ async function main() {
     height: 760,
     title: 'Koda',
     show: !TEST,
+    // On a Mac the window has no title bar of its own: its buttons sit in the
+    // app's top bar, beside the sidebar, Back and Forward buttons, as in
+    // Claude Code's desktop app.
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 14 } }
+      : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       sandbox: true,
@@ -274,6 +280,9 @@ async function main() {
   win.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(ORIGIN + '/')) event.preventDefault();
   });
+  // Full screen has no window buttons: the page gives their room back.
+  win.on('enter-full-screen', () => win?.webContents.send('koda:fullScreen', true));
+  win.on('leave-full-screen', () => win?.webContents.send('koda:fullScreen', false));
   win.on('closed', () => {
     win = null;
   });
