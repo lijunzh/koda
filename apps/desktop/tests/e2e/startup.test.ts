@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { KodaClient } from '../../src/main/koda-client';
 import { scratch } from '../helpers';
-import { type OpenApp, koda, openApp, socketOf, shutDown, stopServer } from './app';
+import { type OpenApp, koda, openApp, socketOf, shutDown } from './app';
 
 const appVersion = (JSON.parse(readFileSync(path.join(__dirname, '../../package.json'), 'utf8')) as { version: string })
   .version;
@@ -80,10 +80,14 @@ describe.skipIf(!koda)('the app and the server', () => {
       g.states = [];
       g.kodaTestConnection.on('status', (status) => g.states.push(status.state));
     });
-    // `koda serve --stop`, with the window open: the app starts a server at the
-    // same socket at once, and the command is done when the one it stopped has
-    // gone (it throws if the command fails).
-    stopServer(h);
+    // Stopped as `koda serve --stop` stops it, without that command's wait for
+    // the socket to go: the app starts a server there at once, so the wait ran
+    // its 15 seconds and the command said the server was still stopping.
+    const other = new KodaClient();
+    await other.connect(socketOf(h));
+    await other.request('initialize', { clientInfo: { name: 'koda-serve-stop', version: appVersion } });
+    expect(await other.request('serve/stop', {})).toMatchObject({ stopped: true });
+    other.close();
     // The window reconnects, starting a server again, as the TUI does: it has
     // lost the server, then connected to one.
     await expect
