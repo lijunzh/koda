@@ -559,7 +559,10 @@ async fn a_connection_opts_out_of_notifications_it_names() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_outlives_its_client_until_it_is_idle() {
     let server = model(vec![]).await;
-    let koda = Server::start(config(&server), Duration::from_millis(300)).await;
+    // The unload delay is the time the second client has to connect and
+    // attach after the first leaves; 300 ms wasn't always enough on a busy
+    // Linux runner (CI, 2026-11-27).
+    let koda = Server::start(config(&server), Duration::from_secs(2)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
     drop(first);
@@ -594,7 +597,7 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
     assert_eq!(again["status"], "notLoaded");
 
     // Closed once idle past the delay: opening it starts it again.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(3500)).await;
     let reopened = second
         .request("session/resume", json!({"sessionId": session}))
         .await
