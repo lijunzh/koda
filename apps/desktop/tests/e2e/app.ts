@@ -16,7 +16,10 @@ export interface OpenApp {
 
 /** Open the built app with `XDG_CONFIG_HOME` at `home`, unseen, starting servers with `KODA_BIN`. */
 export async function openApp(home: string): Promise<OpenApp> {
-  const args = [appDir];
+  // Its own settings and caches: without this the tests share the real
+  // app's folder (~/Library/Application Support/Koda), and a test that
+  // picked Verbose in Settings left it picked for the user (2026-11-27).
+  const args = [appDir, `--user-data-dir=${path.join(home, 'app-data')}`];
   // GitHub's Linux runners don't allow the unprivileged user namespaces
   // Chromium's own sandbox needs. The page stays sandboxed by Electron.
   if (process.platform === 'linux') args.unshift('--no-sandbox');
