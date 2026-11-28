@@ -27,8 +27,15 @@ use crate::{InProcessClient, RequestError};
 
 /// How long a server started here stays up with no client and no work.
 pub const IDLE_EXIT_SECS: u64 = 600;
-/// How long to wait for a server started, or stopped, here to be ready.
-const READY_WAIT: Duration = Duration::from_secs(10);
+/// How long to wait for a server started here to answer, and for an idle
+/// one asked to stop to be gone: Codex's wait for its daemon on macOS and
+/// Linux (`START_TIMEOUT`, 30 s), where a cold start from a slow disk, or a
+/// debug build on a busy machine, takes more than ten seconds.
+const READY_WAIT: Duration = Duration::from_secs(30);
+/// How much longer to wait once the server started here has exited. It may
+/// have lost the socket to a server another koda started at the same
+/// moment, which then answers; otherwise nothing will.
+const EXITED_WAIT: Duration = Duration::from_secs(5);
 /// How long to wait for a server stopping its running turns to be gone.
 const STOP_WAIT: Duration = Duration::from_secs(60);
 
@@ -201,8 +208,8 @@ pub async fn ensure(how: &Ensure<'_>) -> Result<(InProcessClient, Status), NotRe
             });
         }
         Err(_) => {
-            start_server(how)?;
-            (wait_for(how).await?, Status::Started)
+            let server = start_server(how)?;
+            (wait_for(how, server).await?, Status::Started)
         }
     };
     let theirs = connected.server().server_info.version.clone();
@@ -228,8 +235,8 @@ pub async fn ensure(how: &Ensure<'_>) -> Result<(InProcessClient, Status), NotRe
         ServerVersion::Older => {}
     }
     make_way(connected, how, &theirs, &ours).await?;
-    start_server(how)?;
-    let replaced = wait_for(how).await?;
+    let server = start_server(how)?;
+    let replaced = wait_for(how, server).await?;
     let now = replaced.server().server_info.version.clone();
     if now != ours {
         replaced.shutdown().await;
@@ -251,6 +258,19 @@ async fn make_way(
     theirs: &str,
     ours: &str,
 ) -> Result<(), NotReady> {
+    // Which process it is, before it is asked to go: another client may
+    // start the next server at this socket as soon as it has.
+    let server = server_pid(how.socket).await;
+    let gone = |limit| async move {
+        if wait_until_gone(how.socket, server, limit).await {
+            Ok(())
+        } else {
+            Err(NotReady::failed(format!(
+                "koda serve at {} didn't stop in time",
+                how.socket.display()
+            )))
+        }
+    };
     let ask = |if_idle, after_turns| {
         connected.request::<ServeStop>(ServeStopParams {
             if_idle,
@@ -269,7 +289,7 @@ async fn make_way(
     };
     if answer.stopped {
         connected.shutdown().await;
-        return wait_gone(how.socket, READY_WAIT).await;
+        return gone(Some(READY_WAIT)).await;
     }
     // A server that predates `forUpdate` refuses while any window is open.
     if answer.working == 0 && !answer.draining {
@@ -287,19 +307,21 @@ async fn make_way(
         connected.shutdown().await;
         return Err(busy);
     };
-    // Another client asked it already: only waiting is left.
+    // Another client asked it already: only waiting is left, as long as
+    // its turns take. The caller can drop the future to stop waiting; the
+    // server stops after those turns all the same.
     if answer.draining {
         connected.shutdown().await;
-        return wait_while_draining(how.socket).await;
+        return gone(None).await;
     }
     let answer = ask(false, turns == RunningTurns::Wait).await;
     connected.shutdown().await;
     let answer =
         answer.map_err(|e| NotReady::failed(format!("Koda's server didn't make way: {e}")))?;
     if answer.draining {
-        wait_while_draining(how.socket).await
+        gone(None).await
     } else {
-        wait_gone(how.socket, STOP_WAIT).await
+        gone(Some(STOP_WAIT)).await
     }
 }
 
@@ -315,7 +337,7 @@ async fn connect(how: &Ensure<'_>) -> Result<InProcessClient, RequestError> {
 /// Start `koda serve` on the socket in the background, in its own process
 /// group so a signal to the caller's terminal doesn't reach it, stopping
 /// once idle.
-fn start_server(how: &Ensure<'_>) -> Result<(), NotReady> {
+fn start_server(how: &Ensure<'_>) -> Result<tokio::process::Child, NotReady> {
     let mut command = tokio::process::Command::new(&how.koda);
     command
         .arg("serve")
@@ -333,51 +355,111 @@ fn start_server(how: &Ensure<'_>) -> Result<(), NotReady> {
     command.process_group(0);
     command
         .spawn()
-        .map_err(|e| NotReady::failed(format!("couldn't start koda serve: {e}")))?;
-    Ok(())
+        .map_err(|e| NotReady::failed(format!("couldn't start koda serve: {e}")))
 }
 
-/// Connect once the server answers.
-async fn wait_for(how: &Ensure<'_>) -> Result<InProcessClient, NotReady> {
-    let deadline = Instant::now() + READY_WAIT;
+/// Connect once a server answers at `how.socket`: `server`, just started
+/// here, or one another koda started at the same moment. Codex's
+/// `wait_until_ready` waits the same way, and stops waiting when its
+/// server has exited; Koda waits a little longer then, since nothing keeps
+/// two kodas from starting a server at once.
+async fn wait_for(
+    how: &Ensure<'_>,
+    mut server: tokio::process::Child,
+) -> Result<InProcessClient, NotReady> {
+    let mut deadline = Instant::now() + READY_WAIT;
+    let mut exited = None;
     loop {
-        match connect(how).await {
-            Ok(client) => return Ok(client),
-            Err(e) if Instant::now() >= deadline => {
-                return Err(NotReady::failed(format!(
-                    "koda serve didn't start at {}: {e}. To work without the background \
-                     server, rerun with --no-daemon.",
-                    how.socket.display()
-                )));
-            }
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-        }
-    }
-}
-
-/// Wait up to `limit` for the server at `socket` to stop and remove it.
-async fn wait_gone(socket: &Path, limit: Duration) -> Result<(), NotReady> {
-    let deadline = Instant::now() + limit;
-    while socket.exists() {
+        // A server that listens and never answers doesn't hold the wait
+        // past its end.
+        let left = deadline.saturating_duration_since(Instant::now());
+        let why = match tokio::time::timeout(left, connect(how)).await {
+            Ok(Ok(client)) => return Ok(client),
+            Ok(Err(e)) => e.to_string(),
+            Err(_) => "it didn't answer".to_string(),
+        };
         if Instant::now() >= deadline {
+            let socket = how.socket.display();
+            let what = match exited {
+                Some(status) => {
+                    format!("koda serve exited ({status}) before it answered at {socket}: {why}")
+                }
+                None => format!(
+                    "koda serve didn't start at {socket} within {} s: {why}",
+                    READY_WAIT.as_secs()
+                ),
+            };
             return Err(NotReady::failed(format!(
-                "koda serve at {} didn't stop in time",
-                socket.display()
+                "{what}. Run `koda serve` in a terminal to see why; to work without the \
+                 background server, rerun with --no-daemon."
             )));
+        }
+        if exited.is_none()
+            && let Ok(Some(status)) = server.try_wait()
+        {
+            exited = Some(status);
+            deadline = deadline.min(Instant::now() + EXITED_WAIT);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    Ok(())
 }
 
-/// Wait, as long as it takes, for a server waiting on its turns to stop.
-/// The caller can drop the future to stop waiting; the server stops after
-/// those turns all the same.
-async fn wait_while_draining(socket: &Path) -> Result<(), NotReady> {
-    while socket.exists() {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+/// The process listening at `socket`, from the connection's peer
+/// credentials: what tells one server from the next one at the same path,
+/// as the pid record tells Codex's daemon which process it stops. `None`
+/// when nothing listens there or the system doesn't say.
+pub async fn server_pid(socket: &Path) -> Option<u32> {
+    let stream = tokio::net::UnixStream::connect(socket).await.ok()?;
+    peer_pid(&stream)
+}
+
+fn peer_pid(stream: &tokio::net::UnixStream) -> Option<u32> {
+    let pid = stream.peer_cred().ok()?.pid()?;
+    u32::try_from(pid).ok()
+}
+
+/// Wait until the server that was process `server` (from [`server_pid`],
+/// asked before it was told to stop) has gone from `socket`, for up to
+/// `limit`, or as long as it takes without one. Whether it has gone.
+///
+/// Gone is: nothing listens at `socket`, or another process does, as when a
+/// client that lost the server has started the next one already. Codex's
+/// daemon waits for the process it stopped in the same way, not for the
+/// socket's path to be free. A server that still listens hangs up on a
+/// connection it hasn't taken only as it closes its socket, which it does
+/// as it lets go of its lock: so once this returns, a server started next
+/// finds the lock free, as it did when this waited for the path to go.
+pub async fn wait_until_gone(socket: &Path, server: Option<u32>, limit: Option<Duration>) -> bool {
+    use std::io::ErrorKind::{ConnectionRefused, NotFound};
+    use tokio::io::AsyncReadExt;
+    let gone = async {
+        loop {
+            match tokio::net::UnixStream::connect(socket).await {
+                Ok(mut stream) => {
+                    if let (Some(was), Some(now)) = (server, peer_pid(&stream))
+                        && was != now
+                    {
+                        return;
+                    }
+                    // Still its socket, or no telling whose: wait for it to
+                    // hang up, then look again.
+                    let mut sent = [0u8; 256];
+                    while let Ok(1..) = stream.read(&mut sent).await {}
+                }
+                // It removed its socket, or left a dead one behind.
+                Err(e) if matches!(e.kind(), NotFound | ConnectionRefused) => return,
+                Err(_) => {}
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    match limit {
+        Some(limit) => tokio::time::timeout(limit, gone).await.is_ok(),
+        None => {
+            gone.await;
+            true
+        }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -389,6 +471,36 @@ mod tests {
         assert_eq!(Status::AlreadyRunning.as_str(), "alreadyRunning");
         assert_eq!(Status::Started.as_str(), "started");
         assert_eq!(Status::Restarted.as_str(), "restarted");
+    }
+
+    /// A server that exits without answering fails the wait as one that
+    /// exited, soon after it has, not as one still slow to come up at the
+    /// end of the whole wait.
+    #[tokio::test]
+    async fn a_server_that_exits_before_it_answers_is_said_to_have_exited() {
+        let folder = tempfile::tempdir().unwrap();
+        let socket = folder.path().join("koda.sock");
+        let how = Ensure {
+            socket: &socket,
+            project_root: folder.path(),
+            // In place of `koda serve`: it exits at once, with status 1.
+            koda: PathBuf::from("false"),
+            manage: true,
+            running_turns: None,
+            client_info: ClientInfo {
+                name: "ensure-test".to_string(),
+                version: "0".to_string(),
+                title: None,
+            },
+        };
+        let said = match ensure(&how).await {
+            Ok(_) => panic!("ready with no server"),
+            Err(not_ready) => not_ready.message("0", &socket),
+        };
+        assert!(
+            said.contains("koda serve exited (exit status: 1) before it answered"),
+            "{said}"
+        );
     }
 
     #[test]

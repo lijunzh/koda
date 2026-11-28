@@ -18,7 +18,17 @@ pub(super) enum OldServer {
     /// A turn is running in one session: asked only if idle it says so;
     /// told to wait it drains for a moment; told to stop it stops.
     Busy,
+    /// Nothing is running: it stops, and the server listening at
+    /// [`NEXT_SOCKET`] beside it is at its socket from that moment, with no
+    /// time when nothing is there. A client that lost the server and
+    /// started the next one at once looks like this to anyone waiting for
+    /// the socket to go.
+    Replaced,
 }
+
+/// Where the server that takes a [`OldServer::Replaced`] one's place
+/// listens until it does.
+pub(super) const NEXT_SOCKET: &str = "next.sock";
 
 /// A server of version `version` on Koda's socket, as an update leaves one:
 /// it answers `initialize`, and `serve/stop` as `kind` says, keeping each
@@ -58,7 +68,7 @@ pub(super) fn old_server(
                     Some("serve/stop") => {
                         asked.lock().unwrap().push(params.clone());
                         match kind {
-                            OldServer::Stops => {
+                            OldServer::Stops | OldServer::Replaced => {
                                 stop = Some(Duration::ZERO);
                                 serde_json::json!({"stopped": true})
                             }
@@ -85,7 +95,11 @@ pub(super) fn old_server(
                 let _ = output.write_all(format!("{answer}\n").as_bytes()).await;
                 if let Some(delay) = stop {
                     tokio::time::sleep(delay).await;
-                    let _ = std::fs::remove_file(&socket);
+                    if kind == OldServer::Replaced {
+                        std::fs::rename(socket.with_file_name(NEXT_SOCKET), &socket).unwrap();
+                    } else {
+                        let _ = std::fs::remove_file(&socket);
+                    }
                     return;
                 }
             }

@@ -492,7 +492,9 @@ socket (or the one `--listen` names), then prints one JSON object and exits:
 Every answer has `socketPath` and `cliVersion`, `serverVersion` when a server
 answered, and `message` to show a person when it isn't ready. With
 `--running-turns wait` it returns once those turns have finished and the new
-server is up, which can take as long as they do.
+server is up, which can take as long as they do. A server it starts has 30
+seconds to answer, as Codex's daemon has; one that exits without answering
+is `failed` a few seconds after, and `message` says it exited.
 
 ```console
 $ koda serve --start

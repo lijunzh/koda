@@ -770,6 +770,105 @@ async fn serve_start_replaces_only_an_older_server() {
     stop().await;
 }
 
+/// A real `koda serve` listening beside Koda's socket at
+/// [`super::old_server::NEXT_SOCKET`], which an
+/// [`super::old_server::OldServer::Replaced`] server puts in its own place
+/// as it stops. Returned once it listens.
+#[cfg(unix)]
+async fn next_server(root: &std::path::Path) -> Child {
+    let next = root.join("koda/serve").join(super::old_server::NEXT_SOCKET);
+    let server = tokio::process::Command::new(koda_bin())
+        .args(["serve", "--listen", &format!("unix://{}", next.display())])
+        .arg("--project-root")
+        .arg(root)
+        .env("XDG_CONFIG_HOME", root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + WAIT;
+    while tokio::net::UnixStream::connect(&next).await.is_err() {
+        assert!(std::time::Instant::now() < deadline, "no socket");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    server
+}
+
+/// `koda serve --stop` has done its work once the server it asked has gone,
+/// whatever is at the socket by then: a client that lost that server (the
+/// TUI, the desktop app) starts the next one there at once. The command
+/// waited for the socket's path to be free, which it then never is, and
+/// said the server was still stopping. The next server isn't asked to stop.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_stop_is_done_when_its_server_has_gone_though_another_took_the_socket() {
+    use super::old_server::{OldServer, old_server};
+    use std::sync::{Arc, Mutex};
+
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("koda/serve/koda.sock");
+    let asked = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let stopping = old_server(
+        &socket,
+        env!("CARGO_PKG_VERSION"),
+        OldServer::Replaced,
+        Arc::clone(&asked),
+    );
+    let _next = next_server(root.path()).await;
+
+    let stopped = tokio::process::Command::new(koda_bin())
+        .args(["serve", "--stop"])
+        .env("XDG_CONFIG_HOME", root.path())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    let said = String::from_utf8_lossy(&stopped.stderr);
+    assert!(stopped.status.success(), "{said}");
+    assert!(said.contains("Stopped koda serve"), "{said}");
+    let _ = stopping.await;
+    assert_eq!(asked.lock().unwrap().len(), 1, "asked once");
+
+    // The server that took the socket is up, and answers there.
+    let (code, answer) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(0), "{answer}");
+    assert_eq!(answer["status"], "alreadyRunning", "{answer}");
+}
+
+/// `koda serve --start` replacing an older server goes on once that server
+/// has gone, when another koda's server is at the socket already: two
+/// clients that find the older one both ask it to make way, and one starts
+/// the next first. The other waited for the socket's path to be free and
+/// gave up; it uses the server that is there.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_start_uses_the_server_another_koda_put_in_an_older_ones_place() {
+    use super::old_server::{OldServer, old_server};
+    use std::sync::{Arc, Mutex};
+
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("koda/serve/koda.sock");
+    let older = old_server(
+        &socket,
+        "0.0.1",
+        OldServer::Replaced,
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let _next = next_server(root.path()).await;
+
+    let (code, answer) = serve_start(root.path(), &[]).await;
+    assert_eq!(code, Some(0), "{answer}");
+    assert_eq!(answer["status"], "restarted", "{answer}");
+    assert_eq!(
+        answer["serverVersion"],
+        env!("CARGO_PKG_VERSION"),
+        "{answer}"
+    );
+    let _ = older.await;
+}
+
 /// `--start` is for the shared server: not with stdio, and not with `-c`,
 /// which wouldn't reach a server it starts; `--running-turns` goes with it.
 #[test]
