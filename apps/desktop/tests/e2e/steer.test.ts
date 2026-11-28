@@ -46,11 +46,15 @@ describe.skipIf(!koda)('text added to a running turn', () => {
     const waiting = page.getByTestId('steers-waiting');
     const reply = (text: string) => page.getByTestId('agent-message').filter({ hasText: text });
     const send = page.getByRole('button', { name: 'Send', exact: true });
+    const working = page.getByTestId('working');
 
     // A turn whose reply is held; text added to it waits above the box.
     await box.fill('First question');
     await box.press('Enter');
     await expect.poll(() => scripted.calls(), { timeout: 30_000 }).toBe(1);
+    // The model has the request, but the window may not have heard the turn
+    // start yet: until it has, Enter starts a turn in place of steering one.
+    await working.waitFor({ timeout: 30_000 });
     await box.fill('Also this');
     await box.press('Enter');
     await waiting.getByText('Also this').waitFor({ timeout: 30_000 });
@@ -70,6 +74,7 @@ describe.skipIf(!koda)('text added to a running turn', () => {
     await box.fill('Third question');
     await box.press('Enter');
     await expect.poll(() => scripted.calls(), { timeout: 30_000 }).toBe(3);
+    await working.waitFor({ timeout: 30_000 });
     await box.fill('Not this time');
     await box.press('Enter');
     await waiting.getByText('Not this time').waitFor({ timeout: 30_000 });
