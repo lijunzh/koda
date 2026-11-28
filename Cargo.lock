@@ -10,9 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "ahash"
-version = "0.8.14"
+version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54dae3d1d7b8956f3506c4e999a74e77f932a59153ccf38ab8cf96db74bb9dc0"
+checksum = "3019c0b8d883a8a17df3129e417ef463c087807d245e8881a31d583dee1c0519"
 dependencies = [
  "cfg-if",
  "getrandom 0.4.3",
@@ -5215,9 +5215,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "two-face"
-version = "0.5.2+bat-0.26.1"
+version = "0.5.3+bat-0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915be7adc2ff6f4338acbf71f3eda0a146f46003b992a1669c674308610efdac"
+checksum = "8476eba391d01c32d3ef40325aa305a890d797aa57d906d14ac632479ceb22b5"
 dependencies = [
  "serde",
  "serde_derive",
