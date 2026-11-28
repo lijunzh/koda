@@ -35,8 +35,10 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
   running, *needs you* means it waits for an approval or an answer, and
   *open* means it's loaded on the server, ready. The list stays current when the TUI or
   another window starts, renames or deletes a session.
-- **New session** asks for a folder and starts the session there. A session
-  always opens in its own folder.
+- **New session** (Cmd+N) opens an empty session with the prompt box. Under
+  the box, pick the folder Koda works in (one you've used before, or
+  **Open folder…**), the model and the mode. The session starts with your
+  first prompt. A session always works in the folder it started in.
 - **The conversation** streams in as Koda works. Lookups (reads, searches,
   listings) fold into one row such as "Read 3 files, searched 2 patterns";
   click it to see each call and what it printed. Long output folds to its
@@ -46,12 +48,21 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
 - **The prompt box**: Enter sends, Shift+Enter adds a line. While a turn
   runs, Enter adds your message to it, and Stop (or Esc) ends it.
 
+## Under the prompt box
+
+- **The model**, with its effort beside it, opens a menu: the provider's
+  models (a number key picks one), **Effort**, and **More models** for the
+  other providers you can use. A session keeps the provider it started
+  with, so picking another provider's model opens a new session on it, in
+  the same folder. Cmd+Shift+I opens the menu.
+- **The mode**: Auto makes edits and runs sandboxed commands without asking
+  (switching to it asks once to confirm); Plan only reads and plans. See
+  [Trust modes](approval.md). Cmd+Shift+M opens the menu.
+
 ## Above the conversation
 
 | Control | What it does |
 |---|---|
-| Model, Effort | The session's model and reasoning effort, for its next turns |
-| Auto / Plan | Auto makes edits and runs sandboxed commands without asking (it asks once to confirm); Plan only reads and plans. See [Trust modes](approval.md) |
 | Context left | How much of the model's context window is free |
 | Compact | Summarizes the conversation so far, to free context |
 | Fork | A copy of the conversation to go on in, leaving this one as it is |

@@ -1,8 +1,10 @@
 // Starting and deleting sessions, which the page asks for but the main
 // process carries out: a new session's folder decides where its commands may
-// write, so it comes only from the system's folder picker, never from the
-// page; and deleting one is for good, so the user confirms it in a system
-// dialog that names the session as the server stores it.
+// write, so it is one the user picked in the system's folder picker, or one
+// that already has a session, never a path the page made up; its provider is
+// one the server lists, and never comes with an endpoint; and deleting one is
+// for good, so the user confirms it in a system dialog that names the session
+// as the server stores it.
 
 /** What these actions need: the server, and the system dialogs. */
 export interface SessionActionDeps {
@@ -21,11 +23,44 @@ interface SessionShape {
   preview?: string;
 }
 
-/** A new session in a folder the user picks; `null` if they cancelled. */
-export async function newSession(deps: SessionActionDeps): Promise<unknown> {
+/** The folders the user picked in the system's dialog since the app started. */
+export type PickedFolders = Set<string>;
+
+/** Ask the user for a folder, and remember it as one a session may start in. */
+export async function pickFolder(deps: SessionActionDeps, picked: PickedFolders): Promise<string | null> {
   const folder = await deps.pickFolder();
-  if (!folder) return null;
-  const started = (await deps.request('session/start', { cwd: folder })) as { session: SessionShape };
+  if (folder) picked.add(folder);
+  return folder;
+}
+
+/**
+ * A new session in `folder`, on `provider` and `model` when the page names
+ * them. Refused unless the user picked the folder in the system's dialog or a
+ * session already works in it, and unless the provider is one the server
+ * lists: the page chooses among what the user and the server already allow.
+ */
+export async function startSession(deps: SessionActionDeps, picked: PickedFolders, options: unknown): Promise<unknown> {
+  const o = (options ?? {}) as Record<string, unknown>;
+  const extra = Object.keys(o).filter((key) => !['folder', 'provider', 'model'].includes(key));
+  if (extra.length) throw new Error(`refused: a new session takes folder, provider and model, not ${extra.join(', ')}`);
+  const { folder, provider, model } = o;
+  if (typeof folder !== 'string' || !folder) throw new Error('refused: a folder');
+  if (!picked.has(folder)) {
+    const known = (await deps.request('session/list', { cwd: folder, limit: 1 })) as { data?: unknown[] };
+    if (!known.data?.length) throw new Error('refused: a folder the user picked, or one that has a session');
+  }
+  const params: Record<string, unknown> = { cwd: folder };
+  if (provider !== undefined) {
+    if (typeof provider !== 'string') throw new Error('refused: a provider id');
+    const listed = (await deps.request('modelProvider/list', {})) as { data?: Array<{ id: string }> };
+    if (!listed.data?.some((p) => p.id === provider)) throw new Error('refused: a provider the server lists');
+    params.modelProvider = provider;
+  }
+  if (model !== undefined) {
+    if (typeof model !== 'string' || !model || model.length > 200) throw new Error('refused: a model id');
+    params.model = model;
+  }
+  const started = (await deps.request('session/start', params)) as { session: SessionShape };
   return started.session;
 }
 

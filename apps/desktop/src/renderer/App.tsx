@@ -4,7 +4,7 @@ import { call, type RpcMessage, type ServerStatus } from './bridge';
 import { type Listener, Pane } from './Pane';
 import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
-import { SessionView } from './SessionView';
+import { NewSession } from './NewSession';
 import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
 import { Sidebar } from './Sidebar';
 import { type View, VIEWS } from './transcript';
@@ -21,8 +21,10 @@ interface PaneState {
   /** Stays the pane's while it shows other sessions. */
   key: number;
   id: string | null;
-  /** The session as the server just made it, for a new one or a fork. */
+  /** The session as the server just made it, for a fork. */
   initial?: Session;
+  /** A new session's first prompt. */
+  firstPrompt?: string;
 }
 
 const PAGE = 50;
@@ -131,14 +133,14 @@ export function App() {
    * pane, or, `beside`, in a new pane next to it (Claude Code's split view).
    */
   const open = useCallback(
-    (id: string, options: { session?: Session; beside?: boolean; pane?: number } = {}) => {
+    (id: string, options: { session?: Session; beside?: boolean; pane?: number; firstPrompt?: string } = {}) => {
       const { panes, focused } = current.current;
       const at = panes.findIndex((p) => p.id === id);
       if (at >= 0) {
         setFocused(at);
         return;
       }
-      const next: PaneState = { key: nextKey++, id, initial: options.session };
+      const next: PaneState = { key: nextKey++, id, initial: options.session, firstPrompt: options.firstPrompt };
       if (options.beside && panes.length < MAX_PANES) {
         const where = (options.pane ?? focused) + 1;
         setPanes([...panes.slice(0, where), next, ...panes.slice(where)]);
@@ -157,10 +159,24 @@ export function App() {
     setFocused((f) => Math.max(0, f >= index ? f - 1 : f));
   };
 
-  const start = useCallback(async () => {
-    const session = await window.koda.newSession();
-    if (session) open(session.id, { session });
-  }, [open]);
+  // "New session" turns the focused pane into a new one: nothing starts
+  // until its first prompt.
+  const start = useCallback(() => {
+    const { focused } = current.current;
+    setPanes((all) => all.map((p, i) => (i === focused ? { key: nextKey++, id: null } : p)));
+  }, []);
+
+  // Cmd+N, as in Claude Code's desktop app.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        start();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [start]);
 
   const answer = async (id: number | string, result: unknown) => {
     await window.koda.respond(id, result);
@@ -186,7 +202,7 @@ export function App() {
         selectedId={panes[focused]?.id ?? null}
         canSplit={panes.length < MAX_PANES}
         onOpen={(id, beside) => open(id, { beside })}
-        onNew={() => void start()}
+        onNew={start}
         onMore={more}
         connectedTo={connected ? status.serverVersion : null}
       />
@@ -218,6 +234,7 @@ export function App() {
                   key={pane.id}
                   id={pane.id}
                   initial={pane.initial}
+                  firstPrompt={pane.firstPrompt}
                   subscribe={subscribe}
                   listed={sessions.byId.get(pane.id)}
                   requests={forSession([...pending], pane.id)}
@@ -229,17 +246,9 @@ export function App() {
                   onClose={panes.length > 1 ? () => closePane(i) : undefined}
                 />
               ) : (
-                <SessionView
-                  selected={null}
-                  transcript={null}
-                  view={view}
-                  onView={setView}
-                  requests={[]}
-                  onAnswer={answer}
-                  controls={null}
-                  diffs={new Map()}
-                  planShown={planShown}
-                  onOpen={() => {}}
+                <NewSession
+                  sessions={sessions}
+                  onStarted={(session, prompt) => open(session.id, { pane: i, firstPrompt: prompt })}
                   onClose={panes.length > 1 ? () => closePane(i) : undefined}
                 />
               )}

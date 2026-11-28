@@ -21,7 +21,7 @@ import { answerRefusal } from './answers';
 import { Connection } from './connection';
 import type { RpcId } from './koda-client';
 import { refusal } from './relay';
-import { deleteSession, newSession, type SessionActionDeps, setMode } from './sessions';
+import { deleteSession, pickFolder, type PickedFolders, startSession, type SessionActionDeps, setMode } from './sessions';
 import { findKoda, type RunningTurns } from './server';
 import { loginShellPath } from './shell-path';
 
@@ -187,7 +187,7 @@ async function main() {
       const picked = win
         ? await dialog.showOpenDialog(win, {
             title: 'Folder for the new session',
-            buttonLabel: 'Start session here',
+            buttonLabel: 'Use this folder',
             properties: ['openDirectory', 'createDirectory'],
           })
         : { canceled: true, filePaths: [] };
@@ -219,7 +219,9 @@ async function main() {
       return answer.response === 0;
     },
   };
-  ipcMain.handle('koda:newSession', guarded(() => newSession(sessionDeps)));
+  const pickedFolders: PickedFolders = new Set();
+  ipcMain.handle('koda:pickFolder', guarded(() => pickFolder(sessionDeps, pickedFolders)));
+  ipcMain.handle('koda:startSession', guarded((options: unknown) => startSession(sessionDeps, pickedFolders, options)));
   ipcMain.handle('koda:deleteSession', guarded((id: unknown) => deleteSession(sessionDeps, id)));
   ipcMain.handle('koda:setMode', guarded((id: unknown, mode: unknown) => setMode(sessionDeps, id, mode)));
   ipcMain.handle(

@@ -404,10 +404,12 @@ npm start                 # build into out/ and open the app
   `session/status/changed`). Opening one is `session/resume` with its id
   alone (the relay refuses a `cwd`, `config` or `baseUrl`), so it opens in
   its own folder; the one left is unsubscribed, and a turn running in it goes
-  on. Starting a session (a folder from the system's picker) and deleting one
-  (after the system's confirmation) are main-process actions
-  (`src/main/sessions.ts`), so the page never chooses where commands may
-  write. App tests answer those dialogs from the main process with
+  on. Starting a session and deleting one (after the system's confirmation)
+  are main-process actions (`src/main/sessions.ts`). A new session's folder
+  is one the user picked in the system's dialog (`pickFolder`) or one that
+  already has a session (checked with `session/list`), and its provider one
+  that `modelProvider/list` gives, never with an endpoint, so the page
+  chooses only among what the user and the server already allow. App tests answer those dialogs from the main process with
   `electronApp.evaluate`.
 - **The conversation** (`src/renderer/transcript.ts`, pure functions):
   stored turns from `session/resume`, then live events (applied every 50 ms
@@ -433,6 +435,14 @@ npm start                 # build into out/ and open the app
   (`src/main/answers.ts`: no "for the session" unless the request offered
   it), and tells the user through a system notification when the window
   isn't in front and Koda needs them or has finished.
+- **New session** (`NewSession.tsx`): a pane with no session is the
+  new-session screen, as Claude Code's desktop app opens one: the prompt
+  box, and under it the folder, the model and the mode. Nothing starts
+  until the first prompt; the pane that then opens the session sends that
+  prompt itself once it follows the session, so it sees the turn from its
+  start. The model, effort and mode menus (`SessionControls.tsx`,
+  `Menu.tsx`) are the same under a running session's prompt box; another
+  provider's model there starts a new session on it.
 - **Session controls** (`src/renderer/controls.ts`, `SessionBar.tsx`):
   under the title, the model (`model/list` of the session's provider) and
   effort, the mode, the context meter (the TUI's reading: the last call's

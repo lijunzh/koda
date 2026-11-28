@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!koda)('session controls', () => {
-  it('shows the plan while a turn runs, the context left, the mode, and renames the session', async () => {
+  it('shows the plan while a turn runs, the context left, the mode under the prompt box, and renames the session', async () => {
     const home = scratch();
     homes.push(home);
     model = await scriptedModel([
@@ -46,23 +46,6 @@ describe.skipIf(!koda)('session controls', () => {
       dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [picked] })) as typeof dialog.showOpenDialog;
     }, realpathSync(project));
     await page.getByRole('button', { name: 'New session' }).click();
-    await page.getByTestId('session-bar').waitFor({ timeout: 30_000 });
-
-    // The mode: Plan at once, Auto only after the system dialog says so.
-    const mode = page.getByRole('group', { name: 'Mode' });
-    await mode.getByRole('button', { name: 'Plan' }).click();
-    await expect.poll(() => mode.getByRole('button', { name: 'Plan' }).getAttribute('aria-pressed')).toBe('true');
-    await app.evaluate(({ dialog }) => {
-      dialog.showMessageBox = (async () => ({ response: 1, checkboxChecked: false })) as typeof dialog.showMessageBox;
-    });
-    await mode.getByRole('button', { name: 'Auto' }).click();
-    await new Promise((r) => setTimeout(r, 500));
-    expect(await mode.getByRole('button', { name: 'Plan' }).getAttribute('aria-pressed')).toBe('true');
-    await app.evaluate(({ dialog }) => {
-      dialog.showMessageBox = (async () => ({ response: 0, checkboxChecked: false })) as typeof dialog.showMessageBox;
-    });
-    await mode.getByRole('button', { name: 'Auto' }).click();
-    await expect.poll(() => mode.getByRole('button', { name: 'Auto' }).getAttribute('aria-pressed')).toBe('true');
 
     // The plan, while the turn runs; Ctrl+T hides and shows it.
     const box = page.getByRole('textbox', { name: 'Prompt' });
@@ -77,6 +60,30 @@ describe.skipIf(!koda)('session controls', () => {
     // Done: the plan goes, and the meter says how much context is left.
     await expect.poll(() => page.getByTestId('plan').count(), { timeout: 30_000 }).toBe(0);
     await expect.poll(() => page.getByTestId('context-left').textContent()).toMatch(/\d+% context left/);
+
+    // The mode, under the prompt box: Plan at once, Auto only after the system dialog says so.
+    const mode = page.getByRole('button', { name: 'Mode', exact: true });
+    const pick = async (name: RegExp) => {
+      await mode.click();
+      await page.getByRole('menuitemradio', { name }).click();
+    };
+    await pick(/Plan/);
+    await expect.poll(() => mode.textContent()).toBe('Plan');
+    await app.evaluate(({ dialog }) => {
+      dialog.showMessageBox = (async () => ({ response: 1, checkboxChecked: false })) as typeof dialog.showMessageBox;
+    });
+    await pick(/Auto/);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await mode.textContent()).toBe('Plan');
+    await app.evaluate(({ dialog }) => {
+      dialog.showMessageBox = (async () => ({ response: 0, checkboxChecked: false })) as typeof dialog.showMessageBox;
+    });
+    await pick(/Auto/);
+    await expect.poll(() => mode.textContent()).toBe('Auto');
+    // A number key picks a mode while the menu is open.
+    await mode.click();
+    await page.keyboard.press('2');
+    await expect.poll(() => mode.textContent()).toBe('Plan');
 
     // Renaming, from the title.
     await page.getByRole('heading', { level: 1 }).click();

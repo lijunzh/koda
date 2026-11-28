@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- **The desktop app starts a session as Claude Code's does.** "New session" (or Cmd+N) opens an empty session with the prompt box; under it you pick the folder (one you've worked in, or "Open folder…"), the model and the mode, and the session starts with your first prompt. The app opens on that screen.
+- **The model and the mode are under the prompt box,** in the app's own menus. The model menu lists the provider's models with number keys, the effort as a submenu, and other providers' models under "More models"; picking one of those in a running session opens a new session on it, as the TUI's `/provider` does, since a session keeps its provider. The mode menu has Auto and Plan with what each does. Cmd+Shift+I and Cmd+Shift+M open them.
 - **The desktop app's look,** the first step toward Claude Code's desktop app: one set of colours and sizes in light and dark, quiet buttons in place of the browser's own, the conversation and the prompt box in one centred column, and the app's own menus for the model and the effort in place of the system's pop-up.
 
 ## [0.8.1] - 2026-11-27

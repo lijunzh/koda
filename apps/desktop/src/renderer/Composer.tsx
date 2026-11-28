@@ -1,6 +1,6 @@
 // The prompt box: Enter sends (or adds to the running turn, as the TUI
 // steers), Shift+Enter starts a new line, Stop or Esc stops the turn.
-import { useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { call } from './bridge';
 import { statusLine, type TurnView, workedFor } from './transcript';
 
@@ -11,6 +11,8 @@ interface Props {
   ready: boolean;
   /** What the server waits on the user for, if anything: the status line says so. */
   waiting: string | null;
+  /** The controls under the box: the model and the mode. */
+  foot?: ReactNode;
 }
 
 /** The status line while Koda waits on you, in the TUI's words. */
@@ -27,7 +29,7 @@ function waitingLabel(method: string): string {
   }
 }
 
-export function Composer({ sessionId, running, ready, waiting }: Props) {
+export function Composer({ sessionId, running, ready, waiting, foot }: Props) {
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
@@ -93,13 +95,21 @@ export function Composer({ sessionId, running, ready, waiting }: Props) {
           }}
         />
         {running ? (
-          <button onClick={stop}>Stop</button>
+          <button className="send stop" aria-label="Stop" title="Stop (Esc)" onClick={stop}>
+            ■
+          </button>
         ) : (
-          <button onClick={() => void send()} disabled={!ready || !text.trim()}>
-            Send
+          <button className="send" aria-label="Send" onClick={() => void send()} disabled={!ready || !text.trim()}>
+            ↑
           </button>
         )}
       </div>
+      {foot && (
+        <div className="composer-foot">
+          <div className="foot-left" />
+          <div className="foot-right">{foot}</div>
+        </div>
+      )}
     </div>
   );
 }
