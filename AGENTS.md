@@ -283,5 +283,20 @@ which removed about 80 tests that broke them.
 - **No fixed sleeps:** wait for the condition (a readiness signal, polling with
   a deadline). No process-wide environment changes: run the test binary again
   with its own environment, as `koda-sandbox/tests/env_scrub.rs` does.
+- **No window to fit into.** CI runs eight tests at once on three CPUs, so a
+  step can stall for seconds. A reply delayed 3 s, or a command that sleeps
+  half a second, is not a place for the test's next step: hold the turn or
+  the command until the test lets it go (`FakeLlmServer::gate`,
+  `wait_for_go()`, the app's `scriptedModel` gate, a file the command waits
+  for, an approval).
+- **Wait for the message, don't read what has come.** A notice and the answer
+  to a request travel apart, and the notices sent to every connection
+  (`session/started`, `session/status/changed` and the rest) reach a client
+  that connected a moment later. Checking a notice came: wait for it.
+  Checking one didn't: put a later message after it and wait for that.
+- **Deadlines:** 30 s on anything that must happen (a hang still fails, by
+  nextest's limit). A wall-clock bound that shows "faster than the slow
+  path" needs the slow path made far slower than the bound. Never shorten a
+  wait, weaken an assertion or add a retry to get a test to pass.
 - **A sandbox test that can't run** calls `koda_sandbox::skip_test(why)`, never
   a bare `return`: it fails on CI, where `KODA_REQUIRE_SANDBOX` is set.
