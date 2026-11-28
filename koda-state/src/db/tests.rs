@@ -2808,3 +2808,280 @@ async fn a_rewind_across_a_compaction_is_refused() {
     let error = db.rewind(&session, "t2", boundary).await.unwrap_err();
     assert!(error.to_string().contains("compacted"), "{error}");
 }
+
+// ── Searching sessions ──────────────────────────────────────────────────
+
+/// A record of a completed item that says `text`, as the host stores one.
+fn said(turn: &str, text: &str) -> crate::session_store::TurnRecord {
+    crate::session_store::TurnRecord {
+        turn_id: turn.into(),
+        kind: crate::session_store::ITEM_KIND.into(),
+        payload: serde_json::json!({"type": "agentMessage", "id": "m1", "text": text}).to_string(),
+    }
+}
+
+/// The ids of the search candidates for `term`, among every session.
+async fn candidates(db: &Database, term: &str) -> Vec<String> {
+    let everything = crate::session_store::SessionListQuery {
+        ascending: true,
+        limit: 50,
+        ..Default::default()
+    };
+    db.search_candidates_page(&everything, term)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|session| session.id)
+        .collect()
+}
+
+/// A search's candidates are the sessions whose stored text has the term,
+/// in either case: an item's record for a session with turn records, its
+/// messages for one without. The system prompt and a turn's context are no
+/// part of the conversation.
+#[tokio::test]
+async fn search_candidates_come_from_records_or_from_messages() {
+    use crate::session_store::{TURN_CONTEXT_KIND, TurnRecord};
+    let (db, tmp) = setup().await;
+    let mut made = Vec::new();
+    for _ in 0..6 {
+        made.push(db.create_session("default", tmp.path()).await.unwrap());
+    }
+    let [
+        recorded,
+        older,
+        read_from_records,
+        sub_agent,
+        prompt_only,
+        unrelated,
+    ] = &made[..]
+    else {
+        unreachable!()
+    };
+    db.append_turn_records(recorded, &[said("t1", "The Flux capacitor is charged.")])
+        .await
+        .unwrap();
+    db.insert_message(
+        older,
+        &Role::User,
+        Some("where is the FLUX pump"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // Its records are what a reader gets, and they don't say it.
+    db.insert_message(
+        read_from_records,
+        &Role::User,
+        Some("flux"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    db.append_turn_records(read_from_records, &[said("t1", "Nothing of the kind.")])
+        .await
+        .unwrap();
+    // A sub-agent's session has a context record and no turns.
+    db.append_turn_records(
+        sub_agent,
+        &[TurnRecord {
+            turn_id: "t1".into(),
+            kind: TURN_CONTEXT_KIND.into(),
+            payload: r#"{"model": "flux-1"}"#.into(),
+        }],
+    )
+    .await
+    .unwrap();
+    insert_complete_assistant(&db, sub_agent, Some("Found the flux pump."), None).await;
+    db.insert_message(
+        prompt_only,
+        &Role::System,
+        Some("You are Flux."),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    db.insert_message(unrelated, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        candidates(&db, "flux").await,
+        [recorded, older, sub_agent].map(String::clone)
+    );
+    assert_eq!(
+        candidates(&db, "FLUX CAPACITOR").await,
+        std::slice::from_ref(recorded)
+    );
+    assert!(candidates(&db, "warp").await.is_empty());
+}
+
+/// A term is looked for as written: `%` and `_` are themselves, and a
+/// quote or a backslash is found where JSON escaped it in a record and
+/// where a message has it plain.
+#[tokio::test]
+async fn a_search_term_is_literal_in_records_and_in_messages() {
+    let (db, tmp) = setup().await;
+    let has = r#"at 100% of a_b, "quoted", in C:\dir"#;
+    let lacks = "at 1000 of axb, quoted, in C:dir";
+    let mut made = Vec::new();
+    for text in [has, lacks] {
+        let recorded = db.create_session("default", tmp.path()).await.unwrap();
+        db.append_turn_records(&recorded, &[said("t1", text)])
+            .await
+            .unwrap();
+        let older = db.create_session("default", tmp.path()).await.unwrap();
+        db.insert_message(&older, &Role::User, Some(text), None, None, None)
+            .await
+            .unwrap();
+        made.push([recorded, older]);
+    }
+    for term in ["100%", "a_b", r#""quoted""#, r"C:\dir", r#"B, "Q"#] {
+        assert_eq!(candidates(&db, term).await, made[0], "{term}");
+    }
+}
+
+/// `LIKE` ignores case for ASCII letters only, and no stored text holds
+/// the line break a reader puts between two: for a term with a letter
+/// outside ASCII that has another case, or a control character, nothing is
+/// narrowed, so no session is missed. Text without case narrows as ASCII
+/// does.
+#[tokio::test]
+async fn a_term_like_cant_be_trusted_with_narrows_nothing() {
+    let (db, tmp) = setup().await;
+    let upper = db.create_session("default", tmp.path()).await.unwrap();
+    db.append_turn_records(&upper, &[said("t1", "L'ÉCOLE est fermée. 中文")])
+        .await
+        .unwrap();
+    let other = db.create_session("default", tmp.path()).await.unwrap();
+    db.append_turn_records(&other, &[said("t1", "nothing")])
+        .await
+        .unwrap();
+    let both = [upper.clone(), other];
+    for term in ["école", "É", "a\nb", "a\tb", "ǅ", "\u{212a}"] {
+        assert_eq!(candidates(&db, term).await, both, "{term:?}");
+    }
+    for term in ["中文", "l'", "EST FERM"] {
+        assert_eq!(
+            candidates(&db, term).await,
+            std::slice::from_ref(&upper),
+            "{term:?}"
+        );
+    }
+}
+
+/// The rule behind it: `LIKE` is trusted with a character outside ASCII
+/// only if it folds to itself and no other character folds to it; and
+/// nothing outside ASCII folds to an ASCII character, or `LIKE` would miss
+/// it.
+#[test]
+fn like_is_trusted_only_where_it_agrees_with_the_fold() {
+    use super::queries::stored_text_patterns;
+    use crate::session_store::search_fold;
+    for c in (0..=u32::from(char::MAX)).filter_map(char::from_u32) {
+        let folded = search_fold(c);
+        assert_eq!(search_fold(folded), folded, "{c:?} folds twice");
+        assert_eq!(folded.is_ascii(), c.is_ascii(), "{c:?} folds across ASCII");
+        if folded != c && !c.is_ascii() {
+            for other_case in [c, folded] {
+                assert_eq!(
+                    stored_text_patterns(&other_case.to_string()),
+                    None,
+                    "{c:?} folds to {folded:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A session from before turn records keeps tool calls as the provider
+/// sent them. A term every JSON writer leaves as it is is looked for
+/// there, `\/` read as `/`; for any other, every such session with a tool
+/// call is a candidate, since the arguments may spell it another way.
+#[tokio::test]
+async fn an_older_sessions_tool_calls_are_searched_as_the_provider_wrote_them() {
+    let (db, tmp) = setup().await;
+    let called = |arguments: &str| {
+        serde_json::json!([{"id": "c1", "function_name": "Bash", "arguments": arguments}])
+            .to_string()
+    };
+    let mut made = Vec::new();
+    for arguments in [
+        // `cat src/main.rs`, `a<b` and 1000, each written another way.
+        r#"{"command": "cat src\/main.rs && test a\u003cb", "timeout": 1e3}"#,
+        r#"{"command": "ls"}"#,
+    ] {
+        let session = db.create_session("default", tmp.path()).await.unwrap();
+        insert_complete_assistant(&db, &session, None, Some(&called(arguments))).await;
+        made.push(session);
+    }
+    let no_calls = db.create_session("default", tmp.path()).await.unwrap();
+    db.insert_message(&no_calls, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+
+    for term in ["src/main.rs", "BASH", "command"] {
+        let expected: &[String] = if term == "src/main.rs" {
+            &made[..1]
+        } else {
+            &made
+        };
+        assert_eq!(candidates(&db, term).await, expected, "{term}");
+    }
+    for term in ["a<b", "1000", "it's"] {
+        assert_eq!(candidates(&db, term).await, made, "{term}");
+    }
+}
+
+/// `session/list`'s `searchTerm`: sessions whose title or preview has the
+/// text, ASCII letters in either case, `%` and `_` as themselves.
+#[tokio::test]
+async fn sessions_are_listed_by_a_term_in_their_title_or_preview() {
+    use crate::session_store::SessionListQuery;
+    let (db, tmp) = setup().await;
+    let titled = db.create_session("default", tmp.path()).await.unwrap();
+    db.set_session_title(&titled, "Fix the Parser")
+        .await
+        .unwrap();
+    let previewed = db.create_session("default", tmp.path()).await.unwrap();
+    db.insert_message(
+        &previewed,
+        &Role::User,
+        Some("why is the parser 100% slower"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let answered = db.create_session("default", tmp.path()).await.unwrap();
+    db.insert_message(&answered, &Role::User, Some("hello"), None, None, None)
+        .await
+        .unwrap();
+    insert_complete_assistant(&db, &answered, Some("The parser is fine."), None).await;
+
+    let listed = |term: &'static str| {
+        let db = db.clone();
+        async move {
+            let query = SessionListQuery {
+                search_term: Some(term.to_string()),
+                ascending: true,
+                limit: 50,
+                ..Default::default()
+            };
+            let page = db.list_sessions_page(&query).await.unwrap();
+            page.into_iter().map(|s| s.id).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(listed("PARSER").await, [titled.clone(), previewed.clone()]);
+    assert_eq!(listed("fix the").await, [titled]);
+    assert_eq!(listed("100%").await, [previewed]);
+    assert!(listed("1_0").await.is_empty());
+    assert!(listed("fine").await.is_empty(), "a reply is not searched");
+}

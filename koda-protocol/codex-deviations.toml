@@ -89,6 +89,13 @@
 "Session.instructionSources" = "On the session; Codex sends instructionSources beside the thread in thread/start and thread/resume answers"
 "Session.settings" = "What the session's turns run with, for a client that joins it; Codex sends ThreadSettings only in thread/settings/updated"
 "SessionSettings.contextWindow" = "The window the session runs with"
+# Search: Codex's thread/search answers with the thread and a snippet, from
+# user and assistant messages, across every folder.
+"SessionSearchParams.cwd" = "Search one folder's sessions, as session/list's cwd; Codex's thread/search has no folder filter"
+"SessionSearchParams.includeToolOutput" = "Whether what tools returned is searched too; Codex's searches messages only"
+"SessionSearchResult.turnId" = "Where the match is, so a client can open the session at it; Codex's result has the snippet alone"
+"SessionSearchResult.itemId" = "Where the match is"
+"SessionSearchResult.matched" = "Which of the item's texts matched: user, assistant, toolCall or toolOutput"
 # Usage: Koda counts each turn and each sub-agent.
 "Turn.usage" = "What the turn used; Codex reports usage only in thread/tokenUsage/updated"
 "TokenUsage.byAgent" = "Usage by sub-agent"

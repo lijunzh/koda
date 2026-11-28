@@ -481,7 +481,7 @@ impl Database {
     }
 }
 
-// ── SessionStore trait ──────────────────────────────────────────────────────────────
+// ── Listing and searching sessions ──────────────────────────────────────────────────
 
 /// A session's summary: [`SessionInfoRow`]'s columns, before a filter, all
 /// from the session's own row, so listing reads no messages. A macro, so
@@ -501,6 +501,182 @@ macro_rules! session_info_select {
      FROM sessions s"
     };
 }
+
+impl Database {
+    /// One page of sessions for `query`, in its order, narrowed to those
+    /// whose stored text matches `text` when there is one.
+    async fn sessions_page(
+        &self,
+        query: &crate::session_store::SessionListQuery,
+        text: Option<&StoredTextPatterns>,
+    ) -> Result<Vec<SessionInfo>> {
+        // The sort time as whole seconds, with the order sessions were made
+        // in for those of one second: what a cursor names.
+        let at = if query.by_updated {
+            "CAST(strftime('%s', COALESCE(s.last_accessed_at, s.created_at)) AS INTEGER)"
+        } else {
+            "CAST(strftime('%s', s.created_at) AS INTEGER)"
+        };
+        let mut sql = sqlx::QueryBuilder::<sqlx::Sqlite>::new(session_info_select!());
+        sql.push(" WHERE s.ephemeral = 0");
+        sql.push(if query.archived {
+            " AND s.archived_at IS NOT NULL"
+        } else {
+            " AND s.archived_at IS NULL"
+        });
+        if let Some(roots) = &query.project_roots {
+            sql.push(" AND (s.project_root IS NULL OR s.project_root IN (");
+            let mut list = sql.separated(", ");
+            for root in roots {
+                list.push_bind(root.clone());
+            }
+            sql.push("))");
+        }
+        if let Some(sources) = &query.sources {
+            sql.push(" AND (");
+            if query.unknown_source {
+                sql.push("s.source IS NULL OR ");
+            }
+            sql.push("s.source IN (");
+            let mut list = sql.separated(", ");
+            for source in sources {
+                list.push_bind(source.clone());
+            }
+            sql.push("))");
+        }
+        if let Some(providers) = &query.providers {
+            sql.push(" AND s.provider IN (");
+            let mut list = sql.separated(", ");
+            for provider in providers {
+                list.push_bind(provider.clone());
+            }
+            sql.push(")");
+        }
+        if let Some(term) = &query.search_term {
+            let pattern = like_contains(term);
+            sql.push(" AND (s.title LIKE ");
+            sql.push_bind(pattern.clone());
+            sql.push(" ESCAPE '\\' OR s.preview LIKE ");
+            sql.push_bind(pattern);
+            sql.push(" ESCAPE '\\')");
+        }
+        if let Some(text) = text {
+            // A session with turn records is read from them; one without,
+            // from its messages, where the system prompt is no part of the
+            // conversation.
+            sql.push(
+                " AND (EXISTS (SELECT 1 FROM turn_records t \
+                     WHERE t.session_id = s.id AND t.kind = 'item' AND t.payload LIKE ",
+            );
+            sql.push_bind(text.records.clone());
+            sql.push(
+                " ESCAPE '\\') OR (NOT EXISTS (SELECT 1 FROM turn_records t \
+                     WHERE t.session_id = s.id AND t.kind IN ('turn', 'item')) \
+                   AND EXISTS (SELECT 1 FROM messages m \
+                     WHERE m.session_id = s.id AND m.role != 'system' AND (m.content LIKE ",
+            );
+            sql.push_bind(text.messages.clone());
+            sql.push(" ESCAPE '\\' OR ");
+            match &text.tool_calls {
+                // Some providers write `/` as `\/`.
+                Some(pattern) => {
+                    sql.push("REPLACE(m.tool_calls, '\\\\/', '/') LIKE ");
+                    sql.push_bind(pattern.clone());
+                    sql.push(" ESCAPE '\\'");
+                }
+                None => {
+                    sql.push("m.tool_calls IS NOT NULL");
+                }
+            }
+            sql.push("))))");
+        }
+        let (before, order) = if query.ascending {
+            (">", "ASC")
+        } else {
+            ("<", "DESC")
+        };
+        if let Some((time, sequence)) = query.after {
+            sql.push(format!(" AND ({at}, s.rowid) {before} ("));
+            sql.push_bind(time);
+            sql.push(", ");
+            sql.push_bind(sequence);
+            sql.push(")");
+        }
+        sql.push(format!(" ORDER BY {at} {order}, s.rowid {order} LIMIT "));
+        sql.push_bind(query.limit);
+        let rows: Vec<SessionInfoRow> = sql.build_query_as().fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+}
+
+/// `term` as a `LIKE` pattern that finds it anywhere in a text, for
+/// `ESCAPE '\'`.
+fn like_contains(term: &str) -> String {
+    let mut pattern = String::with_capacity(term.len() + 2);
+    pattern.push('%');
+    for c in term.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push('%');
+    pattern
+}
+
+/// What [`SessionStore::search_candidates_page`] looks for, as `LIKE`
+/// patterns.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct StoredTextPatterns {
+    /// In an item's record, which is JSON that Koda wrote: the term as a
+    /// JSON string holds it, as Codex looks for the escaped term in a
+    /// rollout's lines.
+    records: String,
+    /// In a message's text, stored as it is.
+    messages: String,
+    /// In a message's tool calls; `None` when any session with a tool call
+    /// may hold the term.
+    tool_calls: Option<String>,
+}
+
+/// The patterns that find every stored text `term` occurs in, compared with
+/// [`search_fold`](crate::session_store::search_fold); `None` when `LIKE`
+/// can't promise that, and the caller is to read every session.
+///
+/// `LIKE` ignores case for ASCII letters only, so a letter outside ASCII
+/// that has another case rules it out. So does a control character: a line
+/// break or a tab may stand between two stored texts in what the caller
+/// reads, where no stored text has it.
+///
+/// A session from before turn records keeps its tool calls as the provider
+/// sent them, the arguments as the model's own JSON text, which may escape
+/// a character Koda wouldn't (`\u00e9`, Go's `\u003c`) or write a number
+/// another way (`1e3`). There the term is looked for only when no JSON
+/// writer escapes any of its characters (ASCII letters, digits, spaces and
+/// `-_.:/`, with `\/` read as `/`) and it isn't all digits and number
+/// signs.
+pub(super) fn stored_text_patterns(term: &str) -> Option<StoredTextPatterns> {
+    use crate::session_store::search_fold;
+    let like_agrees = |c: char| {
+        !c.is_control()
+            && (c.is_ascii() || !(c.is_lowercase() || c.is_uppercase() || search_fold(c) != c))
+    };
+    if !term.chars().all(like_agrees) {
+        return None;
+    }
+    let json = serde_json::to_string(term).ok()?;
+    let as_written =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | ':' | '/');
+    let in_a_number = |c: char| matches!(c, '0'..='9' | '.' | '-' | '+' | 'e' | 'E');
+    let plain = term.chars().all(as_written) && !term.chars().all(in_a_number);
+    Some(StoredTextPatterns {
+        records: like_contains(&json[1..json.len() - 1]),
+        messages: like_contains(term),
+        tool_calls: plain.then(|| like_contains(term)),
+    })
+}
+
+// ── SessionStore trait ──────────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl SessionStore for Database {
@@ -1102,64 +1278,16 @@ impl SessionStore for Database {
         &self,
         query: &crate::session_store::SessionListQuery,
     ) -> Result<Vec<SessionInfo>> {
-        // The sort time as whole seconds, with the order sessions were made
-        // in for those of one second: what a cursor names.
-        let at = if query.by_updated {
-            "CAST(strftime('%s', COALESCE(s.last_accessed_at, s.created_at)) AS INTEGER)"
-        } else {
-            "CAST(strftime('%s', s.created_at) AS INTEGER)"
-        };
-        let mut sql = sqlx::QueryBuilder::<sqlx::Sqlite>::new(session_info_select!());
-        sql.push(" WHERE s.ephemeral = 0");
-        sql.push(if query.archived {
-            " AND s.archived_at IS NOT NULL"
-        } else {
-            " AND s.archived_at IS NULL"
-        });
-        if let Some(roots) = &query.project_roots {
-            sql.push(" AND (s.project_root IS NULL OR s.project_root IN (");
-            let mut list = sql.separated(", ");
-            for root in roots {
-                list.push_bind(root.clone());
-            }
-            sql.push("))");
-        }
-        if let Some(sources) = &query.sources {
-            sql.push(" AND (");
-            if query.unknown_source {
-                sql.push("s.source IS NULL OR ");
-            }
-            sql.push("s.source IN (");
-            let mut list = sql.separated(", ");
-            for source in sources {
-                list.push_bind(source.clone());
-            }
-            sql.push("))");
-        }
-        if let Some(providers) = &query.providers {
-            sql.push(" AND s.provider IN (");
-            let mut list = sql.separated(", ");
-            for provider in providers {
-                list.push_bind(provider.clone());
-            }
-            sql.push(")");
-        }
-        let (before, order) = if query.ascending {
-            (">", "ASC")
-        } else {
-            ("<", "DESC")
-        };
-        if let Some((time, sequence)) = query.after {
-            sql.push(format!(" AND ({at}, s.rowid) {before} ("));
-            sql.push_bind(time);
-            sql.push(", ");
-            sql.push_bind(sequence);
-            sql.push(")");
-        }
-        sql.push(format!(" ORDER BY {at} {order}, s.rowid {order} LIMIT "));
-        sql.push_bind(query.limit);
-        let rows: Vec<SessionInfoRow> = sql.build_query_as().fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        self.sessions_page(query, None).await
+    }
+
+    async fn search_candidates_page(
+        &self,
+        query: &crate::session_store::SessionListQuery,
+        term: &str,
+    ) -> Result<Vec<SessionInfo>> {
+        self.sessions_page(query, stored_text_patterns(term).as_ref())
+            .await
     }
 
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>> {

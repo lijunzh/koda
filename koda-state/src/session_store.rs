@@ -195,6 +195,10 @@ pub struct SessionListQuery {
     /// Only archived sessions, not only the ones that aren't, as Codex's
     /// `thread/list` takes `archived`.
     pub archived: bool,
+    /// Only sessions whose title or preview contains this text, as Codex's
+    /// `thread/list` takes `searchTerm`. ASCII letters match in either
+    /// case; other letters only as written.
+    pub search_term: Option<String>,
     /// Order by when each was last written, not when it was created.
     pub by_updated: bool,
     /// Oldest first, not newest first.
@@ -208,6 +212,26 @@ pub struct SessionListQuery {
 
 /// How many characters of its first prompt a session keeps as its preview.
 pub const PREVIEW_CHARS: usize = 1000;
+
+/// How a search over sessions' text compares one character: by its lower
+/// case, so a term finds its text whichever case either is in.
+///
+/// One character always folds to one, and only an ASCII character folds to
+/// an ASCII one, so a place in the folded text is the same place in the
+/// text, and SQLite's `LIKE`, which ignores case for ASCII only, can stand
+/// in for it there ([`SessionStore::search_candidates_page`]). That leaves
+/// two characters as they are: U+0130 (İ), whose lower case is two
+/// characters, and U+212A (the Kelvin sign), whose lower case is `k`.
+pub fn search_fold(c: char) -> char {
+    if c.is_ascii() {
+        return c.to_ascii_lowercase();
+    }
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(one), None) if !one.is_ascii() => one,
+        _ => c,
+    }
+}
 
 /// Where a new session came from, recorded on its row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -238,6 +262,12 @@ pub struct TurnRecord {
     /// The JSON.
     pub payload: String,
 }
+
+/// The [`TurnRecord::kind`] of a turn as it started or ended.
+pub const TURN_KIND: &str = "turn";
+
+/// The [`TurnRecord::kind`] of a completed item.
+pub const ITEM_KIND: &str = "item";
 
 /// The [`TurnRecord::kind`] of a [`TurnContextItem`].
 pub const TURN_CONTEXT_KIND: &str = "context";
@@ -449,6 +479,23 @@ pub trait SessionStore: Send + Sync {
     /// The sessions `query` asks for: one page, in its order. A page ends
     /// at a session, not a count, so sessions made meanwhile don't shift it.
     async fn list_sessions_page(&self, query: &SessionListQuery) -> Result<Vec<SessionInfo>>;
+    /// [`Self::list_sessions_page`], narrowed to the sessions whose
+    /// conversation may contain `term`: the candidates of a search, as
+    /// Codex's finds the rollout files that mention a term before it reads
+    /// any. The caller reads each one and decides.
+    ///
+    /// A page never leaves out a session in which `term` occurs, compared
+    /// with [`search_fold`], inside one piece of text a turn keeps: a
+    /// message, a tool's name, an argument's name or value, or a tool's
+    /// output. It may hold sessions without it. Where the store can't tell
+    /// cheaply and for certain (a letter outside ASCII that has another
+    /// case, a line break or another control character), it narrows
+    /// nothing, and the page is `query`'s own.
+    async fn search_candidates_page(
+        &self,
+        query: &SessionListQuery,
+        term: &str,
+    ) -> Result<Vec<SessionInfo>>;
     /// One session by its full id, or `None` if there is none.
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
 

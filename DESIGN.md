@@ -319,7 +319,8 @@ the two can't disagree. `docs/src/protocol-schema.json` is generated from the
 types, and a test fails when it's stale.
 
 The protocol grows with the code that serves it. It has `initialize`,
-`state/read`, `session/start`, `session/list`, `session/delete`,
+`state/read`, `session/start`, `session/list`, `session/search`,
+`session/delete`,
 `session/archive`, `session/unarchive`,
 `session/name/set`, `session/fork`,
 `session/compact/start`, `session/settings/update`, `session/unsubscribe`,

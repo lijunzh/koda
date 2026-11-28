@@ -3842,6 +3842,13 @@
             "null"
           ]
         },
+        "searchTerm": {
+          "description": "Only sessions whose name or preview contains this text, as Codex's\n`thread/list` takes `searchTerm`. ASCII letters match in either\ncase, other letters only as written (Codex's match case exactly).\nSpaces around it are dropped; empty is as without one. What was\nsaid in a session is searched with `session/search`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sortDirection": {
           "anyOf": [
             {
@@ -4135,6 +4142,175 @@
     },
     "SessionRevertResponse": {
       "description": "The answer to `session/revert`.",
+      "type": "object"
+    },
+    "SessionSearchMatch": {
+      "description": "The text of an item that `session/search` matched.",
+      "oneOf": [
+        {
+          "const": "user",
+          "description": "What the user typed.",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "description": "What the model answered.",
+          "type": "string"
+        },
+        {
+          "const": "toolCall",
+          "description": "A tool call's name or arguments.",
+          "type": "string"
+        },
+        {
+          "const": "toolOutput",
+          "description": "A tool call's output.",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionSearchParams": {
+      "additionalProperties": false,
+      "description": "`session/search`: the stored sessions in which something was said, one\nresult per session, in `session/list`'s order. Codex's `thread/search`.\n\nA session matches when `searchTerm` occurs, letters in either case, in\none text of its conversation: what the user typed (not the files\nattached to it), what the model answered, or a tool call's name and\narguments; and a tool's output when `includeToolOutput` asks. The\nmodel's reasoning isn't searched. A session started with `ephemeral` is\nnever found, and an archived one only with `archived`. Every provider's\nsessions are searched.\n\nA session from before Koda stored turns (0.6.4 and earlier) is searched\nas `session/read` gives it: its user messages are the text the model\nread, attached files included.",
+      "properties": {
+        "archived": {
+          "description": "Optional archived filter; when set to true, only archived sessions\nare returned. If false or null, only non-archived sessions are\nreturned.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cursor": {
+          "description": "Where to go on from: an earlier answer's `nextCursor`, as on\n`session/list`; send the same term, filters and order with it.\nWithout one, the first page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionListCwd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only the sessions of this folder, or of these, as `session/list`\ntakes `cwd`; without one, every folder's. Koda's own: Codex's\n`thread/search` has no folder filter."
+        },
+        "includeToolOutput": {
+          "description": "Also search what tools returned: file contents, command output.\nOff without it, since a term found there is seldom what the session\nwas about. Koda's own.",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "How many sessions at most: 25 without one, at most 100.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "searchTerm": {
+          "description": "What to look for: one piece of text, taken as written (no\nwildcards, no words to combine). Spaces around it are dropped; it\ncan't be empty, or longer than 1000 characters.",
+          "type": "string"
+        },
+        "sortDirection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SortDirection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which way; without one, newest first."
+        },
+        "sortKey": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSortKey"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What to order by; without one, when each was created, as on\n`session/list`. Results aren't ranked."
+        },
+        "sourceKinds": {
+          "description": "Only sessions that came to be one of these ways. Without any, as on\n`session/list`, the ones a person started: `cli`, `appServer` and\n`unknown`.",
+          "items": {
+            "$ref": "#/$defs/SessionSourceKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "searchTerm"
+      ],
+      "type": "object"
+    },
+    "SessionSearchResponse": {
+      "description": "The answer to `session/search`. Codex's `ThreadSearchResponse`.",
+      "properties": {
+        "data": {
+          "description": "The sessions found, one entry each.",
+          "items": {
+            "$ref": "#/$defs/SessionSearchResult"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "description": "Opaque; pass it as `cursor` for the next page. Absent when there are\nno more, as Codex's `nextCursor`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "SessionSearchResult": {
+      "description": "A session `session/search` found, with the first place in it the term\noccurs. Codex's `ThreadSearchResult`, which has the thread and the\nsnippet; where the match is (`turnId`, `itemId`, `matched`) is Koda's\nown, so a client can open the session at it.",
+      "properties": {
+        "itemId": {
+          "description": "The item the match is in: the message, or the tool call.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matched": {
+          "$ref": "#/$defs/SessionSearchMatch",
+          "description": "Which of the item's texts matched."
+        },
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The session, as `session/list` gives it."
+        },
+        "snippet": {
+          "description": "The text around the match, as Codex cuts it: up to 48 characters\nbefore it and 96 after, runs of spaces and line breaks as one\nspace, with `...` at an end that was cut.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn the match is in, as `session/turns/list` names it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session",
+        "snippet",
+        "matched"
+      ],
       "type": "object"
     },
     "SessionSettings": {
@@ -6509,6 +6685,14 @@
       },
       "result": {
         "$ref": "#/$defs/SessionRevertResponse"
+      }
+    },
+    "session/search": {
+      "params": {
+        "$ref": "#/$defs/SessionSearchParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionSearchResponse"
       }
     },
     "session/settings/update": {

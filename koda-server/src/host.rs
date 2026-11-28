@@ -23,9 +23,11 @@ use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
 use koda_protocol::session::{
     SessionArchiveResponse, SessionArchivedNotification, SessionDeleteResponse,
-    SessionDeletedNotification, SessionListParams, SessionListResponse, SessionStartParams,
-    SessionStartResponse, SessionUnarchiveResponse, SessionUnarchivedNotification,
-    SessionUnsubscribeResponse, SessionUnsubscribeStatus, SortDirection,
+    SessionDeletedNotification, SessionListCwd, SessionListParams, SessionListResponse,
+    SessionSearchParams, SessionSearchResponse, SessionSearchResult, SessionSortKey,
+    SessionSourceKind, SessionStartParams, SessionStartResponse, SessionUnarchiveResponse,
+    SessionUnarchivedNotification, SessionUnsubscribeResponse, SessionUnsubscribeStatus,
+    SortDirection,
 };
 use koda_protocol::state::{SandboxState, StateReadResponse};
 use koda_state::db::Database;
@@ -84,13 +86,52 @@ impl OpenSession {
 /// How many sessions `session/list` gives without a limit.
 const DEFAULT_LIST_LIMIT: u32 = 50;
 
-/// Where a page of `session/list` ended: its last session's sort time, in
-/// Unix seconds, and its place in the order sessions were made. Opaque to
-/// clients.
+/// Where a page of `session/list` or `session/search` ended: its last
+/// session's sort time, in Unix seconds, and its place in the order
+/// sessions were made. Opaque to clients.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ListCursor {
     at: i64,
     seq: i64,
+}
+
+impl ListCursor {
+    /// The cursor that goes on after `session`.
+    fn after(session: &koda_state::session_store::SessionInfo, by_updated: bool) -> Self {
+        Self {
+            at: if by_updated {
+                session.updated_unix
+            } else {
+                session.created_unix
+            },
+            seq: session.sequence,
+        }
+    }
+}
+
+/// How many sessions `session/search` gives without a limit, and at most:
+/// Codex's `thread/search`'s.
+const DEFAULT_SEARCH_LIMIT: u32 = 25;
+const MAX_SEARCH_LIMIT: u32 = 100;
+
+/// How many candidates a search takes from the store at a time. Each page
+/// is a pass over the stored text, so they are large and few.
+const SEARCH_SCAN_PAGE: i64 = 256;
+
+/// The longest `searchTerm` `session/search` takes, in characters.
+const MAX_SEARCH_TERM: usize = 1000;
+
+/// Which sessions `session/list` and `session/search` cover, in what order
+/// and from where: the parameters they share.
+struct Listing<'a> {
+    /// The method, for what a refusal says.
+    method: &'static str,
+    cwd: Option<&'a SessionListCwd>,
+    source_kinds: Option<&'a [SessionSourceKind]>,
+    archived: Option<bool>,
+    sort_key: Option<SessionSortKey>,
+    sort_direction: Option<SortDirection>,
+    cursor: Option<&'a str>,
 }
 
 /// The longest name `session/name/set` takes, in characters.
@@ -639,6 +680,10 @@ impl Host {
                 let _ = reply.send(self.list_sessions(params).await.and_then(to_json));
                 return;
             }
+            ClientRequest::SessionSearch { params, .. } => {
+                let _ = reply.send(self.search_sessions(params).await.and_then(to_json));
+                return;
+            }
             // The shared server answers this itself; a host in the
             // client's process has no server to stop.
             ClientRequest::ServeStop { .. } => {
@@ -809,27 +854,25 @@ impl Host {
         })
     }
 
-    async fn list_sessions(
+    /// The store's query for `listing`, without a limit.
+    fn listing_query(
         &self,
-        params: SessionListParams,
-    ) -> Result<SessionListResponse, ErrorObject> {
-        use koda_protocol::session::{
-            SessionListCwd, SessionSortKey, SessionSourceKind, SortDirection,
-        };
-        use koda_state::session_store::{SessionListQuery, SessionStore, source};
+        listing: Listing<'_>,
+    ) -> Result<koda_state::session_store::SessionListQuery, ErrorObject> {
+        use koda_state::session_store::{SessionListQuery, source};
         let home = koda_config::runtime_env::get("HOME").map(PathBuf::from);
         let folder = |cwd: &str| {
             listed_folder(cwd, &self.context.project_root, home.as_deref())
                 .to_string_lossy()
                 .into_owned()
         };
-        let project_roots = params.cwd.as_ref().map(|cwd| match cwd {
+        let project_roots = listing.cwd.map(|cwd| match cwd {
             SessionListCwd::One(cwd) => vec![folder(cwd)],
             SessionListCwd::Many(cwds) => cwds.iter().map(|cwd| folder(cwd)).collect(),
         });
         // Without any, the sessions a person started, as Codex's
         // `thread/list` lists its interactive sources.
-        let kinds = match params.source_kinds.as_deref() {
+        let kinds = match listing.source_kinds {
             None | Some([]) => &[
                 SessionSourceKind::Cli,
                 SessionSourceKind::AppServer,
@@ -848,29 +891,57 @@ impl Host {
             })
             .map(str::to_string)
             .collect();
-        let by_updated = params.sort_key == Some(SessionSortKey::UpdatedAt);
-        let limit = i64::from(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
-        let after = match params.cursor.as_deref() {
+        let after = match listing.cursor {
             None => None,
             Some(cursor) => Some(
                 serde_json::from_str::<ListCursor>(cursor)
                     .map(|cursor| (cursor.at, cursor.seq))
-                    .map_err(|_| invalid(format!("not a cursor from session/list: {cursor}")))?,
+                    .map_err(|_| {
+                        invalid(format!("not a cursor from {}: {cursor}", listing.method))
+                    })?,
             ),
         };
-        let query = SessionListQuery {
+        Ok(SessionListQuery {
             project_roots,
             sources: Some(sources),
             unknown_source: kinds.contains(&SessionSourceKind::Unknown),
+            providers: None,
+            archived: listing.archived.unwrap_or(false),
+            search_term: None,
+            by_updated: listing.sort_key == Some(SessionSortKey::UpdatedAt),
+            ascending: listing.sort_direction == Some(SortDirection::Asc),
+            after,
+            limit: 0,
+        })
+    }
+
+    async fn list_sessions(
+        &self,
+        params: SessionListParams,
+    ) -> Result<SessionListResponse, ErrorObject> {
+        use koda_state::session_store::{SessionListQuery, SessionStore};
+        let limit = i64::from(params.limit.unwrap_or(DEFAULT_LIST_LIMIT));
+        let query = SessionListQuery {
             providers: params
                 .model_providers
                 .filter(|providers| !providers.is_empty()),
-            archived: params.archived.unwrap_or(false),
-            by_updated,
-            ascending: params.sort_direction == Some(SortDirection::Asc),
-            after,
+            search_term: params
+                .search_term
+                .as_deref()
+                .map(str::trim)
+                .filter(|term| !term.is_empty())
+                .map(str::to_string),
             // One more than asked says whether there is another page.
             limit: limit + 1,
+            ..self.listing_query(Listing {
+                method: "session/list",
+                cwd: params.cwd.as_ref(),
+                source_kinds: params.source_kinds.as_deref(),
+                archived: params.archived,
+                sort_key: params.sort_key,
+                sort_direction: params.sort_direction,
+                cursor: params.cursor.as_deref(),
+            })?
         };
         let mut stored = self
             .context
@@ -882,15 +953,7 @@ impl Host {
         stored.truncate(limit.max(0) as usize);
         // The next page goes on from this one's last session.
         let next_cursor = stored.last().filter(|_| more).and_then(|last| {
-            serde_json::to_string(&ListCursor {
-                at: if by_updated {
-                    last.updated_unix
-                } else {
-                    last.created_unix
-                },
-                seq: last.sequence,
-            })
-            .ok()
+            serde_json::to_string(&ListCursor::after(last, query.by_updated)).ok()
         });
         Ok(SessionListResponse {
             data: stored
@@ -899,6 +962,112 @@ impl Host {
                 .collect(),
             next_cursor,
         })
+    }
+
+    /// `session/search`: the sessions that say `searchTerm`, in
+    /// `session/list`'s order, each with its first match, as Codex's
+    /// `thread/search`. A scan, as Codex's is: the store gives the sessions
+    /// that may hold the term, in order, and each is read until the page is
+    /// full.
+    async fn search_sessions(
+        &self,
+        params: SessionSearchParams,
+    ) -> Result<SessionSearchResponse, ErrorObject> {
+        use koda_state::session_store::{SessionListQuery, SessionStore};
+        let term = params.search_term.trim();
+        if term.is_empty() {
+            return Err(invalid("session/search requires a non-empty searchTerm"));
+        }
+        if term.chars().count() > MAX_SEARCH_TERM {
+            return Err(invalid(format!(
+                "session/search takes a searchTerm of at most {MAX_SEARCH_TERM} characters"
+            )));
+        }
+        let limit = params
+            .limit
+            .unwrap_or(DEFAULT_SEARCH_LIMIT)
+            .clamp(1, MAX_SEARCH_LIMIT) as usize;
+        let mut query = SessionListQuery {
+            limit: SEARCH_SCAN_PAGE,
+            ..self.listing_query(Listing {
+                method: "session/search",
+                cwd: params.cwd.as_ref(),
+                source_kinds: params.source_kinds.as_deref(),
+                archived: params.archived,
+                sort_key: params.sort_key,
+                sort_direction: params.sort_direction,
+                cursor: params.cursor.as_deref(),
+            })?
+        };
+        // What open sessions have said so far is searched too.
+        self.store_open_sessions().await;
+
+        let db = &self.context.db;
+        let matcher = crate::session_search::Term::new(term);
+        let mut data: Vec<SessionSearchResult> = Vec::with_capacity(limit);
+        // Where the page's last session stands in the order, and whether
+        // another match follows it.
+        let mut last = None;
+        let mut more = false;
+        'scan: loop {
+            let candidates = db
+                .search_candidates_page(&query, term)
+                .await
+                .map_err(|e| internal(format!("couldn't search sessions: {e:#}")))?;
+            for stored in &candidates {
+                let turns = crate::history::turns(db, &stored.id, false)
+                    .await
+                    .map_err(history_error)?;
+                let rows = crate::session_text::rows(&turns);
+                let Some(found) =
+                    crate::session_search::first_match(&rows, &matcher, params.include_tool_output)
+                else {
+                    continue;
+                };
+                if data.len() == limit {
+                    more = true;
+                    break 'scan;
+                }
+                last = Some(ListCursor::after(stored, query.by_updated));
+                data.push(SessionSearchResult {
+                    session: self.with_status(session::describe(stored)),
+                    snippet: found.snippet,
+                    turn_id: Some(found.turn_id),
+                    item_id: Some(found.item_id),
+                    matched: found.matched,
+                });
+            }
+            // A short page was the store's last.
+            match candidates.last() {
+                Some(end) if candidates.len() as i64 >= query.limit => {
+                    let end = ListCursor::after(end, query.by_updated);
+                    query.after = Some((end.at, end.seq));
+                }
+                _ => break,
+            }
+        }
+        Ok(SessionSearchResponse {
+            data,
+            next_cursor: last
+                .filter(|_| more)
+                .and_then(|last| serde_json::to_string(&last).ok()),
+        })
+    }
+
+    /// Have every open session store the turns it has sent so far, so a
+    /// read of the store that follows sees them.
+    async fn store_open_sessions(&self) {
+        let open: Vec<OpenSession> = self.sessions.lock().await.values().cloned().collect();
+        let mut stored = Vec::new();
+        for session in open {
+            let (done, flushed) = oneshot::channel();
+            if session.send(SessionCommand::FlushHistory { done }).is_ok() {
+                stored.push(flushed);
+            }
+        }
+        for flushed in stored {
+            let _ = flushed.await;
+        }
     }
 
     /// Whether session `id` is open here, having stored what it has sent so
@@ -1812,6 +1981,72 @@ mod tests {
             .unwrap();
         assert_eq!(reopened["session"]["id"], failing.as_str());
         assert!(!host.is_finished());
+    }
+
+    /// The store gives a search its candidates a page at a time, and a
+    /// candidate only seems to match when the term is in text that isn't
+    /// searched. A search reads on through such pages to the sessions that
+    /// do match, and its cursor goes on from the last one it gave.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_search_reads_past_a_page_of_sessions_that_only_seemed_to_match() {
+        use koda_state::session_store::{ITEM_KIND, SessionStore, TurnRecord};
+        let (tx, _host, dir) = host().await;
+        ask(&tx, "initialize", initialize()).await.unwrap();
+        let db = Database::init(dir.path()).await.unwrap();
+        let session_with = |item: Value| {
+            let db = db.clone();
+            let root = dir.path().to_path_buf();
+            async move {
+                let session = db.create_session("default", &root).await.unwrap();
+                let record = TurnRecord {
+                    turn_id: "t1".into(),
+                    kind: ITEM_KIND.into(),
+                    payload: item.to_string(),
+                };
+                db.append_turn_records(&session, &[record]).await.unwrap();
+                session
+            }
+        };
+        let says = json!({"type": "agentMessage", "id": "m1", "text": "An okapi, at last."});
+        // The model's reasoning is stored and not searched.
+        let thinks = json!({"type": "reasoning", "id": "r1", "text": "Is it an okapi?"});
+        let oldest = session_with(says.clone()).await;
+        for _ in 0..SEARCH_SCAN_PAGE + 3 {
+            session_with(thinks.clone()).await;
+        }
+        let newest = session_with(says).await;
+
+        let ids = |found: &Value| -> Vec<String> {
+            found["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|result| result["session"]["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let all = ask(&tx, "session/search", json!({"searchTerm": "okapi"}))
+            .await
+            .unwrap();
+        assert_eq!(ids(&all), [newest.clone(), oldest.clone()], "{all}");
+        assert!(all["nextCursor"].is_null(), "{all}");
+
+        let first = ask(
+            &tx,
+            "session/search",
+            json!({"searchTerm": "okapi", "limit": 1}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&first), [newest], "{first}");
+        let second = ask(
+            &tx,
+            "session/search",
+            json!({"searchTerm": "okapi", "limit": 1, "cursor": first["nextCursor"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&second), [oldest], "{second}");
+        assert!(second["nextCursor"].is_null(), "{second}");
     }
 
     async fn ask(tx: &mpsc::Sender<HostCommand>, method: &str, params: Value) -> Answer {

@@ -164,6 +164,10 @@ text.
 - **`modelProviders`** keeps the sessions of those providers.
 - **`archived`**, when `true`, gives only archived sessions. Without it, or
   with `false`, only the ones that aren't, as Codex's `thread/list`.
+- **`searchTerm`** keeps the sessions whose `name` or `preview` contains the
+  text, as Codex's `thread/list` takes it. ASCII letters match in either
+  case, other letters only as written; Codex's match case exactly. What was
+  said in a session is searched with `session/search`, below.
 - **`sortKey`** is `created_at` (the default) or `updated_at`, and
   **`sortDirection`** `desc` (the default, newest first) or `asc`.
 - **`limit`** is 50 without one. Pass the answer's `nextCursor` as `cursor`,
@@ -188,6 +192,56 @@ sends them to every connection, so a list a client shows stays right when
 another client makes, renames, archives or deletes a session, and shows what
 each is doing. `koda exec --json` leaves `session/status/changed` out. A session's turns and requests go only to the clients that
 have it open.
+
+## Searching sessions
+
+`session/search` finds the stored sessions in which something was said, as
+Codex's `thread/search` does:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"session/search","params":{"searchTerm":"retry budget","cwd":"/Users/me/project"}}
+{"jsonrpc":"2.0","id":7,"result":{"data":[{"session":{"id":"<id>","name":"Fix the retries","status":{"type":"notLoaded"}},"snippet":"... so the retry budget is spent before the first ...","turnId":"<turn>","itemId":"<item>","matched":"assistant"}]}}
+```
+
+- **`searchTerm`** is required: one piece of text, taken as written, with
+  no wildcards and no words to combine. Letters match in either case.
+  Spaces around it are dropped; an empty one, or one over 1000 characters,
+  is refused with `-32600`.
+- **What is searched:** what the user typed, what the model answered, and
+  each tool call's name and arguments, so a command or a path is found.
+  The term has to occur inside one of those texts. The files, images and
+  skills sent with a prompt aren't searched, nor is the model's reasoning.
+- **`includeToolOutput`**, when `true`, also searches what tools returned
+  (file contents, command output). It is off without it: a term found only
+  there is seldom what the session was about.
+- **One result per session:** its first match, in the order things were
+  said. `snippet` is the text around it, as Codex cuts it: up to 48
+  characters before and 96 after, runs of spaces and line breaks as one
+  space, `...` at an end that was cut. `turnId` and `itemId` say where the
+  match is, as `session/turns/list` names them, and `matched` which of the
+  item's texts it is: `user`, `assistant`, `toolCall` or `toolOutput`.
+  `session` is the session as `session/list` gives it.
+- **Which sessions:** `cwd`, `sourceKinds` and `archived` filter as they do
+  on `session/list`, with the same defaults: every folder, the sessions a
+  person started, and not the archived ones. A session started with
+  `ephemeral` is never found. Every provider's sessions are searched.
+- **Order and pages:** `sortKey`, `sortDirection` and `cursor` work as on
+  `session/list`; results aren't ranked. `limit` is 25 without one, at most
+  100. Pass `nextCursor` as `cursor`, with the same term, filters and
+  order, for the next page.
+
+An open session is searched as far as it has got: the items that have
+completed. A session from before Koda stored turns (0.6.4 and earlier) is
+searched as `session/read` gives it, and there a user message is the text
+the model read, the files attached to it included.
+
+The request, `snippet`, the order and the paging follow Codex. Three things
+are Koda's own: `cwd`, which Codex's `thread/search` doesn't take;
+`includeToolOutput`; and where the match is (`turnId`, `itemId`, `matched`),
+since Codex returns the snippet alone. Codex's streamed variant
+(`thread/search/stream`) and its cancel request are left out. Nothing is
+indexed: the server looks through the stored sessions each time, as Codex
+looks through its rollout files.
 
 ## Archiving a session
 

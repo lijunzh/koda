@@ -34,9 +34,9 @@ fn checked<T, E: std::fmt::Display>(read: std::result::Result<T, E>) -> Result<T
 }
 
 /// A record of the turn itself, as it started or ended: a [`Turn`].
-const TURN: &str = "turn";
+const TURN: &str = koda_state::session_store::TURN_KIND;
 /// A record of a completed item: a [`TurnItem`].
-const ITEM: &str = "item";
+const ITEM: &str = koda_state::session_store::ITEM_KIND;
 
 // ── Writing ─────────────────────────────────────────────────────────────
 
