@@ -38,10 +38,16 @@ function RequestCard({ request, onAnswer }: { request: Pending; onAnswer(result:
     }
   })();
   return (
-    <div className="request-card">
-      {card}
-      {error && <p className="problem">{error}</p>}
-    </div>
+    <>
+      <div className="needs-input">
+        <span className="needs-dot" aria-hidden />
+        Needs your input
+      </div>
+      <div className="request-card">
+        {card}
+        {error && <p className="problem">{error}</p>}
+      </div>
+    </>
   );
 }
 
@@ -129,37 +135,67 @@ function Approval({ params, send }: { params: Extract<Pending, { method: 'item/t
   );
 }
 
+/** The model's question, as Claude Code's desktop app asks one: a choice per row, "Other" to type one, Skip and Submit. */
 function Question({ params, send }: { params: Extract<Pending, { method: 'item/tool/requestUserInput' }>['params']; send: Send }) {
-  const [answer, setAnswer] = useState('');
+  const options = params.options;
+  // The picked option's index; `options.length` is "Other".
+  const [picked, setPicked] = useState<number | null>(options.length ? null : 0);
+  const [other, setOther] = useState('');
+  const answer = picked === null ? '' : picked < options.length ? options[picked] : other.trim();
+  const submit = () => {
+    if (answer) void send({ answer });
+  };
   useEscape(() => void send({ answer: '' }));
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        submit();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
   return (
-    <>
-      <div className="request-head">❓ {params.question}</div>
-      {params.options.length > 0 && (
-        <div className="actions">
-          {params.options.map((option) => (
-            <button key={option} onClick={() => void send({ answer: option })}>
-              {option}
+    <div className="question">
+      <div className="request-head question-text">{params.question}</div>
+      <div role="radiogroup" aria-label={params.question}>
+        {options.map((option, i) => (
+          <button key={option} role="radio" aria-checked={picked === i} className="choice" onClick={() => setPicked(i)}>
+            <span className="radio" aria-hidden />
+            {option}
+          </button>
+        ))}
+        <div className={options.length ? 'choice other' : 'choice other only'}>
+          {options.length > 0 && (
+            <button role="radio" aria-checked={picked === options.length} aria-label="Other" className="radio-only" onClick={() => setPicked(options.length)}>
+              <span className="radio" aria-hidden />
             </button>
-          ))}
+          )}
+          <input
+            aria-label="Your answer"
+            placeholder={options.length ? 'Other' : 'Type your answer'}
+            value={other}
+            onFocus={() => setPicked(options.length)}
+            onChange={(e) => setOther(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && other.trim() && !e.nativeEvent.isComposing) {
+                void send({ answer: other.trim() });
+              }
+            }}
+          />
         </div>
-      )}
-      <div className="actions">
-        <input
-          aria-label="Your answer"
-          placeholder={params.options.length ? 'Or type an answer' : 'Type your answer'}
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && answer.trim() && !e.nativeEvent.isComposing) void send({ answer: answer.trim() });
-          }}
-        />
-        <button className="primary" disabled={!answer.trim()} onClick={() => void send({ answer: answer.trim() })}>
-          Answer
-        </button>
-        <span className="meta">esc to skip</span>
       </div>
-    </>
+      <div className="actions end">
+        <button onClick={() => void send({ answer: '' })} title="Esc">
+          Skip
+        </button>
+        <button className="primary" disabled={!answer} onClick={submit}>
+          Submit<span className="key-hint"> ⌘↵</span>
+        </button>
+      </div>
+    </div>
   );
 }
 

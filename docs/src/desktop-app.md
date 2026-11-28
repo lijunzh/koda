@@ -41,12 +41,13 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
   the box, pick the folder Koda works in (one you've used before, or
   **Open folder…**), the model and the mode. The session starts with your
   first prompt. A session always works in the folder it started in.
-- **The conversation** streams in as Koda works. Lookups (reads, searches,
-  listings) fold into one row such as "Read 3 files, searched 2 patterns";
-  click it to see each call and what it printed. Long output folds to its
-  first lines; click to see the rest.
-- **Views**: Normal, Thinking (the model's thoughts too) and Verbose (every
-  tool call on its own). Ctrl+O cycles them; they're also under
+- **The conversation** streams in as Koda works. What Koda does between two
+  messages (reads, searches, commands, edits) folds into one quiet line such
+  as "Read 3 files, ran 2 commands, edited 1 file"; click it to see each
+  call and what it printed. Long output folds to its first lines; click to
+  see the rest. A reply and each code block have a **Copy** button.
+- **Views**: Normal, Thinking (the model's thoughts too, under "Thought
+  process") and Verbose (every tool call on its own). Ctrl+O cycles them; they're also under
   **Transcript view** in the session's menu.
 - **The prompt box**: Enter sends, Shift+Enter adds a line. While a turn
   runs, Enter adds your message to it, and Stop (or Esc) ends it.
@@ -86,10 +87,12 @@ runs; Ctrl+T hides or shows it.
 ## Approvals and questions
 
 When Koda needs an approval, asks a question, reaches its step limit or an
-MCP server asks for something, a card appears above the prompt box. Answer
-it there, or in the TUI: whichever answers first wins, and the other
-withdraws its card. The app sends a system notification when its window
-isn't in front.
+MCP server asks for something, a card marked **Needs your input** appears
+above the prompt box. A question lists its choices one per row, with
+**Other** to type your own; pick one and press **Submit** (Cmd+Enter), or
+**Skip**. Answer it there, or in the TUI: whichever answers first wins, and
+the other withdraws its card. The app sends a system notification when its
+window isn't in front.
 
 ## Reviewing changes
 

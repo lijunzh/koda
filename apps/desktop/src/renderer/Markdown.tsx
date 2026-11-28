@@ -3,7 +3,7 @@
 // is split into chunks at block boundaries and finished chunks are kept, so
 // a streaming reply re-parses only its last chunk on each update (from the
 // Electron spike).
-import { memo, useRef } from 'react';
+import { memo, type ReactNode, useRef, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
@@ -11,7 +11,47 @@ import remarkGfm from 'remark-gfm';
 const remarkPlugins = [remarkGfm];
 const rehypePlugins = [[rehypeHighlight, { detect: false, plainText: ['diff'] }]] as never[];
 
+/** Copies `text`, and says so for a moment. */
+export function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="copy"
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        void navigator.clipboard.writeText(text).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          },
+          () => {},
+        );
+      }}
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+/** The text inside a rendered code block. */
+function textOf(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (node && typeof node === 'object' && 'props' in node) return textOf((node as { props: { children?: ReactNode } }).props.children);
+  return '';
+}
+
 const components: Components = {
+  // A code block, with a button that copies it.
+  pre({ children, node: _node, ...rest }) {
+    return (
+      <div className="code-block">
+        <CopyButton text={textOf(children).replace(/\n$/, '')} label="Copy code" />
+        <pre {...rest}>{children}</pre>
+      </div>
+    );
+  },
   code({ className, children, node: _node, ...rest }) {
     if (className?.includes('language-diff')) return <DiffText text={String(children)} />;
     return (

@@ -2,7 +2,7 @@
 // Code's desktop views. A click opens or closes a folded row: a row of
 // lookups, or a command's longer output.
 import { memo, useLayoutEffect, useRef, useState } from 'react';
-import { DiffText, Markdown } from './Markdown';
+import { CopyButton, DiffText, Markdown } from './Markdown';
 import { callTitle, type Row, shownOutput, type TranscriptState, turnRows, type View, workedFor } from './transcript';
 
 interface Props {
@@ -66,24 +66,39 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
       return (
         <div className={`row message${row.streaming ? ' streaming' : ''}`} data-testid="agent-message">
           <Markdown text={row.text} />
+          {!row.streaming && (
+            <div className="message-actions">
+              <CopyButton text={row.text} label="Copy message" />
+            </div>
+          )}
         </div>
       );
-    case 'thought':
+    case 'thought': {
       // Only the Thinking and Verbose views have these: the text is the point.
+      // Open unless folded, under Claude Code's heading for it.
+      const folded = open.has(`fold-${row.key}`);
       return (
         <div className="row thought" data-testid="thought">
-          <div className="meta">
-            ∴ {row.running ? 'Thinking…' : row.ms !== null ? `Thought for ${workedFor(row.ms)}` : 'Thought'}
-          </div>
-          <div className="thought-text">{row.text}</div>
+          <button className="fold work" aria-expanded={!folded} onClick={() => toggle(`fold-${row.key}`)}>
+            {row.running ? 'Thinking…' : 'Thought process'}
+            {row.ms !== null && !row.running ? <span> · {workedFor(row.ms)}</span> : null}
+            <span className="chevron" aria-hidden>
+              {folded ? ' ›' : ' ⌄'}
+            </span>
+          </button>
+          {!folded && <div className="thought-text">{row.text}</div>}
         </div>
       );
+    }
     case 'lookups':
       return (
         <div className="row lookups" data-testid="lookups">
-          <button className="fold" onClick={() => toggle(row.key)}>
-            <span className="dot read">●</span> <strong>{row.label}</strong>
+          <button className="fold work" aria-expanded={opened} onClick={() => toggle(row.key)}>
+            {row.label}
             {row.failed > 0 && <span className="failed"> · {row.failed} failed</span>}
+            <span className="chevron" aria-hidden>
+              {opened ? ' ⌄' : ' ›'}
+            </span>
           </button>
           {/* Opened, as in the TUI: each call, with its output folded as a row of its own. */}
           {opened && (
@@ -91,7 +106,7 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
               {row.calls.map((call) => (
                 <ToolRow
                   key={call.id}
-                  row={{ kind: 'tool', key: call.id, call, children: [] }}
+                  row={{ kind: 'tool', key: call.id, call, children: row.children[call.id] ?? [] }}
                   opened={full || open.has(call.id)}
                   toggle={toggle}
                   full={full}
