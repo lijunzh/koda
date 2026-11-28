@@ -50,6 +50,9 @@ describe.skipIf(!koda)('reviewing changes', () => {
     await expect.poll(async () => (await done.count()) + (await asked.count()), { timeout: 30_000 }).toBeGreaterThan(0);
     if (await asked.count()) await asked.getByRole('button', { name: 'Yes', exact: true }).click();
     await done.waitFor({ timeout: 30_000 });
+    // The turn has ended (Send is back in place of Stop): comments sent while it
+    // still ran would be added to it as it ends, and go nowhere.
+    await page.getByRole('button', { name: 'Send', exact: true }).waitFor({ timeout: 30_000 });
 
     // The side panel lists the panes that can be opened; Changes is one.
     await page.getByRole('button', { name: 'Side panel' }).click();

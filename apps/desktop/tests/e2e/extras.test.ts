@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { scratch } from '../helpers';
 import { koda, type OpenApp, openApp, shutDown } from './app';
-import { type Model, type Reply, scriptedModel, useModel } from './model';
+import { gate, type Model, type Reply, scriptedModel, useModel } from './model';
 
 let open: OpenApp | undefined;
 let model: Model | undefined;
@@ -51,7 +51,10 @@ describe.skipIf(!koda)('session extras', () => {
   });
 
   it('sets a goal, pauses and clears it', async () => {
-    const page = await session([]);
+    // The first turn Koda starts on the goal waits at its model call until the
+    // test is done clicking: no turn ends, and redraws the goal, meanwhile.
+    const goalTurn = gate();
+    const page = await session([{ text: 'All done.' }, { text: 'All done.', after: goalTurn }]);
     // What the app hears about the goal and the turns, and when the test
     // clicked, for the failure message: this test failed once on CI (#1859)
     // and in none of 115 runs after, so a recurrence has to say why itself.
@@ -77,26 +80,41 @@ describe.skipIf(!koda)('session extras', () => {
     await box.fill('Hello');
     await box.press('Enter');
     await page.getByTestId('agent-message').filter({ hasText: 'All done.' }).first().waitFor({ timeout: 30_000 });
+    // The first turn has ended (Send is back in place of Stop): the goal is set
+    // on an idle session, and no turn of the user's is counted toward it later.
+    const send = page.getByRole('button', { name: 'Send', exact: true });
+    await send.waitFor({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Set a goal' }).click();
     await page.getByRole('textbox', { name: 'Goal' }).fill('Keep the tests green');
     await page.getByRole('button', { name: 'Set goal' }).click();
     await mark('set clicked');
     const goal = page.getByTestId('goal');
-    await expect.poll(() => goal.textContent(), { timeout: 30_000 }).toContain('Keep the tests green');
+    // Pause is there once the server has set the goal and said so. The form the
+    // goal is typed in has the same test id and the same words, so its text
+    // says nothing about that.
     const pause = goal.getByRole('button', { name: 'Pause' });
-    if (await pause.count()) {
-      await pause.click();
-      await mark('pause clicked');
-      await expect.poll(() => goal.textContent(), { timeout: 30_000 }).toMatch(/paused|done|blocked/);
-    }
+    await pause.waitFor({ timeout: 30_000 });
+    expect(await goal.textContent()).toContain('Keep the tests green');
+    await pause.click();
+    await mark('pause clicked');
+    // Resume is there once the server has paused it: the line has been redrawn, and Clear is where it stays.
+    await goal.getByRole('button', { name: 'Resume' }).waitFor({ timeout: 30_000 });
+    expect(await goal.textContent()).toMatch(/paused/);
     await goal.getByRole('button', { name: 'Clear' }).click();
     await mark('clear clicked');
+    const setAGoal = page.getByRole('button', { name: 'Set a goal' });
     try {
-      await page.getByRole('button', { name: 'Set a goal' }).waitFor({ timeout: 30_000 });
-    } catch {
+      await setAGoal.waitFor({ timeout: 30_000 });
+      // The turn that waited ends now, with its goal gone: it doesn't bring the goal back.
+      goalTurn.open();
+      await send.waitFor({ timeout: 30_000 });
+      expect(await setAGoal.count()).toBe(1);
+    } catch (error) {
       const bar = await page.getByTestId('details').textContent();
       const log = await open!.app.evaluate(() => (globalThis as unknown as { goalLog: string[] }).goalLog.join('\n'));
-      throw new Error(`"Set a goal" didn't come back after Clear.\nThe details panel: ${bar}\nWhat the app heard:\n${log}`);
+      throw new Error(`"Set a goal" didn't come back after Clear, or didn't stay: ${(error as Error).message}\nThe details panel: ${bar}\nWhat the app heard:\n${log}`);
+    } finally {
+      goalTurn.open();
     }
   });
 
@@ -109,7 +127,10 @@ describe.skipIf(!koda)('session extras', () => {
     await page.getByRole('button', { name: 'Session menu' }).click();
     await page.getByRole('menuitem', { name: /Fork/ }).click();
     await page.getByRole('navigation').getByRole('button', { name: /Fork of/ }).waitFor({ timeout: 30_000 });
-    expect(await page.getByRole('heading', { level: 1 }).textContent()).toMatch(/Fork of/);
+    // The list hears of the fork in a broadcast; the pane opens it when the
+    // request is answered, and shows its conversation a moment after that.
+    await expect.poll(() => page.getByRole('heading', { level: 1 }).textContent(), { timeout: 30_000 }).toMatch(/Fork of/);
+    await page.getByTestId('agent-message').filter({ hasText: 'First answer.' }).waitFor({ timeout: 30_000 });
     expect(await page.getByTestId('agent-message').filter({ hasText: 'First answer.' }).count()).toBe(1);
   });
 });

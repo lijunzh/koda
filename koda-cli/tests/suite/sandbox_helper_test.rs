@@ -66,7 +66,13 @@ async fn an_installed_koda_keeps_a_command_off_the_host_s_loopback() {
         return;
     }
     // A host server Koda didn't start, answering 200 to anyone who reaches it.
-    let theirs = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    // Its port is below the ones the kernel hands out (32768 and up): the
+    // sandbox's own proxy listens on a port the kernel picks inside the
+    // command's namespace, and on the same number curl reaches that proxy,
+    // which answers 405 (CI, 2026-11-17).
+    let theirs = (20_000..30_000u16)
+        .find_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+        .expect("no free port for the host server");
     let their_port = theirs.local_addr().unwrap().port();
     std::thread::spawn(move || {
         use std::io::{Read, Write};

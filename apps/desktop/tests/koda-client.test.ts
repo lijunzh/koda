@@ -33,7 +33,8 @@ describe('KodaClient', () => {
   });
 
   it('passes on notifications and server requests in order, and only an open request may be answered', async () => {
-    let answered: RpcMessage | undefined;
+    let heard!: (answer: RpcMessage) => void;
+    const answered = new Promise<RpcMessage>((resolve) => (heard = resolve));
     const { socket } = await scripted((m, write) => {
       if (m.method === 'go') {
         // Two messages and a line that isn't JSON, in one write.
@@ -46,7 +47,7 @@ describe('KodaClient', () => {
         );
         write({ jsonrpc: '2.0', id: m.id, result: {} });
       } else if (m.id === 'r1' && m.method === undefined) {
-        answered = m;
+        heard(m);
       }
     });
     const client = new KodaClient();
@@ -59,8 +60,8 @@ describe('KodaClient', () => {
     expect(client.openServerRequests.has('r1')).toBe(true);
     client.respond('r1', { decision: { type: 'approve' } });
     expect(client.openServerRequests.has('r1')).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(answered?.result).toEqual({ decision: { type: 'approve' } });
+    // Until the server has read the answer, however long that takes.
+    expect((await answered).result).toEqual({ decision: { type: 'approve' } });
     client.close();
   });
 

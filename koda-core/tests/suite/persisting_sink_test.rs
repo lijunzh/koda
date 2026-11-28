@@ -80,19 +80,21 @@ async fn fresh_db() -> (tempfile::TempDir, Arc<dyn SessionStore>, String) {
     (tmp, Arc::new(db), session_id)
 }
 
-/// Wait up to ~2s for `load_session_events` to return at least
+/// Wait up to 20 s for `load_session_events` to return at least
 /// `expected` rows. Returns the rows once the count is reached, or
 /// panics with a diagnostic if the budget elapses.
 ///
 /// Polling cadence is 5ms — fast enough that a green test finishes
 /// in <50ms, slow enough to not burn the CPU during the ~zero waits
-/// we expect on a healthy machine.
+/// we expect on a healthy machine. The budget only bounds a hang: the
+/// rows are written by a background task, which a busy runner's disk can
+/// hold up for seconds.
 async fn wait_for_events(
     db: &Arc<dyn SessionStore>,
     session_id: &str,
     expected: usize,
 ) -> Vec<koda_state::session_store::SessionEvent> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let events = db.load_session_events(session_id).await.expect("load");
         if events.len() >= expected {

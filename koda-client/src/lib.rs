@@ -338,7 +338,8 @@ mod tests {
         let mut client = InProcessClient::start_with_config(args, config)
             .await
             .unwrap();
-        let event = tokio::time::timeout(Duration::from_secs(5), client.next_event())
+        // Long enough for a busy machine: the warning follows the answer.
+        let event = tokio::time::timeout(Duration::from_secs(30), client.next_event())
             .await
             .unwrap();
         let Some(Outgoing::Notification(ServerNotification::ConfigWarning(warning))) = event else {

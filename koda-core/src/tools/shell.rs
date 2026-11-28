@@ -1964,10 +1964,13 @@ mod tests {
     #[tokio::test]
     async fn the_timeout_holds_after_a_command_closes_its_output() {
         let tmp = tempfile::tempdir().unwrap();
-        let command = "exec > /dev/null 2>&1; sleep 30";
+        // 300 s against a 30 s bound: starting the sandboxed shell and the
+        // one-second timeout fit in it on a busy runner, and a call held by
+        // the command still doesn't.
+        let command = "exec > /dev/null 2>&1; sleep 300";
         let args = serde_json::json!({ "command": command, "timeout": 1 });
         let call = run_in(tmp.path(), &args);
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), call)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), call)
             .await
             .expect("the call outlived its timeout")
             .unwrap();
@@ -2068,15 +2071,18 @@ mod tests {
         use crate::tools::monitor::MonitorEnd;
         let tmp = tempfile::tempdir().unwrap();
         let registry = BgRegistry::new();
-        let deadline = std::time::Duration::from_secs(1);
+        // The deadline also bounds how long the sandboxed shell may take to
+        // start and write to stderr: 10 s, so a busy runner's shell has
+        // written before the monitor stops.
+        let deadline = std::time::Duration::from_secs(10);
         let pid = monitor_with(
             tmp.path(),
             &registry,
-            "echo cannot open log >&2; sleep 30",
+            "echo cannot open log >&2; sleep 300",
             deadline,
         )
         .await;
-        let notices = notices_until_end(&registry, std::time::Duration::from_secs(10)).await;
+        let notices = notices_until_end(&registry, std::time::Duration::from_secs(40)).await;
         let last = notices.last().expect("an end notice");
         assert_eq!(last.end, Some(MonitorEnd::Deadline(deadline)));
         assert!(last.stderr.is_some(), "silent, but it wrote to stderr");
@@ -2123,7 +2129,10 @@ mod tests {
     async fn a_finished_command_hands_its_background_jobs_to_koda() {
         let tmp = tempfile::tempdir().unwrap();
         let registry = BgRegistry::new();
-        let command = "(sleep 1; touch survived) > /dev/null 2>&1 &";
+        // The job waits for the file `go`, which the test creates once it
+        // has seen the job running: a job that slept a second could be gone
+        // before a busy runner got that far.
+        let command = "(while [ ! -e go ]; do sleep 0.05; done; touch survived) > /dev/null 2>&1 &";
         let result = run_with(
             tmp.path(),
             &registry,
@@ -2140,6 +2149,7 @@ mod tests {
         assert_eq!(snap.len(), 1, "{snap:?}");
         assert_eq!(snap[0].status, BgProcessStatus::Running);
 
+        std::fs::write(tmp.path().join("go"), "").unwrap();
         until("survived", || tmp.path().join("survived").exists()).await;
         // Once nothing in the group is left, the entry has exited.
         until("exited", || {
@@ -2156,14 +2166,23 @@ mod tests {
     async fn left_running_jobs_stop_when_the_session_ends() {
         let tmp = tempfile::tempdir().unwrap();
         let registry = BgRegistry::new();
-        let command = "(sleep 1; touch too_late) > /dev/null 2>&1 &";
+        // The job waits for the file `go`, which the test creates only once
+        // the session's end has stopped it: a job that slept a second could
+        // touch its file before a busy runner had ended the session.
+        let command = "(while [ ! -e go ]; do sleep 0.05; done; touch too_late) > /dev/null 2>&1 &";
         run_with(
             tmp.path(),
             &registry,
             serde_json::json!({ "command": command }),
         )
         .await;
+        let group = registry.snapshot().first().expect("the job is Koda's").pid;
         drop(registry);
+        until("stopped", || {
+            !koda_sandbox::process_group::group_alive(group)
+        })
+        .await;
+        std::fs::write(tmp.path().join("go"), "").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         assert!(!tmp.path().join("too_late").exists());
     }
@@ -2179,11 +2198,14 @@ mod tests {
         let result = run_with(
             tmp.path(),
             &registry,
-            serde_json::json!({ "command": "sleep 30 & echo $!", "timeout": 20 }),
+            serde_json::json!({ "command": "sleep 300 & echo $!", "timeout": 50 }),
         )
         .await;
+        // 25 s against the call's 50 s timeout: the call's graces after its
+        // shell exits and a busy runner fit in it, and a call the job held
+        // until the timeout still doesn't.
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
+            started.elapsed() < std::time::Duration::from_secs(25),
             "{:?}",
             started.elapsed()
         );
@@ -2476,8 +2498,10 @@ mod tests {
             .and_then(|rest| rest.trim().split(' ').next())
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| panic!("no log path in {}", result.summary));
+        // Both lines are in the log once the sandboxed shell has run, which
+        // a busy runner can take seconds to start: wait up to 30 s for them.
         let mut text = String::new();
-        for _ in 0..100 {
+        for _ in 0..600 {
             text = std::fs::read_to_string(&log).unwrap_or_default();
             if text.contains("to-stdout") && text.contains("to-stderr") {
                 break;

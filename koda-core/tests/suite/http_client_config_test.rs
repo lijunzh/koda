@@ -256,9 +256,11 @@ async fn read_timeout_aborts_silent_servers_quickly() {
     let _g = ENV_MUTEX.lock().await;
 
     let upstream = FakeLlmServer::spawn().await;
-    // Server takes 3s to start sending; client should give up at ~1s.
+    // Server takes 30s to start sending; client should give up at ~1s.
+    // 30 s, so that a busy runner's late timeout still comes long before
+    // the reply would.
     upstream
-        .mount_chat_delayed(std::time::Duration::from_secs(3), ok_chat_body())
+        .mount_chat_delayed(std::time::Duration::from_secs(30), ok_chat_body())
         .await;
 
     let mut env = EnvGuard::new();
@@ -274,11 +276,12 @@ async fn read_timeout_aborts_silent_servers_quickly() {
     let elapsed = started.elapsed();
 
     assert!(result.is_err(), "stalled server must produce an error");
-    // Generous bound: must abort well before the 3s server delay finishes.
-    // A passing test typically takes ~1.0–1.2s. >2s means the timeout
-    // didn't fire and reqwest waited for the full server delay.
+    // Generous bound: must abort well before the 30s server delay finishes.
+    // A passing test typically takes ~1.0–1.2s; a busy runner can add
+    // seconds. 15s or more means the timeout didn't fire and reqwest waited
+    // for the full server delay.
     assert!(
-        elapsed < std::time::Duration::from_millis(2500),
+        elapsed < std::time::Duration::from_secs(15),
         "should error in ~1s, took {elapsed:?} — read_timeout likely not applied"
     );
 

@@ -29,8 +29,10 @@ function connection(answers: Array<StartAnswer | (() => Promise<StartAnswer>)>, 
   return { conn, asked, statuses };
 }
 
+// Up to 25 seconds, under the test's own 30: a real socket closes and connects in between.
+// Counted in turns, not by the clock, which one test moves.
 const until = async (check: () => boolean) => {
-  for (let i = 0; i < 200 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 2500 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
   expect(check()).toBe(true);
 };
 

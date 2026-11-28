@@ -5,7 +5,6 @@
 //! summary and the log. No API key, no model.
 #![cfg(unix)]
 
-use koda_core::inference::CANCEL_GRACE;
 use koda_test_utils::log::read_log;
 use koda_test_utils::network::{FakeLlmServer, ResponseTemplate};
 use koda_test_utils::openai::sse;
@@ -13,6 +12,11 @@ use serde_json::{Value, json};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// How long a step Koda should take may take. CI's macOS runners have
+/// stalled every running test for 19 s and for 35 s (2026-11-18, 2026-11-26),
+/// which a 30 s wait didn't outlast; nextest stops a test at 60 s.
+const WAIT: Duration = Duration::from_secs(50);
 
 fn koda_bin() -> String {
     env!("CARGO_BIN_EXE_koda").to_string()
@@ -43,7 +47,7 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
 
     // Signal once the chat request is in flight. Earlier requests are startup
     // probes, sent before koda listens for SIGINT, so the signal would kill it.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + WAIT;
     while chat_requests(&server).await == 0 {
         assert!(tokio::time::Instant::now() < deadline, "no model call");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -55,7 +59,7 @@ async fn sigint_during_a_model_call_still_reports_the_turn() {
         .unwrap();
     assert!(sent.success());
 
-    let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+    let output = tokio::time::timeout(WAIT, child.wait_with_output())
         .await
         .expect("koda ignored SIGINT")
         .unwrap();
@@ -233,7 +237,7 @@ impl Project {
     }
 
     async fn wait_for(&self, name: &str) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + WAIT;
         while !self.holds(name) {
             assert!(tokio::time::Instant::now() < deadline, "no {name}");
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -241,10 +245,9 @@ impl Project {
     }
 }
 
-/// How a run ended after SIGINT, and how long it took to.
+/// How a run ended after SIGINT.
 struct Interrupted {
     output: std::process::Output,
-    took: Duration,
     stdout: String,
     events: Vec<Value>,
 }
@@ -269,18 +272,16 @@ impl Interrupted {
 
 async fn interrupt(child: tokio::process::Child) -> Interrupted {
     let pid = child.id().unwrap().to_string();
-    let signalled = Instant::now();
     let sent = std::process::Command::new("kill")
         .args(["-s", "INT", &pid])
         .status()
         .unwrap();
     assert!(sent.success());
 
-    let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+    let output = tokio::time::timeout(WAIT, child.wait_with_output())
         .await
         .expect("koda ignored SIGINT")
         .unwrap();
-    let took = signalled.elapsed();
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let events = stdout
         .lines()
@@ -288,15 +289,19 @@ async fn interrupt(child: tokio::process::Child) -> Interrupted {
         .collect();
     Interrupted {
         output,
-        took,
         stdout,
         events,
     }
 }
 
-/// The turn stopped on its own, in time, as a clean cancel.
-fn assert_clean_cancel(run: &Interrupted) {
-    assert!(run.took < CANCEL_GRACE, "took {:?}", run.took);
+/// The turn stopped on its own, as a clean cancel: the log says it was
+/// cancelled, not dropped once the grace after a cancel ran out. How long
+/// the run took isn't the evidence: on a busy machine a clean cancel, with
+/// the worktree's commit and the exit, can take longer than the grace.
+fn assert_clean_cancel(run: &Interrupted, project: &Project) {
+    let log = read_log(&project.home());
+    assert!(log.contains(r#"outcome="cancelled""#), "{log}");
+    assert!(!log.contains(r#"outcome="abandoned""#), "{log}");
     assert_eq!(run.one("turn/completed")["turn"]["status"], "interrupted");
     assert_eq!(run.summary()["success"], true, "{}", run.stdout);
     assert_eq!(run.output.status.code(), Some(0), "{}", run.stdout);
@@ -322,7 +327,7 @@ async fn a_sub_agent_waiting_on_its_model_releases_its_workspace() {
 
     // Parent, the child's Write, then the child call that hangs.
     project.wait_for("work.txt").await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + WAIT;
     while chat_requests(&server).await < 3 {
         assert!(tokio::time::Instant::now() < deadline, "child never hung");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -331,7 +336,7 @@ async fn a_sub_agent_waiting_on_its_model_releases_its_workspace() {
     let run = interrupt(child).await;
     assert!(!project.holds("work.txt"), "the workspace is still there");
     assert_work_is_on_a_branch(&project, "work.txt");
-    assert_clean_cancel(&run);
+    assert_clean_cancel(&run, &project);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -345,7 +350,7 @@ async fn a_sub_agent_running_a_command_releases_its_workspace() {
     let run = interrupt(child).await;
     assert!(!project.holds("work.txt"), "the workspace is still there");
     assert_work_is_on_a_branch(&project, "work.txt");
-    assert_clean_cancel(&run);
+    assert_clean_cancel(&run, &project);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -387,25 +392,32 @@ async fn sigint_stops_a_running_command_at_once() {
     project.wait_for("started").await;
 
     let run = interrupt(child).await;
-    assert_clean_cancel(&run);
+    assert_clean_cancel(&run, &project);
 
     // What finished before the signal still counts.
     let usage = &run.one("turn/completed")["turn"]["usage"];
     assert_eq!(usage["modelCalls"], 1, "{usage}");
     assert_eq!(usage["inputTokens"], 100, "{usage}");
 
-    // The command died with the call; it didn't run on unwatched.
-    let left = std::process::Command::new("pgrep")
-        .args(["-f", "sleep 67"])
-        .output()
-        .unwrap();
-    assert!(
-        left.stdout.is_empty(),
-        "still running: {}",
-        String::from_utf8_lossy(&left.stdout)
-    );
-    let log = read_log(&project.home());
-    assert!(!log.contains(r#"outcome="abandoned""#), "{log}");
+    // The command died with the call; it didn't run on unwatched. A killed
+    // process is gone once it next runs, which a busy machine delays: wait
+    // for it instead of looking once.
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let left = std::process::Command::new("pgrep")
+            .args(["-f", "sleep 67"])
+            .output()
+            .unwrap();
+        if left.stdout.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "still running: {}",
+            String::from_utf8_lossy(&left.stdout)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 async fn chat_requests(server: &FakeLlmServer) -> usize {

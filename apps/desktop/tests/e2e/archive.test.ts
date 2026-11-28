@@ -55,7 +55,8 @@ describe.skipIf(!koda)('archive', () => {
     await row.hover();
     await row.getByRole('button', { name: 'Session actions' }).click();
     await page.getByRole('menuitem', { name: 'Archive' }).click();
-    await expect.poll(() => sessions.getByRole('button', { name: /Alpha question/ }).count()).toBe(0);
+    // Gone once the server has archived it and said so: a request and a broadcast away.
+    await expect.poll(() => sessions.getByRole('button', { name: /Alpha question/ }).count(), { timeout: 30_000 }).toBe(0);
     expect(await sessions.getByRole('button', { name: /Beta question/ }).count()).toBe(1);
     await reply('Second answer.').waitFor();
 
@@ -72,7 +73,11 @@ describe.skipIf(!koda)('archive', () => {
     await bar.getByRole('button', { name: 'Unarchive' }).click();
     const box = page.getByRole('textbox', { name: 'Prompt' });
     await box.waitFor({ timeout: 30_000 });
-    await expect.poll(() => archivedList.getByRole('button', { name: /Alpha question/ }).count()).toBe(0);
+    // The prompt box is there before the server has opened the session, and Enter
+    // does nothing until it has: the conversation shows once it is open.
+    await reply('First answer.').waitFor({ timeout: 30_000 });
+    // The Archived list is asked for again after the server says it was unarchived.
+    await expect.poll(() => archivedList.getByRole('button', { name: /Alpha question/ }).count(), { timeout: 30_000 }).toBe(0);
     await list.getByRole('button', { name: 'Archived', exact: true }).click();
     await sessions.getByRole('button', { name: /Alpha question/ }).waitFor();
     await box.fill('Alpha again');

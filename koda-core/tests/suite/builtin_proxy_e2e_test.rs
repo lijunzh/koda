@@ -216,9 +216,10 @@ async fn dropping_session_releases_proxy_port() {
     };
 
     // Give the runtime a tick to actually run the abort + close the listener.
-    // Polling rather than fixed-sleep keeps this fast and non-flaky.
+    // Polling rather than fixed-sleep keeps this fast and non-flaky: up to
+    // 10 s, which only bounds a listener that never closes.
     let mut bound = None;
-    for _ in 0..50 {
+    for _ in 0..500 {
         match std::net::TcpListener::bind(("127.0.0.1", port)) {
             Ok(l) => {
                 bound = Some(l);
@@ -495,10 +496,14 @@ async fn a_later_command_reaches_only_koda_s_own_background_server() {
             .unwrap()
             .port()
     };
-    let port = free_port();
     // A host server Koda didn't start, answering 200 to anyone who reaches it.
     let theirs = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let their_port = theirs.local_addr().unwrap().port();
+    // Koda's server's port is picked while theirs is bound, so the two
+    // differ. Picked and let go first, the kernel could hand the same port
+    // to theirs: the last check then reached Koda's own server on "their"
+    // port and got 200 (CI, 2026-11-15).
+    let port = free_port();
     std::thread::spawn(move || {
         use std::io::{Read, Write};
         for mut conn in theirs.incoming().flatten() {

@@ -93,17 +93,26 @@ describe.skipIf(!koda)('the session list', () => {
     await expect.poll(() => page.getByTestId('session-folder').textContent()).toBe(beta);
     const answer = async (response: number) =>
       app.evaluate(({ dialog }, r) => {
-        dialog.showMessageBox = (async () => ({ response: r, checkboxChecked: false })) as typeof dialog.showMessageBox;
+        const g = globalThis as { deleteDialogs?: number };
+        dialog.showMessageBox = (async () => {
+          g.deleteDialogs = (g.deleteDialogs ?? 0) + 1;
+          return { response: r, checkboxChecked: false };
+        }) as typeof dialog.showMessageBox;
       }, response);
+    const asked = () => app.evaluate(() => (globalThis as { deleteDialogs?: number }).deleteDialogs ?? 0);
     await answer(1);
     await page.getByRole('button', { name: 'Session menu' }).click();
     await page.getByRole('menuitem', { name: 'Delete' }).click();
+    // The dialog has been shown and answered "Cancel": only then does the wait
+    // below say anything, and only then may the next answer replace this one.
+    await expect.poll(asked, { timeout: 30_000 }).toBe(1);
     await new Promise((r) => setTimeout(r, 500));
     expect(await page.getByRole('button', { name: /Beta work/ }).count()).toBe(1);
     await answer(0);
     await page.getByRole('button', { name: 'Session menu' }).click();
     await page.getByRole('menuitem', { name: 'Delete' }).click();
-    await expect.poll(() => page.getByRole('button', { name: /Beta work/ }).count()).toBe(0);
+    // Gone once the server has deleted it and said so: two requests, the dialog and a broadcast away.
+    await expect.poll(() => page.getByRole('button', { name: /Beta work/ }).count(), { timeout: 30_000 }).toBe(0);
     // The pane it was in goes back to a new session.
     await page.getByTestId('new-session').waitFor();
     const list = await client.request<{ data: Array<{ id: string }> }>('session/list', {});

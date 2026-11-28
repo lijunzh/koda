@@ -213,7 +213,15 @@ mod tests {
             kill_group(child.id());
             child.wait().unwrap();
         }
-        let left = sleeps_left();
+        // A killed `sleep` is gone once the kernel has got to it, which a
+        // busy runner can take a moment over: wait up to 10 s for the last
+        // of them. One still there then was left behind.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut left = sleeps_left();
+        while !left.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            left = sleeps_left();
+        }
         for pid in &left {
             let _ = std::process::Command::new("kill")
                 .args(["-9", pid])

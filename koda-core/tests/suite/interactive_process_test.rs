@@ -15,9 +15,40 @@ fn pid_of(start: &str) -> u64 {
         .unwrap_or_else(|| panic!("no PID in {start}"))
 }
 
+/// What `pid` has printed since `start`, its start's result, once that
+/// includes `text`. The start waits a second for the first output, which a
+/// busy runner's sandboxed shell can miss: an empty `WriteStdin` then reads
+/// on, as the model would, for up to 30 s. The start's `Command:` line is
+/// left out: it repeats the command, which has the text it prints in it.
+async fn shown_with(
+    registry: &koda_core::tools::ToolRegistry,
+    start: &str,
+    pid: u64,
+    text: &str,
+) -> String {
+    let mut shown = start
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("Command:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !shown.contains(text) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never printed {text:?}: {shown}"
+        );
+        let more = registry
+            .execute("WriteStdin", &json!({"pid": pid}).to_string(), None, None)
+            .await;
+        shown.push_str(&more.output);
+    }
+    shown
+}
+
 /// A prompt that waits for a typed answer, the case the background start
 /// with closed stdin couldn't handle: it sees a terminal, shows its prompt
-/// in the start's result, and answers what is typed.
+/// in the start's result (or in the next read, when the shell took more
+/// than the start's second), and answers what is typed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_prompt_is_answered_by_typing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -34,9 +65,11 @@ async fn a_prompt_is_answered_by_typing() {
         )
         .await;
     assert!(start.success, "{}", start.output);
-    assert!(start.output.contains("Proceed? [y/N]"), "{}", start.output);
     assert!(start.output.contains("[still running]"), "{}", start.output);
     let pid = pid_of(&start.output);
+    // The prompt is on screen before the answer is typed.
+    let shown = shown_with(&registry, &start.output, pid, "Proceed? [y/N]").await;
+    assert!(shown.contains("Proceed? [y/N]"), "{shown}");
 
     let reply = registry
         .execute(
@@ -84,12 +117,14 @@ async fn ctrl_c_stops_the_command() {
             None,
         )
         .await;
-    assert!(start.output.contains("READY"), "{}", start.output);
+    let pid = pid_of(&start.output);
+    // The command is running before Ctrl+C is typed.
+    let shown = shown_with(&registry, &start.output, pid, "READY").await;
+    assert!(shown.contains("READY"), "{shown}");
     let reply = registry
         .execute(
             "WriteStdin",
-            &json!({"pid": pid_of(&start.output), "chars": "\u{3}", "yield_time_ms": 10_000})
-                .to_string(),
+            &json!({"pid": pid, "chars": "\u{3}", "yield_time_ms": 10_000}).to_string(),
             None,
             None,
         )
@@ -172,13 +207,16 @@ async fn the_sandbox_opens_the_command_s_own_terminal() {
             None,
         )
         .await;
-    assert!(start.output.contains("24 80"), "{}", start.output);
-    assert!(start.output.contains("secret? "), "{}", start.output);
+    let pid = pid_of(&start.output);
+    // The prompt, which comes after `stty size`, is on screen before the
+    // answer is typed.
+    let shown = shown_with(&registry, &start.output, pid, "secret? ").await;
+    assert!(shown.contains("24 80"), "{shown}");
+    assert!(shown.contains("secret? "), "{shown}");
     let reply = registry
         .execute(
             "WriteStdin",
-            &json!({"pid": pid_of(&start.output), "chars": "s3\n", "yield_time_ms": 10_000})
-                .to_string(),
+            &json!({"pid": pid, "chars": "s3\n", "yield_time_ms": 10_000}).to_string(),
             None,
             None,
         )
