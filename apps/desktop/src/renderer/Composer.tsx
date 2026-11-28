@@ -107,7 +107,8 @@ export function Composer({ sessionId, running, turns, ready, failed, waiting, fo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, ready, failed]);
 
-  // Shown above the box until the model takes them, as the TUI lists what is queued.
+  // Shown above the box until the model takes them, as Codex's TUI previews
+  // pending steers above its composer (`pending_input_preview.rs`).
   const waitingSteers = running ? steers.filter((steer) => steer.turnId === running.id) : [];
 
   return (
