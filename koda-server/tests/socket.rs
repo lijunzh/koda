@@ -1378,10 +1378,8 @@ async fn serve_stop_stops_the_server_unless_asked_only_when_idle() {
         "a session with a client is in use: {busy}"
     );
     // Its client gone, the session stays open but idle: stored, so losing
-    // nothing. Another client still counts. It has asked something and been
-    // answered, so the server counts it before the session's client goes.
+    // nothing. Another client still counts, from its `initialize` answer.
     let mut third = Client::ready(&koda).await;
-    third.request("state/read", json!({})).await.unwrap();
     drop(other);
     // Asked only if idle, the server says no and changes nothing, so asking
     // again is a wait: here until it has seen the session's client leave.
@@ -1991,6 +1989,123 @@ async fn archiving_stops_a_running_turn_and_withdraws_its_request() {
     koda.stop().await;
 }
 
+/// An MCP server with one tool, `wait`, whose calls it never answers,
+/// written to `dir`: its script's path. A turn that calls it doesn't stop
+/// when told to, as the engine lets a call that isn't a command or a read
+/// finish.
+fn stuck_tool_server(dir: &std::path::Path) -> String {
+    let script = r#"while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"stuck","version":"0.1.0"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"wait","description":"Wait","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+    let path = dir.join("mcp-stuck.sh");
+    std::fs::write(&path, script).unwrap();
+    path.display().to_string()
+}
+
+/// A session closed with `method` while its turn is in a call that won't
+/// stop: its client hears the turn end, interrupted, before it hears the
+/// session is no longer open, and before `notice`. Koda waits four seconds
+/// for the turn, then says its end for it and stops its task, as Codex
+/// aborts a task that outlives its grace and still sends `TurnAborted`.
+/// Before, the session was said to be closed first, with its turn still
+/// in progress, and the turn's end came a second later.
+async fn closing_a_session_ends_a_turn_that_wont_stop(
+    method: &str,
+    notice: &str,
+) -> (Server, Client, String, tempfile::TempDir) {
+    let server = model(vec![tool_call("c1", "stuck__wait", json!({}))]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let script = stuck_tool_server(dir.path());
+    let file = dir.path().join("config").join("config.toml");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        format!("[mcp_servers.stuck]\ncommand = \"sh\"\nargs = [{script:?}]\n"),
+    )
+    .unwrap();
+    let koda = Server::start_in(dir.path(), config(&server), Duration::from_secs(60)).await;
+    let mut owner = Client::ready(&koda).await;
+    let mut other = Client::ready(&koda).await;
+    let session = owner.start_session().await;
+    owner
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": [{"type": "text", "text": "wait"}]}),
+        )
+        .await
+        .unwrap();
+    // The call is out, and its server never answers it.
+    owner
+        .until(|l| l["method"] == "item/started" && l["params"]["item"]["id"] == "c1")
+        .await;
+
+    other
+        .request(method, json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let heard = owner.until_method(notice).await;
+    let at = |what: &dyn Fn(&Value) -> bool| heard.iter().position(what);
+    let ended_at = at(&|l| l["method"] == "turn/completed")
+        .unwrap_or_else(|| panic!("no turn/completed before {notice}: {heard:?}"));
+    let closed_at = at(&|l| {
+        l["method"] == "session/status/changed" && l["params"]["status"]["type"] == "notLoaded"
+    })
+    .unwrap_or_else(|| panic!("never said to be closed: {heard:?}"));
+    assert!(
+        ended_at < closed_at,
+        "closed with its turn still running: {heard:?}"
+    );
+    let ended = &heard[ended_at];
+    assert_eq!(ended["params"]["turn"]["status"], "interrupted", "{ended}");
+    assert!(
+        ended["params"]["turn"]["error"]["message"]
+            .as_str()
+            .is_some_and(|why| why.contains("did not stop")),
+        "{ended}"
+    );
+    // The call's item is closed with the turn.
+    assert!(
+        heard
+            .iter()
+            .any(|l| l["method"] == "item/completed" && l["params"]["item"]["id"] == "c1"),
+        "{heard:?}"
+    );
+    (koda, other, session, dir)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_ends_a_turn_that_wont_stop_before_it_says_archived() {
+    let (koda, mut other, session, _dir) =
+        closing_a_session_ends_a_turn_that_wont_stop("session/archive", "session/archived").await;
+    // Stored as it was said.
+    let read = other
+        .request(
+            "session/read",
+            json!({"sessionId": session, "includeTurns": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read["session"]["turns"][0]["status"], "interrupted",
+        "{read}"
+    );
+    koda.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_ends_a_turn_that_wont_stop_before_it_says_deleted() {
+    let (koda, _other, _session, _dir) =
+        closing_a_session_ends_a_turn_that_wont_stop("session/delete", "session/deleted").await;
+    koda.stop().await;
+}
+
 /// `session/list` covers every folder unless told one, leaves out what a
 /// person didn't start unless asked, and pages from the last session.
 #[tokio::test(flavor = "multi_thread")]
@@ -2172,17 +2287,15 @@ async fn a_message_over_the_limit_ends_its_connection() {
     let server = model(vec![]).await;
     let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut big = Client::ready(&koda).await;
-    // One byte over the limit and no more: the server stops reading at that
-    // byte, so nothing is left unread when it closes. With more, the rest
-    // had to be written within the second the server reads on for, or (on
-    // Linux) the close reset the connection.
+    // A megabyte past the limit: the server reads the rest and drops it
+    // until this client closes, so the error is followed by the end and not
+    // (on Linux) by a reset.
     let chunk = vec![b'a'; 1 << 20];
-    for _ in 0..64 {
+    for _ in 0..65 {
         if big.input.write_all(&chunk).await.is_err() {
             break;
         }
     }
-    let _ = big.input.write_all(b"a").await;
     let refused = big.read().await.expect("an error before the end");
     assert_eq!(refused["error"]["code"], -32600, "{refused}");
     assert!(

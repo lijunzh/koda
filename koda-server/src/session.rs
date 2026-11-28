@@ -478,6 +478,10 @@ pub(crate) async fn open(
             last_diff: None,
             turn_running: false,
             status: koda_protocol::session::SessionStatus::Idle,
+            cut: false,
+            going_on: false,
+            used_before: None,
+            used: None,
         }),
     });
     // Sub-agents ask the client through the sink too.
@@ -1408,194 +1412,230 @@ impl SessionTask {
         } = self;
         // For `session/name/set` during the turn, which holds the session.
         let (db, session_id) = (session.db.clone(), session.id.clone());
-        let result = {
-            // The turn's error, if it returned one, as text.
-            let mut turn: std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
-            > = match work {
-                Work::Prompt(_) | Work::Goal | Work::Wake => {
-                    let images = match work {
-                        Work::Prompt(images) => images,
-                        _ => None,
-                    };
-                    let run = session.run_turn_as(
-                        turn_id.clone(),
-                        config,
-                        images,
-                        sink.as_ref(),
-                        engine_rx,
-                        Some(cancel.clone()),
-                    );
-                    Box::pin(async move { run.await.map_err(|e| format!("{e:#}")) })
-                }
-                Work::Compact => {
-                    let run = session.compact_as(
-                        turn_id.clone(),
-                        config,
-                        sink.as_ref(),
-                        Some(cancel.clone()),
-                    );
-                    Box::pin(async move { run.await.map_err(|e| format!("{e:#}")) })
+        let mut work = Some(work);
+        let result = loop {
+            let result = {
+                // The turn's error, if it returned one, as text.
+                let mut turn: std::pin::Pin<
+                    Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>,
+                > = match work.take() {
+                    Some(Work::Compact) => {
+                        let run = session.compact_as(
+                            turn_id.clone(),
+                            config,
+                            sink.as_ref(),
+                            Some(cancel.clone()),
+                        );
+                        Box::pin(async move { run.await.map_err(|e| format!("{e:#}")) })
+                    }
+                    // A prompt's turn, the goal's, one for background exits, or
+                    // (the second time round) this turn going on with steering
+                    // text that came as it ended.
+                    started => {
+                        let images = match started {
+                            Some(Work::Prompt(images)) => images,
+                            _ => None,
+                        };
+                        let run = session.run_turn_as(
+                            turn_id.clone(),
+                            config,
+                            images,
+                            sink.as_ref(),
+                            engine_rx,
+                            Some(cancel.clone()),
+                        );
+                        Box::pin(async move { run.await.map_err(|e| format!("{e:#}")) })
+                    }
+                };
+                loop {
+                    tokio::select! {
+                                        result = &mut turn => break result,
+                                        command = commands.recv(), if keep_running => match command {
+                                            Some(SessionCommand::StartTurn { reply, .. }) => {
+                                                let _ = reply.send(Err(invalid("a turn is already running")));
+                                            }
+                                            Some(SessionCommand::Interrupt { params, reply }) => {
+                                                if params.turn_id == turn_id {
+                                                    cancel.cancel();
+                                                    interrupts.push(reply);
+                                                } else {
+                                                    let _ = reply.send(Err(invalid(format!(
+                                                        "expected active turn id {} but found {turn_id}",
+                                                        params.turn_id
+                                                    ))));
+                                                }
+                                            }
+                                            Some(SessionCommand::Steer { params, reply }) => {
+                                                if !steerable {
+                                                    let _ = reply.send(Err(invalid("cannot steer a compact turn")));
+                                                    continue;
+                                                }
+                                                if params.expected_turn_id != turn_id {
+                                                    let _ = reply.send(Err(invalid(format!(
+                                                        "expected active turn id {} but found {turn_id}",
+                                                        params.expected_turn_id
+                                                    ))));
+                                                    continue;
+                                                }
+                                                // Steering reaches the model as text.
+                                                if params
+                                                    .input
+                                                    .iter()
+                                                    .any(|part| !matches!(part, UserInput::Text { .. }))
+                                                {
+                                                    let _ = reply.send(Err(ErrorObject::new(
+                                                        codes::INVALID_PARAMS,
+                                                        "turn/steer takes text parts only; send images, mentions \
+                                                         and skills with turn/start",
+                                                    )));
+                                                    continue;
+                                                }
+                                                let text = koda_protocol::turn::text_of(&params.input);
+                                                // `try_send`: the turn isn't polled while this arm
+                                                // runs, so waiting for room could wait forever.
+                                                let queued = engine_tx.try_send(EngineCommand::QueueNext { text });
+                                                if queued.is_ok() {
+                                                    sink.queue_steer(params.client_user_message_id);
+                                                }
+                                                let _ = reply.send(match queued {
+                                                    Ok(()) => to_json(TurnSteerResponse {
+                                                        turn_id: turn_id.clone(),
+                                                    }),
+                                                    Err(_) => Err(internal("the turn's input is full; try again")),
+                                                });
+                                            }
+                                            // Replaces the running turn, as Codex's
+                                            // `thread/compact/start` does.
+                                            Some(SessionCommand::Compact { reply }) => {
+                                                if !steerable || compact_next.is_some() {
+                                                    let _ = reply.send(Err(invalid("a compaction is already running")));
+                                                } else {
+                                                    cancel.cancel();
+                                                    compact_next = Some(reply);
+                                                }
+                                            }
+                                            Some(SessionCommand::Rewind { reply, .. }) => {
+                                                let _ = reply.send(Err(invalid(
+                                                    "a turn is running; stop it before rewinding",
+                                                )));
+                                            }
+                                            Some(SessionCommand::Respond { id, result }) => {
+                                                if let Some(command) = sink.answer(&id, result)
+                                                    && engine_tx.try_send(command).is_err()
+                                                {
+                                                    tracing::warn!("the turn's input is full; an answer was lost");
+                                                }
+                                            }
+                                            // Checked now, applied once the turn has ended.
+                                            Some(SessionCommand::UpdateSettings { params, reply }) => {
+                                                let checked = crate::settings::check_update(
+                                                    config,
+                                                    params.model.as_deref(),
+                                                    params.effort.as_deref(),
+                                                )
+                    ;
+                                                match checked {
+                                                    Ok(_) => {
+                                                        pending_settings.push(params);
+                                                        let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));
+                                                    }
+                                                    Err(error) => {
+                                                        let _ = reply.send(Err(error));
+                                                    }
+                                                }
+                                            }
+                                            // Answered now. A new objective is told to the turn
+                                            // at its next step; a pause or clear lets it end.
+                                            Some(SessionCommand::Goal { request, reply }) => {
+                                                if !matches!(request, GoalRequest::Get) {
+                                                    strikes.reset();
+                                                }
+                                                if let Some(set) =
+                                                    goal_request(&db, &session_id, sink, request, reply, config.max_goal_token_budget).await
+                                                    && set.objective_changed
+                                                    && set.goal.status == koda_core::goal::GoalStatus::Active
+                                                {
+                                                    let text = koda_core::goal::objective_updated_message(&set.goal);
+                                                    if engine_tx.try_send(EngineCommand::Notice { text }).is_err() {
+                                                        tracing::warn!("the turn's input is full; the new objective waits for the next turn");
+                                                    }
+                                                }
+                                            }
+                                            // The running turn keeps its servers.
+                                            Some(SessionCommand::ReloadMcp { done }) => {
+                                                *reload_mcp = true;
+                                                drop(done);
+                                            }
+                                            // The writer runs on a task of its own, so the turn
+                                            // only pauses while its queued records are stored.
+                                            Some(SessionCommand::FlushHistory { done }) => {
+                                                sink.flush_history().await;
+                                                let _ = done.send(sink.live_turn());
+                                            }
+                                            #[cfg(test)]
+                                            Some(SessionCommand::Panic) => panic!("a test's panic"),
+                                            // The turn pauses only while its stored turns are
+                                            // read; the joiner then follows it from here.
+                                            Some(SessionCommand::Join { token, reply }) => {
+                                                let _ = reply.send(join(sink, &db, &session_id, token).await);
+                                            }
+                                            // This turn's prompt has titled the session already.
+                                            Some(SessionCommand::Named { name, done }) => {
+                                                let stored = db.set_session_title(&session_id, &name).await;
+                                                let _ = done.send(stored.map_err(|e| format!("{e:#}")));
+                                            }
+                                            // Told to stop, or the host is gone: stop the turn and
+                                            // let it wind down. It bounds that itself.
+                                            Some(SessionCommand::Shutdown { done }) => {
+                                                cancel.cancel();
+                                                keep_running = false;
+                                                closing.extend(done);
+                                            }
+                                            None => {
+                                                cancel.cancel();
+                                                keep_running = false;
+                                            }
+                                        },
+                                    }
                 }
             };
-            loop {
-                tokio::select! {
-                                    result = &mut turn => break result,
-                                    command = commands.recv(), if keep_running => match command {
-                                        Some(SessionCommand::StartTurn { reply, .. }) => {
-                                            let _ = reply.send(Err(invalid("a turn is already running")));
-                                        }
-                                        Some(SessionCommand::Interrupt { params, reply }) => {
-                                            if params.turn_id == turn_id {
-                                                cancel.cancel();
-                                                interrupts.push(reply);
-                                            } else {
-                                                let _ = reply.send(Err(invalid(format!(
-                                                    "expected active turn id {} but found {turn_id}",
-                                                    params.turn_id
-                                                ))));
-                                            }
-                                        }
-                                        Some(SessionCommand::Steer { params, reply }) => {
-                                            if !steerable {
-                                                let _ = reply.send(Err(invalid("cannot steer a compact turn")));
-                                                continue;
-                                            }
-                                            if params.expected_turn_id != turn_id {
-                                                let _ = reply.send(Err(invalid(format!(
-                                                    "expected active turn id {} but found {turn_id}",
-                                                    params.expected_turn_id
-                                                ))));
-                                                continue;
-                                            }
-                                            // Steering reaches the model as text.
-                                            if params
-                                                .input
-                                                .iter()
-                                                .any(|part| !matches!(part, UserInput::Text { .. }))
-                                            {
-                                                let _ = reply.send(Err(ErrorObject::new(
-                                                    codes::INVALID_PARAMS,
-                                                    "turn/steer takes text parts only; send images, mentions \
-                                                     and skills with turn/start",
-                                                )));
-                                                continue;
-                                            }
-                                            let text = koda_protocol::turn::text_of(&params.input);
-                                            // `try_send`: the turn isn't polled while this arm
-                                            // runs, so waiting for room could wait forever.
-                                            let queued = engine_tx.try_send(EngineCommand::QueueNext { text });
-                                            if queued.is_ok() {
-                                                sink.queue_steer(params.client_user_message_id);
-                                            }
-                                            let _ = reply.send(match queued {
-                                                Ok(()) => to_json(TurnSteerResponse {
-                                                    turn_id: turn_id.clone(),
-                                                }),
-                                                Err(_) => Err(internal("the turn's input is full; try again")),
-                                            });
-                                        }
-                                        // Replaces the running turn, as Codex's
-                                        // `thread/compact/start` does.
-                                        Some(SessionCommand::Compact { reply }) => {
-                                            if !steerable || compact_next.is_some() {
-                                                let _ = reply.send(Err(invalid("a compaction is already running")));
-                                            } else {
-                                                cancel.cancel();
-                                                compact_next = Some(reply);
-                                            }
-                                        }
-                                        Some(SessionCommand::Rewind { reply, .. }) => {
-                                            let _ = reply.send(Err(invalid(
-                                                "a turn is running; stop it before rewinding",
-                                            )));
-                                        }
-                                        Some(SessionCommand::Respond { id, result }) => {
-                                            if let Some(command) = sink.answer(&id, result)
-                                                && engine_tx.try_send(command).is_err()
-                                            {
-                                                tracing::warn!("the turn's input is full; an answer was lost");
-                                            }
-                                        }
-                                        // Checked now, applied once the turn has ended.
-                                        Some(SessionCommand::UpdateSettings { params, reply }) => {
-                                            let checked = crate::settings::check_update(
-                                                config,
-                                                params.model.as_deref(),
-                                                params.effort.as_deref(),
-                                            )
-                ;
-                                            match checked {
-                                                Ok(_) => {
-                                                    pending_settings.push(params);
-                                                    let _ = reply.send(to_json(SessionSettingsUpdateResponse {}));
-                                                }
-                                                Err(error) => {
-                                                    let _ = reply.send(Err(error));
-                                                }
-                                            }
-                                        }
-                                        // Answered now. A new objective is told to the turn
-                                        // at its next step; a pause or clear lets it end.
-                                        Some(SessionCommand::Goal { request, reply }) => {
-                                            if !matches!(request, GoalRequest::Get) {
-                                                strikes.reset();
-                                            }
-                                            if let Some(set) =
-                                                goal_request(&db, &session_id, sink, request, reply, config.max_goal_token_budget).await
-                                                && set.objective_changed
-                                                && set.goal.status == koda_core::goal::GoalStatus::Active
-                                            {
-                                                let text = koda_core::goal::objective_updated_message(&set.goal);
-                                                if engine_tx.try_send(EngineCommand::Notice { text }).is_err() {
-                                                    tracing::warn!("the turn's input is full; the new objective waits for the next turn");
-                                                }
-                                            }
-                                        }
-                                        // The running turn keeps its servers.
-                                        Some(SessionCommand::ReloadMcp { done }) => {
-                                            *reload_mcp = true;
-                                            drop(done);
-                                        }
-                                        // The writer runs on a task of its own, so the turn
-                                        // only pauses while its queued records are stored.
-                                        Some(SessionCommand::FlushHistory { done }) => {
-                                            sink.flush_history().await;
-                                            let _ = done.send(sink.live_turn());
-                                        }
-                                        #[cfg(test)]
-                                        Some(SessionCommand::Panic) => panic!("a test's panic"),
-                                        // The turn pauses only while its stored turns are
-                                        // read; the joiner then follows it from here.
-                                        Some(SessionCommand::Join { token, reply }) => {
-                                            let _ = reply.send(join(sink, &db, &session_id, token).await);
-                                        }
-                                        // This turn's prompt has titled the session already.
-                                        Some(SessionCommand::Named { name, done }) => {
-                                            let stored = db.set_session_title(&session_id, &name).await;
-                                            let _ = done.send(stored.map_err(|e| format!("{e:#}")));
-                                        }
-                                        // Told to stop, or the host is gone: stop the turn and
-                                        // let it wind down. It bounds that itself.
-                                        Some(SessionCommand::Shutdown { done }) => {
-                                            cancel.cancel();
-                                            keep_running = false;
-                                            closing.extend(done);
-                                        }
-                                        None => {
-                                            cancel.cancel();
-                                            keep_running = false;
-                                        }
-                                    },
-                                }
+            // Steering text the engine never took. Koda answered each
+            // `turn/steer` as accepted, so on a turn that completed the text
+            // isn't dropped: the turn goes on with it, its end not yet said,
+            // as a Codex turn with input pending doesn't finish. The engine
+            // looks for steering text a last time before its final work (a
+            // goal's check, a compaction), and text that came during that
+            // was left here.
+            let left = session.take_queued_steers(engine_rx);
+            let goes_on = !left.is_empty()
+                && result.is_ok()
+                && steerable
+                && keep_running
+                && compact_next.is_none()
+                && interrupts.is_empty()
+                && !cancel.is_cancelled()
+                && sink.go_on();
+            if !goes_on {
+                // A turn that was stopped or failed delivers nothing more:
+                // the client sees no item for the text and has it to send
+                // again, as Codex drops pending input on an interrupt. Left
+                // in the channel, it would go out with the next prompt.
+                break result;
+            }
+            // Back where the engine's first step takes it from; just
+            // emptied, the channel has room.
+            for text in left {
+                if engine_tx
+                    .try_send(EngineCommand::QueueNext { text })
+                    .is_err()
+                {
+                    tracing::warn!("the turn's input is full; steering text was lost");
+                }
             }
         };
         let error = result.err().inspect(|e| {
             tracing::warn!("turn {turn_id} ended with an error: {e}");
         });
-        // Steering text the turn didn't deliver: the client sees no item for
-        // it. Left in the channel, it would go out with the next prompt.
-        let _ = session.take_queued_steers(engine_rx);
         sink.end_turn(error).await;
         // What the turn did counts toward the session's goal.
         if steerable && config.goals {
@@ -1765,6 +1805,9 @@ async fn join(
     Ok(())
 }
 
+/// How long [`HostSink::cut_off`] waits for the cut-off turn to be stored.
+const CUT_OFF_STORE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// What kind of server request is open, to read the client's answer.
 #[derive(Debug, Clone, Copy)]
 enum RequestKind {
@@ -1811,6 +1854,18 @@ struct SinkState {
     turn_running: bool,
     /// What the session was last said to be doing.
     status: koda_protocol::session::SessionStatus,
+    /// The session's task was stopped where it stood and its turn's end
+    /// said for it ([`HostSink::cut_off`]): nothing more goes out.
+    cut: bool,
+    /// The turn is going on after the engine ended it ([`HostSink::go_on`]):
+    /// the engine's next `TurnStart` is the same turn, not a new one.
+    going_on: bool,
+    /// What the turn had used and how long it had run when it last went on,
+    /// which the engine's next account of it leaves out.
+    used_before: Option<(koda_core::engine::UsageTotals, u64)>,
+    /// The turn's use and time as the engine last gave them, with
+    /// `used_before` added.
+    used: Option<(koda_core::engine::UsageTotals, u64)>,
 }
 
 /// A turn's prompt, waiting for the turn to start: its text, the client's
@@ -1895,6 +1950,69 @@ impl HostSink {
         self.send(&mut state, out);
     }
 
+    /// The session's task didn't stop in time and is being stopped where it
+    /// stands: say the end of the turn it was running, as the task would
+    /// have. Its open requests are resolved, then `turn/completed` says it
+    /// was interrupted, and the turn is stored so. Codex does the same for
+    /// a task that outlives its grace: it aborts the task and still sends
+    /// `TurnAborted`. Nothing the task sends after this goes out, so the
+    /// turn ends once.
+    pub(crate) async fn cut_off(&self, why: &str) {
+        let out = {
+            let mut state = self.lock();
+            if state.cut {
+                return;
+            }
+            state.cut = true;
+            state.prompt = None;
+            state.steers.clear();
+            let mut out = state.projector.resolve_all();
+            let state = &mut *state;
+            let waiting: Vec<RequestId> = state
+                .elicitations
+                .drain()
+                .chain(state.agent_approvals.drain())
+                .map(|(id, _)| id)
+                .collect();
+            for id in waiting {
+                state.kinds.remove(&id);
+                out.push(self.resolved_notice(&id));
+            }
+            let running = state
+                .live_turn
+                .as_ref()
+                .map(|live| live.turn())
+                .filter(|turn| turn.status == TurnStatus::InProgress);
+            if let Some(turn) = running {
+                // The end the turn reached but hadn't said, if it had one.
+                let end = state.pending_end.take().unwrap_or(EngineEvent::TurnEnd {
+                    turn_id: turn.id,
+                    reason: koda_core::engine::TurnEndReason::Cancelled,
+                });
+                out.extend(state.projector.project(None, end));
+                for message in &mut out {
+                    if let Outgoing::Notification(ServerNotification::TurnCompleted(done)) = message
+                        && done.turn.error.is_none()
+                    {
+                        done.turn.error = Some(TurnError {
+                            message: why.to_string(),
+                            code: None,
+                        });
+                    }
+                }
+            }
+            out
+        };
+        if let Some(history) = &self.history {
+            history.record(&out);
+            // A turn stored without its end reads as interrupted too, so
+            // a store that is slow doesn't hold the session's close.
+            let _ = tokio::time::timeout(CUT_OFF_STORE, history.flush()).await;
+        }
+        let mut state = self.lock();
+        self.publish_now(&mut state, out);
+    }
+
     /// Wait until the turns sent so far are stored.
     async fn flush_history(&self) {
         if let Some(history) = &self.history {
@@ -1929,6 +2047,29 @@ impl HostSink {
         self.lock().steers.push_back(client_user_message_id);
     }
 
+    /// The engine ended the turn as completed and the session has steering
+    /// text it accepted and the engine never took: the turn goes on with
+    /// it. Its end is dropped unsaid, and the engine's next `TurnStart` and
+    /// account of its use belong to the same turn. `false`, changing
+    /// nothing, for a turn that ended any other way.
+    fn go_on(&self) -> bool {
+        let mut state = self.lock();
+        let completed = matches!(
+            state.pending_end,
+            Some(EngineEvent::TurnEnd {
+                reason: koda_core::engine::TurnEndReason::Complete,
+                ..
+            })
+        );
+        if !completed || state.cut {
+            return false;
+        }
+        state.pending_end = None;
+        state.going_on = true;
+        state.used_before = state.used.take();
+        true
+    }
+
     /// The turn has returned: send its `turn/completed`, with `error` on it
     /// when the turn returned one and its end didn't already say why.
     /// Send `turn/completed`, once the turn is stored: a client that reads
@@ -1936,6 +2077,9 @@ impl HostSink {
     async fn end_turn(&self, error: Option<String>) {
         let out = {
             let mut state = self.lock();
+            if state.cut {
+                return;
+            }
             state.prompt = None;
             state.steers.clear();
             let Some(end) = state.pending_end.take() else {
@@ -1996,8 +2140,21 @@ impl HostSink {
         Some(command)
     }
 
-    fn handle(&self, parent: Option<&str>, event: EngineEvent) {
+    fn handle(&self, parent: Option<&str>, mut event: EngineEvent) {
         let mut state = self.lock();
+        // The engine counts from its own start. A turn that went on
+        // ([`Self::go_on`]) has what it used before that added.
+        if parent.is_none()
+            && let EngineEvent::TurnSummary {
+                usage, elapsed_ms, ..
+            } = &mut event
+        {
+            if let Some((used, took)) = &state.used_before {
+                usage.add(used);
+                *elapsed_ms += took;
+            }
+            state.used = Some((usage.clone(), *elapsed_ms));
+        }
         let own_answer = self.answers.as_ref().and_then(|_| policy_answer(&event));
         if parent.is_none() {
             state.goal_turn.observe(&event);
@@ -2025,7 +2182,13 @@ impl HostSink {
                     .projector
                     .user_message(vec![UserInput::text(texts.join("\n\n"))], ids)
             }
+            // The same turn going on: its clients have seen it start.
+            (None, EngineEvent::TurnStart { .. }) if std::mem::take(&mut state.going_on) => {
+                Vec::new()
+            }
             (None, event @ EngineEvent::TurnStart { .. }) => {
+                state.used_before = None;
+                state.used = None;
                 let mut out = state.projector.project(None, event);
                 if let Some((content, ids)) = state.prompt.take() {
                     out.extend(state.projector.user_message(content, ids));
@@ -2060,6 +2223,9 @@ impl HostSink {
     /// client's queue. Called with the lock held, so messages keep their
     /// order.
     fn send(&self, state: &mut SinkState, out: Vec<Outgoing>) {
+        if state.cut {
+            return;
+        }
         if let Some(history) = &self.history {
             history.record(&out);
         }
@@ -2070,6 +2236,15 @@ impl HostSink {
     /// diff now are, for a client that joins later, and put it on the
     /// client's queue. For messages already stored.
     fn publish(&self, state: &mut SinkState, out: Vec<Outgoing>) {
+        if state.cut {
+            return;
+        }
+        self.publish_now(state, out);
+    }
+
+    /// [`Self::publish`], for the one sender a cut-off session still has:
+    /// the cut-off itself.
+    fn publish_now(&self, state: &mut SinkState, out: Vec<Outgoing>) {
         for message in &out {
             crate::live_turn::LiveTurn::observe(&mut state.live_turn, message);
             match message {
@@ -2102,6 +2277,9 @@ impl HostSink {
     /// between the messages it accounts for and the ones that follow.
     fn joined(&self, token: u64, mut session: koda_protocol::session::Session) {
         let state = self.lock();
+        if state.cut {
+            return;
+        }
         if let Some(live) = &state.live_turn {
             live.over(&mut session.turns);
         }
@@ -2765,6 +2943,10 @@ mod tests {
                 last_diff: None,
                 turn_running: false,
                 status: koda_protocol::session::SessionStatus::Idle,
+                cut: false,
+                going_on: false,
+                used_before: None,
+                used: None,
             }),
         };
         (sink, rx)
