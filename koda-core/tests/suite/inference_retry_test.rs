@@ -32,7 +32,10 @@
 //! ## The read timeout
 //!
 //! The provider is built from a config whose `stream_idle_timeout_ms`
-//! is 1s, as the config file's `[model_providers.<id>]` table sets it.
+//! is 5s, as the config file's `[model_providers.<id>]` table sets it.
+//! It bounds the retry's reply too, so it is 5s rather than 1s: a busy
+//! runner that answered the retry late would time out again and send a
+//! third request.
 //! `ENV_MUTEX` is still held: the provider reads proxy variables, which
 //! other tests in this crate change.
 
@@ -76,11 +79,12 @@ fn ok_sse_chunks() -> Vec<&'static str> {
 async fn read_timeout_triggers_auto_retry_not_hard_failure() {
     let _g = ENV_MUTEX.lock().await;
 
-    // The fake server: first request stalls for 3s (well past the 1s
-    // read timeout); second request succeeds immediately.
+    // The fake server: first request stalls for 30s (well past the 5s
+    // read timeout, however late a busy runner fires it); second request
+    // succeeds immediately.
     let server = FakeLlmServer::spawn().await;
     server
-        .mount_chat_silent_then_resume(Duration::from_secs(3), &ok_sse_chunks())
+        .mount_chat_silent_then_resume(Duration::from_secs(30), &ok_sse_chunks())
         .await;
 
     let test_env = Env::builder()
@@ -95,7 +99,7 @@ async fn read_timeout_triggers_auto_retry_not_hard_failure() {
     // is_network_transient_error trigger.
     let mut config = koda_core::config::KodaConfig::default_for_testing(ProviderType::OpenAI);
     config.base_url = server.url();
-    config.stream_idle_timeout_ms = Some(1_000);
+    config.stream_idle_timeout_ms = Some(5_000);
     let provider = koda_core::providers::create_provider(&config.provider_settings());
 
     let started = Instant::now();
@@ -144,13 +148,14 @@ async fn read_timeout_triggers_auto_retry_not_hard_failure() {
         "DB must contain the second-attempt response, got: {last}"
     );
 
-    // Sanity bound on wall-clock: 1s timeout + 1s backoff + fast retry
-    // = ~2s. If we exceed 8s, something is very wrong (e.g. the retry
-    // is firing 5 times because the predicate stopped matching and we
-    // fell into the rate-limit branch's larger backoff).
+    // Sanity bound on wall-clock: 5s timeout + 1s backoff + fast retry
+    // = ~6s, and more on a busy runner. If we exceed 20s, something is
+    // very wrong (e.g. the retry is firing 5 times because the predicate
+    // stopped matching and we fell into the rate-limit branch's larger
+    // backoff); it is still well short of the 30s the first request stalls.
     assert!(
-        elapsed < Duration::from_secs(8),
-        "retry sequence took {elapsed:?}; expected ~2s. \
+        elapsed < Duration::from_secs(20),
+        "retry sequence took {elapsed:?}; expected ~6s. \
          Backoff misconfigured or predicate not matching."
     );
 }

@@ -1112,8 +1112,10 @@ mod tests {
         let reg = BgRegistry::new();
         let (pid, child) = spawn_true_child();
         reg.insert(pid, "true".into(), child, None);
+        // `true` has exited once the runner has got round to running it:
+        // up to 10 s, not the 1 s a busy runner can take to start it.
         let mut seen = false;
-        for _ in 0..50 {
+        for _ in 0..500 {
             tokio::time::sleep(Duration::from_millis(20)).await;
             if reg.snapshot()[0].status != BgProcessStatus::Running {
                 seen = true;
@@ -1129,10 +1131,11 @@ mod tests {
         let (pid, child) = spawn_true_child();
         reg.insert(pid, "true".into(), child, None);
 
-        // `true` exits ~immediately, but tokio's try_wait needs time
-        // for the SIGCHLD handler to register the exit. Poll up to 1s.
+        // `true` exits ~immediately, but a busy runner can take a while to
+        // start it, and tokio's try_wait needs time for the SIGCHLD handler
+        // to register the exit. Poll up to 10 s.
         let mut observed = None;
-        for _ in 0..50 {
+        for _ in 0..500 {
             tokio::time::sleep(Duration::from_millis(20)).await;
             reg.reap();
             let snap = reg.snapshot();
@@ -1144,7 +1147,7 @@ mod tests {
         assert_eq!(
             observed,
             Some(Some(0)),
-            "reap should observe `true` exiting with code 0 within 1s"
+            "reap should observe `true` exiting with code 0 within 10s"
         );
     }
 

@@ -210,7 +210,8 @@ async fn session_cancellation_produces_turn_end_cancelled() {
     // Measured from the cancel signal, not from before the call: the loop's
     // own setup (database, context assembly) is not what this bounds, and on a
     // loaded CI runner it alone pushed the old 2-second total over the line.
-    // Five seconds still proves the provider's 60-second hang was not waited out.
+    // Thirty seconds leaves a busy runner room to wind the turn down, and
+    // still proves the provider's 60-second hang was not waited out.
     let elapsed = cancelled_at
         .lock()
         .unwrap()
@@ -221,8 +222,8 @@ async fn session_cancellation_produces_turn_end_cancelled() {
         "cancellation should be graceful, not an error"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "cancellation should unblock within 5s of the signal, took {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(30),
+        "cancellation should unblock within 30s of the signal, took {elapsed:?}"
     );
 
     let events = sink.events();
@@ -331,7 +332,8 @@ async fn session_turn_cancel_token_stops_inference() {
     // Measured from the cancel signal, not from before the call: the loop's
     // own setup (database, context assembly) is not what this bounds, and on a
     // loaded CI runner it alone pushed the old 2-second total over the line.
-    // Five seconds still proves the provider's 60-second hang was not waited out.
+    // Thirty seconds leaves a busy runner room to wind the turn down, and
+    // still proves the provider's 60-second hang was not waited out.
     let elapsed = cancelled_at
         .lock()
         .unwrap()
@@ -343,8 +345,8 @@ async fn session_turn_cancel_token_stops_inference() {
         "per-turn cancellation should be graceful, not an error"
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "per-turn cancel should unblock inference within 5s of the signal, took {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(30),
+        "per-turn cancel should unblock inference within 30s of the signal, took {elapsed:?}"
     );
     assert!(
         turn_cancel.is_cancelled(),

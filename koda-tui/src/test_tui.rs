@@ -148,8 +148,9 @@ impl TestTui {
         }
     }
 
-    /// Run the TUI's event loop with `script` beside it, then `/exit`. The
-    /// driver comes back, for what a test checks once the TUI has gone.
+    /// Run the TUI's event loop with `script` beside it, then quit with
+    /// Ctrl+D, which needs an empty input box. The driver comes back, for
+    /// what a test checks once the TUI has gone.
     pub async fn run<F, Fut>(mut self, script: F) -> Driver
     where
         F: FnOnce(Driver) -> Fut,
@@ -160,7 +161,10 @@ impl TestTui {
         let keys = driver.keys.clone();
         let script = async move {
             let driver = script(driver).await;
-            driver.submit("/exit").await;
+            // Ctrl+D, not `/exit`: it quits during a turn too. A turn the
+            // host starts as the script ends (a background agent finished)
+            // refuses a slash command, and the TUI would never exit.
+            driver.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
             driver
         };
         let (looped, driver) = tokio::join!(self.ctx.run_event_loop(&cmd_tx, &mut cmd_rx), script);

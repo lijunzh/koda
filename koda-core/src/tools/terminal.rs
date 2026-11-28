@@ -162,13 +162,35 @@ mod tests {
         (terminal, child, log)
     }
 
+    /// Read until the output since the last read includes `text`, half a
+    /// second at a time for up to 20 s: a busy runner can take longer than
+    /// one read to start the shell. The text read, and whether the last read
+    /// found the terminal closed.
+    async fn read_until(terminal: &Terminal, text: &str) -> (String, bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut bytes = Vec::new();
+        loop {
+            // Read waits the whole time unless the command closes the terminal.
+            let read = terminal.read(Duration::from_millis(500)).await;
+            bytes.extend_from_slice(&read.bytes);
+            let seen = plain_text(&bytes);
+            if seen.contains(text) {
+                return (seen, read.closed);
+            }
+            assert!(
+                !read.closed && std::time::Instant::now() < deadline,
+                "never printed {text:?}: {seen:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn typing_is_answered_and_the_log_has_it_all() {
         let (terminal, mut child, log) = start("printf 'Name? '; read name; echo \"Hello, $name\"");
-        let first = terminal.read(Duration::from_millis(500)).await;
-        // Read waits the whole time unless the command closes the terminal.
-        assert!(plain_text(&first.bytes).contains("Name? "));
-        assert!(!first.closed);
+        // The prompt is there before the answer is typed.
+        let (first, closed) = read_until(&terminal, "Name? ").await;
+        assert!(first.contains("Name? "));
+        assert!(!closed);
         terminal.write(b"Ada\n").unwrap();
         let reply = terminal.read(Duration::from_secs(10)).await;
         assert!(plain_text(&reply.bytes).contains("Hello, Ada"));
@@ -181,7 +203,8 @@ mod tests {
     #[tokio::test]
     async fn a_read_returns_only_what_is_new() {
         let (terminal, mut child, _log) = start("echo one; read x; echo two");
-        assert!(plain_text(&terminal.read(Duration::from_millis(500)).await.bytes).contains("one"));
+        // "one" has been read before Enter is typed, so the next read is new.
+        assert!(read_until(&terminal, "one").await.0.contains("one"));
         terminal.write(b"\n").unwrap();
         let second = plain_text(&terminal.read(Duration::from_secs(10)).await.bytes);
         assert!(

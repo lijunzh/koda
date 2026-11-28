@@ -50,9 +50,10 @@ async fn worker_binary_responds_to_ping() {
     stdin.shutdown().await.ok();
     drop(stdin);
 
-    let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+    // The worker exits once it has read the shutdown; 30 s only bounds a hang.
+    let status = tokio::time::timeout(std::time::Duration::from_secs(30), child.wait())
         .await
-        .expect("worker must exit within 5s")
+        .expect("worker must exit within 30s")
         .expect("wait failed");
     assert!(
         status.success(),
@@ -99,8 +100,9 @@ async fn worker_binary_handles_read_over_stdio() {
     );
 
     drop(stdin);
-    tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+    // The worker exits once its stdin closes; 30 s only bounds a hang.
+    tokio::time::timeout(std::time::Duration::from_secs(30), child.wait())
         .await
-        .expect("worker must exit within 5s")
+        .expect("worker must exit within 30s")
         .expect("wait");
 }

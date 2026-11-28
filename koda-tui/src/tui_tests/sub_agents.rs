@@ -10,15 +10,16 @@ use koda_test_utils::openai::{text, tool_calls};
 use serde_json::{Value, json};
 
 use super::{
-    asked_write, assert_no_more_calls, assert_stopped, esc, is_turn_started, json_reply,
-    read_until, start_turn,
+    asked_write, assert_no_more_calls, assert_stopped, esc, go, is_turn_started, json_reply,
+    read_until, start_turn, wait_for_go,
 };
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui};
 
-/// A sub-agent's reply, which doesn't stream, that calls one tool.
-fn sub_agent_call(name: &str, args: Value) -> ResponseTemplate {
+/// A sub-agent's reply, which doesn't stream, that calls one tool as call
+/// `id`.
+fn sub_agent_call(id: &str, name: &str, args: Value) -> ResponseTemplate {
     let call = json!({
-        "id": "sub_call",
+        "id": id,
         "type": "function",
         "function": {"name": name, "arguments": args.to_string()},
     });
@@ -69,16 +70,19 @@ fn delegate(args: Value) -> ResponseTemplate {
 }
 
 /// A model whose main agent has the `task` sub-agent write `a.txt`, in the
-/// background if `background`. A background agent asks a second later,
-/// once the turn that started it has ended.
+/// background if `background`. A background agent first runs a command
+/// that waits for the test's `go`, and asks after it: the test calls
+/// [`go`] once the turn that started the agent has ended. A reply delayed
+/// by a second stood for that before, and a busy runner's turn could take
+/// longer.
 async fn a_sub_agent_writes_a_file(background: bool) -> FakeLlmServer {
     let mut args = json!({"agent_name": "task", "prompt": "write a.txt"});
-    let mut write = sub_agent_call("Bash", asked_write("a.txt"));
+    let mut sub = vec![sub_agent_call("sub_write", "Bash", asked_write("a.txt"))];
     if background {
         args["run_in_background"] = json!(true);
-        write = write.set_delay(Duration::from_secs(1));
+        sub.insert(0, sub_agent_call("sub_wait", "Bash", wait_for_go()));
     }
-    model_with_a_sub_agent(vec![delegate(args)], vec![write]).await
+    model_with_a_sub_agent(vec![delegate(args)], sub).await
 }
 
 /// A sub-agent asks in the main session, as in Claude Code and Codex: the
@@ -138,6 +142,14 @@ async fn a_background_agent_asks_while_the_tui_is_idle() {
     let tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
+        // The turn has ended: now the agent may ask.
+        driver
+            .wait_for_screen_that(
+                |screen| screen.contains("All done.") && !screen.contains(BUSY_PROMPT),
+                "end the turn that started the agent",
+            )
+            .await;
+        go(&driver);
         driver.wait_for_screen("asks").await;
         let screen = driver.screen();
         assert!(
@@ -203,9 +215,11 @@ fn is_request(message: &Outgoing) -> bool {
 async fn a_background_agents_request_as_a_prompt_goes_out_is_shown() {
     let mut tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
     start_turn(&tui.ctx, "first prompt").await;
-    // The agent asks once that turn has ended; none of it has been read
-    // when the next prompt goes out.
-    let unread = read_until(&mut tui.ctx, is_request).await;
+    // The agent asks once that turn has ended (it waits for `go` until
+    // then); none of it has been read when the next prompt goes out.
+    let mut unread = read_until(&mut tui.ctx, is_turn_completed).await;
+    go(&tui.driver);
+    unread.extend(read_until(&mut tui.ctx, is_request).await);
     tui.ctx.held.extend(unread);
     tui.ctx.pending_command = Some("second prompt".to_string());
 
@@ -230,11 +244,11 @@ async fn a_background_agents_request_as_a_prompt_goes_out_is_shown() {
 async fn a_background_agents_request_while_joining_a_turn_is_shown() {
     let mut tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
     start_turn(&tui.ctx, "first prompt").await;
-    let first = read_until(&mut tui.ctx, is_request).await;
-    let request = first.last().cloned().unwrap();
-    if !first.iter().any(is_turn_completed) {
-        read_until(&mut tui.ctx, is_turn_completed).await;
-    }
+    // The agent asks once the first turn has ended: it waits for `go`.
+    read_until(&mut tui.ctx, is_turn_completed).await;
+    go(&tui.driver);
+    let asked = read_until(&mut tui.ctx, is_request).await;
+    let request = asked.last().cloned().unwrap();
     // Koda starts a turn; the prompt that went out meanwhile joins it once
     // its start comes, after the agent's request.
     start_turn(&tui.ctx, "second prompt").await;
@@ -280,10 +294,10 @@ fn is_turn_completed(message: &Outgoing) -> bool {
 async fn a_background_agents_request_kept_in_a_side_conversation_outlives_the_turn() {
     let mut tui = TestTui::start_on(a_sub_agent_writes_a_file(true).await).await;
     start_turn(&tui.ctx, "first prompt").await;
-    let mut read = read_until(&mut tui.ctx, is_request).await;
-    if !read.iter().any(is_turn_completed) {
-        read.extend(read_until(&mut tui.ctx, is_turn_completed).await);
-    }
+    // The agent asks once the first turn has ended: it waits for `go`.
+    let mut read = read_until(&mut tui.ctx, is_turn_completed).await;
+    go(&tui.driver);
+    read.extend(read_until(&mut tui.ctx, is_request).await);
     let request = read.iter().find(|m| is_request(m)).cloned().unwrap();
     let completed = read.iter().find(|m| is_turn_completed(m)).cloned().unwrap();
 

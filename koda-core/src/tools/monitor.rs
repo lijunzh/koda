@@ -560,8 +560,15 @@ mod tests {
         let (mut watch, out) = watch_on(dir.path());
         append(&out, "one\ntwo\npart");
         watch.read(false);
+        // The window runs from when the lines came. For the check inside
+        // it, that moment is put an hour ahead, so a runner that stalls
+        // here for the window's 200 ms can't run it out; then it is put
+        // back, and the real window is waited out.
+        let came = watch.since.expect("the lines began a batch");
+        watch.since = Some(came + Duration::from_secs(3600));
         assert!(!watch.notice_due(), "within the window");
         assert!(watch.take_notice(7).is_none());
+        watch.since = Some(came);
         std::thread::sleep(BATCH_WINDOW + Duration::from_millis(20));
         let notice = watch.take_notice(7).unwrap();
         assert_eq!(notice.lines, ["one", "two"]);

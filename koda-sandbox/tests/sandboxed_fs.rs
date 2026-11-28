@@ -295,7 +295,9 @@ mod unix {
             command: netcat_listen_command(port),
             env: Default::default(),
             port: Some(port),
-            startup_timeout: std::time::Duration::from_secs(2),
+            // How long `nc` may take to start listening: a busy runner
+            // needs more than a couple of seconds at times.
+            startup_timeout: std::time::Duration::from_secs(30),
         };
         let proxy = match proxy_spec.spawn().await {
             Ok(p) => p,
@@ -384,7 +386,9 @@ mod unix {
             command: netcat_listen_command(port),
             env: Default::default(),
             port: Some(port),
-            startup_timeout: std::time::Duration::from_secs(2),
+            // How long `nc` may take to start listening: a busy runner
+            // needs more than a couple of seconds at times.
+            startup_timeout: std::time::Duration::from_secs(30),
         };
         let proxy = match proxy_spec.spawn().await {
             Ok(p) => p,

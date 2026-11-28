@@ -182,8 +182,10 @@ mod tests {
 
     /// Load-bearing test for `RLIMIT_CPU` \u2014 a tight busy loop hits the
     /// CPU cap and gets killed by `SIGXCPU` (signal 24). We use a
-    /// generous 10s wall-time budget to absorb CI noise; on healthy
-    /// hardware the kill arrives in < 2s.
+    /// generous 45s wall-time budget: the cap counts CPU time, and beside
+    /// other tests on a busy runner the loop gets a fraction of a CPU, so
+    /// its one second can take many (10s was once too few on macOS CI). On
+    /// healthy hardware the kill arrives in < 2s.
     ///
     /// Slow on purpose (waits for the kernel to tick the CPU counter),
     /// but the alternative \u2014 mocking libc \u2014 wouldn't actually prove
@@ -199,7 +201,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let out = timeout(Duration::from_secs(10), cmd.output())
+        let out = timeout(Duration::from_secs(45), cmd.output())
             .await
             .expect("must finish within wall budget")
             .expect("spawn ok");
