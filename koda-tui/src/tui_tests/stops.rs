@@ -9,6 +9,9 @@ use serde_json::json;
 use super::{STOPPED, asked_write, assert_stopped, ctrl, esc, running};
 use crate::test_tui::{BUSY_PROMPT, Driver, TestTui, input_box};
 
+/// How long a turn runs while a test types text and presses Tab to queue it.
+const QUEUE_WINDOW: Duration = Duration::from_secs(8);
+
 /// Esc at a question the model asked stops the turn; the half-typed answer
 /// isn't sent, and the next turn hears the call was stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -90,7 +93,10 @@ async fn esc_stops_the_turn_at_the_loop_cap() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn tab_queues_text_for_after_the_turn() {
-    let slow = text("All done.").set_delay(Duration::from_secs(2));
+    // The delay is the time the test has to type and press Tab while the
+    // turn runs. 2 s wasn't always enough on a busy macOS runner: the turn
+    // ended first and Tab found nothing to queue behind (CI, 2026-11-27).
+    let slow = text("All done.").set_delay(QUEUE_WINDOW);
     let tui = TestTui::start(vec![slow, text("All done.")]).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
@@ -114,8 +120,9 @@ async fn tab_queues_text_for_after_the_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn a_stop_hands_queued_text_back() {
-    let reply =
-        tool_calls(&[("call_0", "Bash", asked_write("a.txt"))]).set_delay(Duration::from_secs(3));
+    // Typed and queued before the approval shows (its keys would answer the
+    // approval instead), with the same margin as above.
+    let reply = tool_calls(&[("call_0", "Bash", asked_write("a.txt"))]).set_delay(QUEUE_WINDOW);
     let tui = TestTui::start(vec![reply]).await;
     tui.run(async |driver: Driver| {
         driver.submit("first prompt").await;
