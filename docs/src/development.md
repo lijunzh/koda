@@ -414,11 +414,12 @@ npm start                 # build into out/ and open the app
 - **The conversation** (`src/renderer/transcript.ts`, pure functions):
   stored turns from `session/resume`, then live events (applied every 50 ms
   so a fast stream doesn't redraw for every word), shown in Claude Code's
-  desktop views, which Ctrl+O cycles: **Normal** (lookups one after another
-  as one row in the TUI's words, `Read 3 files, searched 5 patterns`; other
-  calls with their output folded to 5 lines; edits with their diff; no
-  thinking), **Thinking** (the same, with the model's thinking where it
-  came) and **Verbose** (every call and all its output). A finished turn's
+  desktop views, which Ctrl+O cycles: **Normal** (the tool calls between
+  two messages as one row, `Read 3 files, ran 2 commands, edited 1 file`,
+  which opens to the calls, each with its output folded to 5 lines and an
+  edit's diff; no thinking), **Thinking** (the same, with the model's
+  thinking where it came, under "Thought process") and **Verbose** (every
+  call and all its output). A finished turn's
   steps stay, as in Claude Code; the app doesn't fold the turn as Codex's
   TUI does. A command counts as a lookup by its `commandActions`, whatever
   its effect, as Codex's `Explored` cell. Markdown is react-markdown without

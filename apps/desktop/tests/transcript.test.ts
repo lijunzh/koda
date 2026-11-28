@@ -47,7 +47,7 @@ function turn(items: object[], extra: Partial<TurnView> = {}): TurnView {
 const kinds = (rows: Row[]) => rows.map((r) => (r.kind === 'lookups' ? `${r.kind}:${r.label}` : r.kind));
 
 describe('rows', () => {
-  it('folds lookups one after another into one row, counted as Claude Code words them', () => {
+  it('folds tool work between two messages into one row, counted as Claude Code words it', () => {
     const rows = turnRows(
       turn(
         [
@@ -65,8 +65,8 @@ describe('rows', () => {
       ),
       'normal',
     );
-    // `make` can't be read: its own row, ending the group.
-    expect(kinds(rows)).toEqual(['user', 'lookups:Read 2 files, searched 1 pattern, listed 1 directory', 'tool', 'message', 'note']);
+    // `make` can't be read as a lookup: it counts as a command, in the same row.
+    expect(kinds(rows)).toEqual(['user', 'lookups:Read 2 files, searched 1 pattern, listed 1 directory, ran 1 command', 'message', 'note']);
   });
 
   it('folds a command by what it does, whatever its effect, as Codex does', () => {
@@ -75,10 +75,10 @@ describe('rows', () => {
     // Stored before 0.8.0: a read-only command the host couldn't read is a command in the row.
     const legacy = bash('jq . a.json', [], { effect: 'readOnly' });
     const rows = turnRows(turn([user('a'), ls, legacy, make], { status: 'interrupted' }), 'normal');
-    expect(kinds(rows)).toEqual(['user', 'lookups:Listed 1 directory, ran 1 command', 'tool', 'note']);
+    expect(kinds(rows)).toEqual(['user', 'lookups:Listed 1 directory, ran 2 commands', 'note']);
   });
 
-  it('ends a row at anything else shown; a progress note or an edit splits lookups', () => {
+  it('ends a row at anything said; an edit stays in the row with the lookups around it', () => {
     const rows = turnRows(
       turn(
         [
@@ -94,7 +94,7 @@ describe('rows', () => {
       ),
       'normal',
     );
-    expect(kinds(rows)).toEqual(['user', 'lookups:Read 2 files', 'message', 'lookups:Read 1 file', 'tool', 'lookups:Read 1 file', 'note']);
+    expect(kinds(rows)).toEqual(['user', 'lookups:Read 2 files', 'message', 'lookups:Read 2 files, edited 1 file', 'note']);
   });
 
   it("shows thinking in the Thinking view only, where it came; in Normal it doesn't split lookups", () => {
@@ -107,7 +107,7 @@ describe('rows', () => {
 
   it("keeps a finished turn's steps, as Claude Code does", () => {
     const rows = turnRows(turn([user('fix it'), call('Read'), say('Looking', 'commentary'), call('Edit', { effect: 'localMutation' }), say('Fixed.', 'final_answer')]), 'normal');
-    expect(kinds(rows)).toEqual(['user', 'lookups:Read 1 file', 'message', 'tool', 'message']);
+    expect(kinds(rows)).toEqual(['user', 'lookups:Read 1 file', 'message', 'lookups:Edited 1 file', 'message']);
   });
 
   it('says a row is running, and counts failures', () => {
@@ -129,8 +129,12 @@ describe('rows', () => {
     const parent = call('InvokeAgent', { effect: 'localMutation', arguments: { agent_name: 'explore' } });
     const child = { ...call('Read'), parentItemId: parent.id };
     const rows = turnRows(turn([user('a'), parent, child], { status: 'interrupted' }), 'normal');
-    expect(kinds(rows)).toEqual(['user', 'tool', 'note']);
-    expect((rows[1] as Extract<Row, { kind: 'tool' }>).children).toHaveLength(1);
+    expect(kinds(rows)).toEqual(['user', 'lookups:Used 1 tool', 'note']);
+    const row = rows[1] as Extract<Row, { kind: 'lookups' }>;
+    expect(row.children[parent.id]).toHaveLength(1);
+    // Verbose shows the call itself, with them under it.
+    const verbose = turnRows(turn([user('a'), parent, child], { status: 'interrupted' }), 'verbose');
+    expect((verbose[1] as Extract<Row, { kind: 'tool' }>).children).toHaveLength(1);
   });
 
   it('says a turn failed, with its error', () => {

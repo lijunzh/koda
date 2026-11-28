@@ -194,9 +194,16 @@ export interface Counts {
   search: number;
   list: number;
   command: number;
+  /** Files edited or written. */
+  edit?: number;
+  /** Calls of any other tool. */
+  tool?: number;
 }
 
-/** A lookup row in Claude Code's words: `Read 3 files, searched 5 patterns`; `Reading …` while one runs. */
+/**
+ * A row of tool work in Claude Code's words: `Read 3 files, ran 2 commands,
+ * edited 1 file`; `Reading …` while one runs.
+ */
 export function lookupLabel(counts: Counts, running: boolean): string {
   const parts = (
     [
@@ -204,6 +211,8 @@ export function lookupLabel(counts: Counts, running: boolean): string {
       [counts.search, 'searched', 'searching', 'pattern', 'patterns'],
       [counts.list, 'listed', 'listing', 'directory', 'directories'],
       [counts.command, 'ran', 'running', 'command', 'commands'],
+      [counts.edit ?? 0, 'edited', 'editing', 'file', 'files'],
+      [counts.tool ?? 0, 'used', 'using', 'tool', 'tools'],
     ] as const
   )
     .filter(([n]) => n > 0)
@@ -224,7 +233,7 @@ export function workedFor(ms: number): string {
 export type Row =
   | { kind: 'user'; key: string; text: string }
   | { kind: 'thought'; key: string; ms: number | null; text: string; running: boolean }
-  | { kind: 'lookups'; key: string; label: string; failed: number; calls: ToolCall[] }
+  | { kind: 'lookups'; key: string; label: string; failed: number; calls: ToolCall[]; children: Record<string, ToolCall[]> }
   | { kind: 'tool'; key: string; call: ToolCall; children: ToolCall[] }
   | { kind: 'message'; key: string; text: string; streaming: boolean }
   | { kind: 'compaction'; key: string; text: string }
@@ -267,8 +276,11 @@ export function turnRows(turn: TurnView, view: View): Row[] {
   if (view === 'verbose') {
     for (const item of top) rows.push(...verboseRows(item, children));
   } else {
+    // Normal and Thinking fold tool work, as Claude Code's desktop app does:
+    // the calls between two things said become one row that says what was
+    // done and opens to the calls. Verbose shows each call.
     let group: Extract<Row, { kind: 'lookups' }> | null = null;
-    let counts: Counts = { read: 0, search: 0, list: 0, command: 0 };
+    let counts: Required<Counts> = { read: 0, search: 0, list: 0, command: 0, edit: 0, tool: 0 };
     let groupRunning = false;
     const closeGroup = () => {
       if (group) group.label = lookupLabel(counts, groupRunning);
@@ -277,7 +289,7 @@ export function turnRows(turn: TurnView, view: View): Row[] {
     for (const item of top) {
       if (item.type === 'reasoning') {
         // Thinking shows in the Thinking view only, where it came; in Normal
-        // it's left out and doesn't split a row of lookups.
+        // it's left out and doesn't split a row of tool work.
         if (view === 'thinking') {
           closeGroup();
           rows.push({ kind: 'thought', key: item.id, ms: itemMs(item), text: item.text, running: running && !item.completedAtMs });
@@ -285,24 +297,24 @@ export function turnRows(turn: TurnView, view: View): Row[] {
         continue;
       }
       if (item.type === 'toolCall') {
-        const looked = lookups(item);
-        if (looked) {
-          if (!group) {
-            // Its own key: its first call can be opened apart from it.
-            group = { kind: 'lookups', key: `lookups-${item.id}`, label: '', failed: 0, calls: [] };
-            counts = { read: 0, search: 0, list: 0, command: 0 };
-            groupRunning = false;
-            rows.push(group);
-          }
-          const g = group as Extract<Row, { kind: 'lookups' }>;
-          g.calls.push(item);
-          for (const l of looked) counts[l]++;
-          if (item.status === 'inProgress') groupRunning = true;
-          if (item.status === 'failed') g.failed++;
-          continue;
+        if (!group) {
+          // Its own key: its first call can be opened apart from it.
+          group = { kind: 'lookups', key: `lookups-${item.id}`, label: '', failed: 0, calls: [], children: {} };
+          counts = { read: 0, search: 0, list: 0, command: 0, edit: 0, tool: 0 };
+          groupRunning = false;
+          rows.push(group);
         }
-        closeGroup();
-        rows.push({ kind: 'tool', key: item.id, call: item, children: children(item.id) });
+        const g = group as Extract<Row, { kind: 'lookups' }>;
+        g.calls.push(item);
+        const kids = children(item.id);
+        if (kids.length) g.children[item.id] = kids;
+        const looked = lookups(item);
+        if (looked) for (const l of looked) counts[l]++;
+        else if (item.tool === 'Bash') counts.command++;
+        else if (item.tool === 'Edit' || item.tool === 'Write') counts.edit++;
+        else counts.tool++;
+        if (item.status === 'inProgress') groupRunning = true;
+        if (item.status === 'failed' || item.status === 'declined') g.failed++;
         continue;
       }
       closeGroup();

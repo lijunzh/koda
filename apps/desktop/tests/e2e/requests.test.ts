@@ -78,7 +78,10 @@ describe.skipIf(!koda)('requests', () => {
     await card.waitFor({ timeout: 30_000 });
     expect(await card.textContent()).toContain('Which color?');
     expect(await page.getByTestId('working').textContent()).toContain('Waiting for your answer');
-    await card.getByRole('button', { name: 'blue' }).click();
+    // A choice per row, as Claude Code asks: pick one, then Submit.
+    expect(await card.textContent()).toContain('Needs your input');
+    await card.getByRole('radio', { name: 'blue' }).click();
+    await card.getByRole('button', { name: /Submit/ }).click();
     await page.getByTestId('agent-message').filter({ hasText: 'Blue it is.' }).waitFor({ timeout: 30_000 });
     expect(model!.bodies().at(-1)).toContain('blue');
   });
