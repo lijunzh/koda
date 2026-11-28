@@ -101,6 +101,17 @@ CHECKED['session/confidential/set'] = (params) => {
   return typeof params.confidential === 'boolean' ? null : 'session/confidential/set needs confidential, true or false';
 };
 
+// A confidential session's brief, the one line models on remote providers
+// are told of it: the page names the session and gives the text the user
+// accepted or typed, or `null` for none, and nothing else. The server
+// checks the text's length and that the session is confidential.
+CHECKED['session/confidential/brief/set'] = (params) => {
+  const extra = Object.keys(params).filter((key) => key !== 'sessionId' && key !== 'brief');
+  if (extra.length) return `session/confidential/brief/set takes sessionId and brief from the page, not ${extra.join(', ')}`;
+  if (typeof params.sessionId !== 'string') return 'session/confidential/brief/set needs a sessionId';
+  return typeof params.brief === 'string' || params.brief === null ? null : 'session/confidential/brief/set needs brief, a text or null';
+};
+
 // Searching what was said in the stored sessions: the page sends the text,
 // whether to look in the archive instead, and how many to return, in which
 // order. It reads no more than `session/read` gives the page already; a

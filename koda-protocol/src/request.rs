@@ -188,6 +188,13 @@ client_requests! {
         params: crate::session::SessionConfidentialSetParams,
         response: crate::session::SessionConfidentialSetResponse,
     },
+    /// Set a confidential session's brief, the one line a model on a
+    /// remote provider is told of it, or clear it. Koda's own.
+    /// `session/confidential/brief/updated` follows.
+    SessionConfidentialBriefSet => "session/confidential/brief/set" {
+        params: crate::session::SessionConfidentialBriefSetParams,
+        response: crate::session::SessionConfidentialBriefSetResponse,
+    },
     /// Set or change an open session's goal; `session/goal/updated`
     /// follows.
     SessionGoalSet => "session/goal/set" {

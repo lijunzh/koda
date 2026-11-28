@@ -152,7 +152,9 @@ export function App() {
         // Its lock shows in the Archived list and in search results, which
         // are asked for, not kept; the session list and open panes follow
         // the message themselves.
-        if (message.method === 'session/confidential/updated') setArchiveTick((n) => n + 1);
+        if (message.method === 'session/confidential/updated' || message.method === 'session/confidential/brief/updated') {
+          setArchiveTick((n) => n + 1);
+        }
         // Brought back: it is listed again, and a pane reading it opens it.
         if (message.method === 'session/unarchived') {
           archivedIds.current.delete(id);

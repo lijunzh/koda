@@ -1,5 +1,7 @@
 // A scripted model for the app tests: an OpenAI-compatible server that
-// streams the replies a test gives it, one per request, in order.
+// streams the replies a test gives it, one per request, in order. A request
+// that doesn't ask for a stream (Koda's draft of a confidential session's
+// brief) gets its reply's text whole.
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -37,6 +39,15 @@ export interface Model {
 
 const line = (chunk: object) => `data: ${JSON.stringify(chunk)}\n\n`;
 
+/** Whether the request with `body` asks for its reply as a stream. */
+function asksForStream(body: string): boolean {
+  try {
+    return (JSON.parse(body) as { stream?: unknown }).stream === true;
+  } catch {
+    return true;
+  }
+}
+
 export async function scriptedModel(replies: Reply[]): Promise<Model> {
   let calls = 0;
   const bodies: string[] = [];
@@ -51,6 +62,16 @@ export async function scriptedModel(replies: Reply[]): Promise<Model> {
     req.on('end', async () => {
       bodies.push(body);
       const reply = replies[calls++] ?? { text: 'All done.' };
+      if ('text' in reply && !asksForStream(body)) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            choices: [{ index: 0, message: { role: 'assistant', content: reply.text }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 20, completion_tokens: 5 },
+          }),
+        );
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if ('tool' in reply) {
         res.write(

@@ -13,7 +13,7 @@ import { call } from './bridge';
 import { ArchiveIcon, ConfidentialMark, GearIcon, PlusIcon, SearchIcon } from './Icons';
 import { type Entry, MenuButton, MenuList } from './Menu';
 import { answered, asking, emptyLine, failed as searchFailed, type Found, IDLE, marked, SEARCH_DELAY_MS, SEARCH_LIMIT, type SearchState, searchTerm, unshown } from './search';
-import { byFolder, CONFIDENTIAL_TIP, folderName, type ListedSession, listedPage, type SessionsState, statusLabel, title } from './sessions';
+import { byFolder, confidentialTip, folderName, type ListedSession, listedPage, type SessionsState, statusLabel, title } from './sessions';
 
 /** How many archived sessions the list asks for: the most recent ones. */
 const ARCHIVED_SHOWN = 100;
@@ -160,7 +160,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
                 >
                   <span className="found-head">
                     <span className="session-title">{title(found.session)}</span>
-                    {found.session.confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
+                    {found.session.confidential && <ConfidentialMark tip={confidentialTip(found.session.confidentialBrief)} />}
                     <span className="session-folder">{folderName(found.session.cwd ?? null)}</span>
                   </span>
                   <span className="snippet">
@@ -252,7 +252,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
                     onClick={() => onOpenArchived(session.id)}
                   >
                     <span className="session-title">{title(session)}</span>
-                    {session.confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
+                    {session.confidential && <ConfidentialMark tip={confidentialTip(session.brief)} />}
                     <span className="session-folder">{folderName(session.cwd)}</span>
                   </button>
                   <MenuButton label="Session actions" entries={archivedEntries(session)} className="row-menu" right>
@@ -317,7 +317,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
                       }}
                     >
                       <span className="session-title">{title(session)}</span>
-                      {session.confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
+                      {session.confidential && <ConfidentialMark tip={confidentialTip(session.brief)} />}
                       {label === 'working' && (
                         <span className="mark working" role="img" aria-label="working" title="Working" />
                       )}

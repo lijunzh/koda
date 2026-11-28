@@ -50,7 +50,7 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
     // No arg hint: a bare `/confidential` marks the session.
     (
         "/confidential",
-        "Keep this session from models on remote providers (/confidential off)",
+        "Keep this session from models on remote providers (off, brief)",
         None,
     ),
     // No arg hint, as for `/mcp`: with one, Enter on a bare `/copy`

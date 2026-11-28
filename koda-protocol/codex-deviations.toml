@@ -41,6 +41,8 @@
 "session/memory/add" = "Koda's memory notes, written by the user"
 "session/confidential/set" = "Koda's confidential mark: a marked session's text is kept from models on a remote provider (Codex's nearest is thread/memoryMode/set, which is about memory generation)"
 "session/confidential/updated" = "Koda's confidential mark: tells every client a session was marked or unmarked, by the user or because it read a confidential session"
+"session/confidential/brief/set" = "Koda's confidential mark: the one line a model on a remote provider is told of a confidential session, set or cleared by the user"
+"session/confidential/brief/updated" = "Koda's confidential mark: tells every client a session's brief changed, or that a local model drafted one for the user to accept"
 "session/goal/held" = "Koda's goal: held after turns without progress"
 "session/goal/judged" = "Koda's goal: the judge's verdict on a turn"
 "session/backgroundTerminals/exited" = "Koda tells clients when a background command exits"
@@ -57,6 +59,8 @@
 # policies.
 "Session.mode" = "Koda's trust mode"
 "Session.confidential" = "Koda's confidential mark, so a client can show it (Codex's Thread has no memory mode field either)"
+"Session.confidentialBrief" = "Koda's confidential mark: the brief models on remote providers are told, so a client can show and edit it"
+"Session.confidentialBriefDraft" = "Koda's confidential mark: a local model's draft of the brief, waiting for the user"
 "SessionSettings.mode" = "Koda's trust mode"
 "SessionSettingsUpdateParams.mode" = "Koda's trust mode"
 "TurnStartParams.mode" = "Koda's trust mode"

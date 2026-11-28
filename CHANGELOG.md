@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   - **`MemoryWrite` refuses in a confidential session,** because its notes are read by every session of the project; `/memory add` still saves what you write yourself.
   - **Local means a local provider at a local address:** LM Studio, Ollama, vLLM or llama.cpp at a loopback, private-network or Tailscale address, or a LAN host name.
   - **What it is not:** encryption. The session is still stored in plain text, a feedback bundle still holds it, and a remote session that read it before you marked it keeps what it read. Nothing is marked for you except by reading a confidential session. See [Confidential sessions](docs/src/sessions.md#confidential-sessions).
+- **A confidential session can carry a brief, so a session on a remote model knows what it is without reading it.** Until now such a session was told only "Confidential session" with a short ID and a date. A local model now drafts one line on the kind of work the session is (no names, numbers, paths or quotations), and you accept, edit or discard it: `/confidential brief` in the TUI (`accept`, `clear`, or your own text), or the line under the title in the app, and "Edit brief…" in the title menu. Only a brief you accepted or wrote is shown to a model; a draft never is.
+  - **Drafting uses a local model that is already loaded and idle:** the session's own when you mark it after it has answered a turn, otherwise the model of the next session on a local provider, after its turn ends. Koda never loads a model for it and never asks a remote provider. Until there is a brief, the short ID stands in.
+  - **On a local server with one slot,** a draft replaces the cached prompt of the session that was just running, so that session's next turn takes longer to start.
 
 ### Changed
 

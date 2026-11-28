@@ -179,7 +179,8 @@ Each session has its `id`, `name`, `preview` (the start of its first prompt),
 `createdAt` and `updatedAt` in Unix seconds, `cwd`, the `model` and `modelProvider`
 it last ran with, `mode`, where it came from (`source`, `originator`, the
 name its client gave in `initialize`, `forkedFromId` and `parentSessionId`),
-`confidential` when it is [marked](#marking-a-session-confidential),
+`confidential` when it is [marked](#marking-a-session-confidential), with
+its `confidentialBrief` and `confidentialBriefDraft` when it has them,
 and its `status`, as Codex's `Thread.status`: `{"type": "notLoaded"}` for a
 stored session that isn't open, `{"type": "idle"}`, or `{"type": "active",
 "activeFlags": […]}` while a turn runs or an answer is waited on, with
@@ -187,7 +188,7 @@ stored session that isn't open, `{"type": "idle"}`, or `{"type": "active",
 request) and `waitingOnUserInput` (the model's question) among the flags.
 
 Every client hears `session/started`, `session/name/updated`,
-`session/confidential/updated`,
+`session/confidential/updated`, `session/confidential/brief/updated`,
 `session/deleted`, `session/archived`, `session/unarchived` and
 `session/status/changed` for every session, as Codex
 sends them to every connection, so a list a client shows stays right when
@@ -330,6 +331,50 @@ like this, is set at any time and leaves the thread usable.
   refused fork leaves no copy. A fork's `session` has
   `"confidential": true`.
 - **Refused with `-32600`:** an ID that names no session.
+
+### A confidential session's brief
+
+A confidential session may have a **brief**: one line a model on a remote
+provider is told of it in place of its text, after its id and date in
+`SearchSessions`'s notice and `ReadSession`'s answer
+([The brief](./sessions.md#the-brief)). The host drafts one on a local
+model and keeps the draft apart; `session/confidential/brief/set` is how
+the user accepts it, writes their own or discards it. Koda's own.
+
+```json
+{"jsonrpc":"2.0","method":"session/confidential/brief/updated","params":{"sessionId":"<id>","brief":null,"draft":"Planning a household budget"}}
+{"jsonrpc":"2.0","id":8,"method":"session/confidential/brief/set","params":{"sessionId":"<id>","brief":"Planning a household budget"}}
+{"jsonrpc":"2.0","id":8,"result":{}}
+{"jsonrpc":"2.0","method":"session/confidential/brief/updated","params":{"sessionId":"<id>","brief":"Planning a household budget","draft":null}}
+```
+
+- **`Session.confidentialBrief`** is the brief models on remote providers
+  are told, and **`Session.confidentialBriefDraft`** a draft waiting for
+  the user, which no model is told. Each is left out when there is none.
+- **`brief` is a text or `null`,** and must be given. A text becomes the
+  brief and the draft goes: accepting a draft is sending its text. It is
+  the user's own, so only its shape is checked: one line, at most 100
+  characters once the white space around it is taken off. `null` clears
+  the brief and the draft.
+- **`session/confidential/brief/updated`** goes to every client with the
+  brief and the draft as they are now: after a set, and when the host has
+  a new draft. Unmarking a session clears both without one;
+  `session/confidential/updated` says the mark is off.
+- **Drafting is the host's,** in the background, and no request starts
+  it. Only a local provider is asked, and only a model that has just
+  answered: the session's own when it is marked while idle after a turn,
+  and, after any turn on a local model but a `koda exec` run's, that
+  model for up to two of the sessions waiting, the most recently active
+  first. One request at a
+  time, with no tools, of 30 seconds at most, and none while a turn runs
+  at that endpoint; a turn that starts there stops it. A draft is stored
+  only if the session still has neither a brief nor a draft, so two Koda
+  processes drafting the same session leave one draft.
+- **After a clear** the host drafts no other for that session until it
+  restarts or the session is unmarked and marked again.
+- **Refused with `-32600`:** a session that isn't confidential, an ID
+  that names no session, an empty text, one of more than a line or more
+  than 100 characters. Without `brief`: `-32602`.
 
 ## A session's earlier turns
 

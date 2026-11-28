@@ -1768,9 +1768,13 @@ async fn a_named_session_keeps_its_name_over_the_first_prompt() {
 /// `session/confidential/updated` follows each change, the session says it
 /// is confidential wherever it is listed or read, and it goes on taking
 /// turns, since the mark is about what other sessions' models are given.
+/// `session/confidential/brief/set` gives it a brief, which
+/// `session/confidential/brief/updated` and the session then say.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_marked_confidential_says_so_and_goes_on() {
-    use koda_client::protocol::session::{SessionConfidentialSetParams, SessionReadParams};
+    use koda_client::protocol::session::{
+        SessionConfidentialBriefSetParams, SessionConfidentialSetParams, SessionReadParams,
+    };
     let server = model(vec![text("Done.")]).await;
     let mut koda = Koda::start(config(&server)).await;
     let set = |session: &str, confidential: bool| SessionConfidentialSetParams {
@@ -1794,6 +1798,26 @@ async fn a_session_marked_confidential_says_so_and_goes_on() {
         );
         assert_eq!(koda.list().await[0].confidential, confidential);
     }
+    // Its brief, which the user gives: what models on remote providers
+    // are told of it. With one, Koda asks its model for no draft.
+    koda.client
+        .request::<methods::SessionConfidentialBriefSet>(SessionConfidentialBriefSetParams {
+            session_id: koda.session.clone(),
+            brief: Some("Carrying on".to_string()),
+        })
+        .await
+        .unwrap();
+    let seen = koda.until("session/confidential/brief/updated").await;
+    assert!(
+        matches!(
+            seen.last(),
+            Some(Outgoing::Notification(ServerNotification::SessionConfidentialBriefUpdated(n)))
+                if n.session_id == koda.session
+                    && n.brief.as_deref() == Some("Carrying on")
+                    && n.draft.is_none()
+        ),
+        "{seen:?}"
+    );
     koda.turn("carry on").await;
     let turn = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&turn).status, TurnStatus::Completed);
@@ -1806,6 +1830,11 @@ async fn a_session_marked_confidential_says_so_and_goes_on() {
         .await
         .unwrap();
     assert!(read.session.confidential);
+    assert_eq!(
+        read.session.confidential_brief.as_deref(),
+        Some("Carrying on")
+    );
+    assert_eq!(chat_requests(&server).await.len(), 1, "the turn alone");
 
     let unknown = server_error(
         koda.client
@@ -3705,6 +3734,27 @@ fn whole(message: Value) -> ResponseTemplate {
         )
 }
 
+/// A local model's whole reply to Koda's request for a confidential
+/// session's brief. A session on a local model, as these are, is asked for
+/// one when it is marked while idle after a turn, and when a turn of a
+/// marked session ends: a reply of the script, and
+/// `session/confidential/brief/updated` once it is stored.
+fn brief_draft() -> ResponseTemplate {
+    whole(json!({"role": "assistant", "content": "Trying out sub-agents"}))
+}
+
+/// The chat requests `server` received for turns, in order: all but
+/// Koda's own for a brief.
+async fn turn_requests(server: &FakeLlmServer) -> Vec<Value> {
+    let for_a_brief = |request: &Value| {
+        let asked = request["messages"].to_string();
+        asked.contains("Write a brief for the conversation above")
+    };
+    let mut requests = chat_requests(server).await;
+    requests.retain(|request| !for_a_brief(request));
+    requests
+}
+
 /// Mark `koda`'s session confidential, or unmark it, and wait for the
 /// host to say so.
 async fn set_confidential(koda: &mut Koda, confidential: bool) {
@@ -3739,6 +3789,8 @@ async fn a_confidential_session_starts_no_sub_agent_on_a_remote_provider() {
         invoke("call_1", "elsewhere", "first task"),
         says("Elsewhere did it."),
         text("Done once."),
+        // Marked: its brief is drafted.
+        brief_draft(),
         // Confidential: neither is started.
         invoke("call_2", "elsewhere", "second task"),
         invoke("call_3", "faraway", "third task"),
@@ -3774,7 +3826,7 @@ async fn a_confidential_session_starts_no_sub_agent_on_a_remote_provider() {
     }
     let mut koda = Koda::start_in(config(&server), dir).await;
     let sent = async |server: &FakeLlmServer| -> Vec<String> {
-        let requests = chat_requests(server).await;
+        let requests = turn_requests(server).await;
         requests.iter().map(|r| r["messages"].to_string()).collect()
     };
 
@@ -3791,6 +3843,7 @@ async fn a_confidential_session_starts_no_sub_agent_on_a_remote_provider() {
     assert!(before[2].contains("Elsewhere did it."), "{}", before[2]);
 
     set_confidential(&mut koda, true).await;
+    koda.until("session/confidential/brief/updated").await;
     koda.turn("Now the second and third").await;
     koda.until("turn/completed").await;
     let refused = sent(&server).await;
@@ -3917,6 +3970,8 @@ async fn a_confidential_sessions_model_saves_no_notes() {
     let server = model(vec![
         write("call_1", "the okapi budget is 42"),
         text("Not saved."),
+        // The marked session's first turn has ended: its brief is drafted.
+        brief_draft(),
         // A sub-agent, on the session's own provider, tries the same.
         tool_call(
             "call_agent",
@@ -3958,6 +4013,7 @@ async fn a_confidential_sessions_model_saves_no_notes() {
     set_confidential(&mut koda, true).await;
     koda.turn("Remember the budget").await;
     koda.until("turn/completed").await;
+    koda.until("session/confidential/brief/updated").await;
     let told = chat_requests(&server).await[1]["messages"].to_string();
     assert!(
         told.contains(
@@ -3972,7 +4028,7 @@ async fn a_confidential_sessions_model_saves_no_notes() {
     koda.turn("Have scribe note the count").await;
     koda.until("turn/completed").await;
     // The sub-agent's second request carries what its call came to.
-    let told = chat_requests(&server).await[4]["messages"].to_string();
+    let told = turn_requests(&server).await[4]["messages"].to_string();
     assert!(
         told.contains("note the okapi count")
             && told.contains("This session is confidential, so MemoryWrite saves nothing"),

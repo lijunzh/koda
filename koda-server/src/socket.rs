@@ -544,11 +544,13 @@ struct RouterState {
 /// sends a thread's start, rename, delete, archive and status to every
 /// connection: a client that lists sessions hears of ones another client
 /// makes, and of what each is doing. A session marked confidential is one
-/// of them, by the user or by Koda, archived or not.
+/// of them, by the user or by Koda, archived or not, and so is its brief:
+/// a draft waits for whichever client the user reads it in.
 const TOLD_TO_EVERYONE: &[&str] = &[
     "session/started",
     "session/name/updated",
     "session/confidential/updated",
+    "session/confidential/brief/updated",
     "session/deleted",
     "session/archived",
     "session/unarchived",

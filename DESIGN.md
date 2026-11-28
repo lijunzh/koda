@@ -322,7 +322,8 @@ The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `session/list`, `session/search`,
 `session/delete`,
 `session/archive`, `session/unarchive`,
-`session/name/set`, `session/confidential/set`, `session/fork`,
+`session/name/set`, `session/confidential/set`,
+`session/confidential/brief/set`, `session/fork`,
 `session/compact/start`, `session/settings/update`, `session/unsubscribe`,
 `model/list`, `modelProvider/list`, `modelProvider/apiKey/set`,
 `modelProvider/apiKey/remove`, `webSearch/apiKey/read`, `webSearch/apiKey/set`,
@@ -1636,6 +1637,42 @@ host gives its text to no model on a remote provider:
 It is a mark on the session's row, not encryption. A remote session that
 read the text before the mark keeps it, and a feedback report holds the
 session's rows.
+
+**The brief.** An id and a date tell a remote model nothing, so a
+confidential session may carry one line that says what kind of work it is
+(`host/confidential_brief.rs`). The line is the only thing derived from a
+confidential session that a remote provider is ever given, so each step is
+the cautious one:
+
+- **A local model writes it, the user releases it.** The draft and the
+  brief are two columns. Only the brief is put on the session's line, and
+  only `session/confidential/brief/set` writes it: a model's summary of a
+  confidential session doesn't reach a remote provider on the model's own
+  say. A draft that holds a path, a file or host name, a URL, an email
+  address or four digits in a row is thrown away whole, since the user may
+  accept without reading closely; the user's own text is not second-guessed.
+- **No model is loaded for it.** LM Studio and Ollama load a model on
+  request, so "the provider is local" isn't enough. A draft is asked only
+  of a model that has just answered a turn: the session's own when it is
+  marked while idle after one, and after any local turn that model, for
+  the sessions still waiting. A session on a remote provider waits for
+  the next local turn; until then its line is the id and date. A `koda
+  exec` run's turn starts none: the run is over, and a script's next run
+  would wait behind the draft.
+- **Never in a turn's way.** One background task per host, nothing asked
+  while a session of that host has a turn at the endpoint, and a turn that
+  starts there stops the request. A local server usually answers one
+  request at a time, and a draft queued ahead of the user's prompt would
+  be a delay nobody asked for. Two things remain: a turn in another Koda
+  process isn't seen, and on a server with one slot the draft's prompt
+  replaces the session's in the server's prompt cache.
+- **One request, bounded.** No tools, about 8,000 characters of the user's
+  and the assistant's words, 30 seconds, a low temperature; at most three
+  failures and two thrown-away drafts per session in a run. Stored with a
+  compare-and-set in SQL, so a second process doing the same is harmless.
+- **A discard is an answer.** After the user clears a brief or a draft the
+  host offers no other for that session in that run; without this, each
+  later turn would bring the same draft back.
 
 ### No Delete tool (P2)
 

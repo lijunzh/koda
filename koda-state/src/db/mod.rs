@@ -78,9 +78,9 @@ fn folder_of(path: &Path) -> &Path {
 /// transaction. They only add: an older Koda that opens a newer file runs
 /// its own checks, finds what it needs, and leaves the rest alone, as
 /// Codex's migrator ignores migrations it doesn't know.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 /// Sets [`SCHEMA_VERSION`]; a pragma takes no bound value.
-const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 4";
+const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 5";
 
 impl Database {
     /// Access the underlying connection pool (for tests and raw queries).
@@ -184,10 +184,43 @@ impl Database {
         if found < 4 {
             Self::session_confidential(&mut tx).await?;
         }
+        if found < 5 {
+            Self::session_confidential_brief(&mut tx).await?;
+        }
         if found < SCHEMA_VERSION {
             sqlx::query(SET_SCHEMA_VERSION).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Version 5: a confidential session's brief, the one line a model on a
+    /// remote provider is told of it (`confidential_brief`, which the user
+    /// accepted or wrote), and a draft of one waiting for the user
+    /// (`confidential_brief_draft`, which a local model wrote and no model
+    /// is shown). `NULL` for every session from before them. Koda's own.
+    async fn session_confidential_brief(conn: &mut sqlx::SqliteConnection) -> Result<()> {
+        // Checked, like version 4's: a file whose version was lost may
+        // have them already.
+        for (column, add) in [
+            (
+                "confidential_brief",
+                "ALTER TABLE sessions ADD COLUMN confidential_brief TEXT",
+            ),
+            (
+                "confidential_brief_draft",
+                "ALTER TABLE sessions ADD COLUMN confidential_brief_draft TEXT",
+            ),
+        ] {
+            let present: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM pragma_table_info('sessions') WHERE name = ?")
+                    .bind(column)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            if present.is_none() {
+                sqlx::query(add).execute(&mut *conn).await?;
+            }
+        }
         Ok(())
     }
 
@@ -608,6 +641,8 @@ pub(crate) struct SessionInfoRow {
     pub ephemeral: bool,
     pub archived_unix: Option<i64>,
     pub confidential: bool,
+    pub confidential_brief: Option<String>,
+    pub confidential_brief_draft: Option<String>,
     pub sequence: i64,
 }
 
@@ -633,6 +668,8 @@ impl From<SessionInfoRow> for SessionInfo {
             ephemeral: r.ephemeral,
             archived_unix: r.archived_unix,
             confidential: r.confidential,
+            confidential_brief: r.confidential_brief,
+            confidential_brief_draft: r.confidential_brief_draft,
             sequence: r.sequence,
         }
     }

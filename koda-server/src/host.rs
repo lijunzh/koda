@@ -42,6 +42,7 @@ use crate::session::{
     invalid,
 };
 
+mod confidential_brief;
 mod session_archive;
 
 /// Open sessions' in-process handles, by id; shared with the client.
@@ -229,6 +230,8 @@ struct Host {
     ended: mpsc::UnboundedSender<(String, Option<String>)>,
     /// `fuzzyFileSearch` requests in flight, by cancellation token.
     searches: crate::fuzzy_file_search::PendingSearches,
+    /// The drafting of confidential sessions' briefs on a local model.
+    briefs: confidential_brief::Drafts,
 }
 
 async fn run(
@@ -353,6 +356,7 @@ fn ordered_session(request: &rpc::Request) -> Option<String> {
         "session/unarchive",
         "session/name/set",
         "session/confidential/set",
+        "session/confidential/brief/set",
         "session/settings/update",
         "session/compact/start",
         "session/revert",
@@ -388,6 +392,7 @@ impl Host {
                 open_requests: OpenRequests::default(),
                 statuses: session::Statuses::default(),
                 run_checked: Arc::default(),
+                turns: Arc::new(confidential_brief::Watch(me.clone())),
             },
             handles: HandleMap::default(),
             client: OnceLock::new(),
@@ -396,6 +401,7 @@ impl Host {
             tasks: Mutex::new(JoinSet::new()),
             ended,
             searches: crate::fuzzy_file_search::PendingSearches::default(),
+            briefs: confidential_brief::Drafts::default(),
         })
     }
 
@@ -764,9 +770,35 @@ impl Host {
             ClientRequest::SessionConfidentialSet { params, .. } => {
                 let confidential = params.confidential;
                 let set = self.set_confidential(params).await;
+                let changed = set
+                    .as_ref()
+                    .map_or_else(|_| Vec::new(), |set| set.1.clone());
                 self.answer_then_tell(reply, set, |session_id| {
                     confidential_updated(session_id, confidential)
                 });
+                // A brief goes with the mark: a session marked gets a
+                // draft of one, and one unmarked may be drafted afresh if
+                // it is marked again.
+                if confidential {
+                    self.draft_for_marked(changed).await;
+                } else {
+                    self.briefs.forget(&changed);
+                }
+                return;
+            }
+            ClientRequest::SessionConfidentialBriefSet { params, .. } => {
+                let set = self.set_brief(params).await;
+                let (answer, told) = match set {
+                    Ok(told) => (
+                        to_json(koda_protocol::session::SessionConfidentialBriefSetResponse {}),
+                        Some(told),
+                    ),
+                    Err(e) => (Err(e), None),
+                };
+                let _ = reply.send(answer);
+                if let Some(told) = told {
+                    self.tell_brief(told);
+                }
                 return;
             }
             ClientRequest::SessionFork { params, .. } => {
@@ -1877,6 +1909,7 @@ impl Host {
     /// Tell every session to stop, wait a while for their turns to wind
     /// down, then stop what's left.
     async fn stop_sessions(&self) {
+        self.briefs.stop();
         self.handles
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

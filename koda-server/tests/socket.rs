@@ -829,6 +829,7 @@ fn is_broadcast(line: &Value) -> bool {
             "session/started"
                 | "session/name/updated"
                 | "session/confidential/updated"
+                | "session/confidential/brief/updated"
                 | "session/deleted"
                 | "session/archived"
                 | "session/unarchived"
@@ -1714,9 +1715,9 @@ async fn every_client_hears_a_rename_and_a_delete() {
 }
 
 /// A client that lists sessions hears of a session another client marks
-/// confidential, one it never opened, and of the mark coming off after the
-/// session was archived, which closes it in the server: the lock a list
-/// shows follows the session wherever it is.
+/// confidential, one it never opened, of the brief set for it, and of the
+/// mark coming off after the session was archived, which closes it in the
+/// server: the lock a list shows follows the session wherever it is.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_client_hears_a_session_marked_confidential() {
     let server = model(vec![]).await;
@@ -1734,6 +1735,26 @@ async fn every_client_hears_a_session_marked_confidential() {
     }
     let listed = watcher.request("session/list", json!({})).await.unwrap();
     assert_eq!(listed["data"][0]["confidential"], json!(true), "{listed}");
+
+    // Its brief too, set by the client that never opened it.
+    let brief = json!({"sessionId": session, "brief": "Planning a trip"});
+    let answer = watcher.request("session/confidential/brief/set", brief);
+    assert_eq!(answer.await.unwrap(), json!({}));
+    for client in [&mut owner, &mut watcher] {
+        let heard = client
+            .until_method("session/confidential/brief/updated")
+            .await;
+        assert_eq!(
+            heard.last().unwrap()["params"],
+            json!({"sessionId": session, "brief": "Planning a trip", "draft": null})
+        );
+    }
+    let listed = owner.request("session/list", json!({})).await.unwrap();
+    assert_eq!(
+        listed["data"][0]["confidentialBrief"],
+        json!("Planning a trip"),
+        "{listed}"
+    );
 
     owner
         .request("session/archive", json!({"sessionId": session}))

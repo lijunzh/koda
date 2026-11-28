@@ -497,7 +497,7 @@ macro_rules! session_info_select {
         s.project_root, s.provider, s.base_url, s.model,
         s.source, s.originator, s.forked_from_id, s.parent_session_id, s.ephemeral,
         CAST(strftime('%s', s.archived_at) AS INTEGER) as archived_unix,
-        s.confidential,
+        s.confidential, s.confidential_brief, s.confidential_brief_draft,
         s.rowid as sequence
      FROM sessions s"
     };
@@ -1433,15 +1433,56 @@ impl SessionStore for Database {
             if is == confidential {
                 continue;
             }
-            sqlx::query("UPDATE sessions SET confidential = ? WHERE id = ?")
-                .bind(confidential)
-                .bind(&id)
-                .execute(&mut *tx)
-                .await?;
+            // A brief says what a confidential session is: it goes with
+            // the mark, and so does a draft of one.
+            sqlx::query(
+                "UPDATE sessions
+                    SET confidential = ?,
+                        confidential_brief =
+                            CASE WHEN ? THEN confidential_brief END,
+                        confidential_brief_draft =
+                            CASE WHEN ? THEN confidential_brief_draft END
+                  WHERE id = ?",
+            )
+            .bind(confidential)
+            .bind(confidential)
+            .bind(confidential)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
             changed.push(id);
         }
         tx.commit().await?;
         Ok(changed)
+    }
+
+    async fn set_confidential_brief(&self, session_id: &str, brief: Option<&str>) -> Result<bool> {
+        let set = sqlx::query(
+            "UPDATE sessions
+                SET confidential_brief = ?, confidential_brief_draft = NULL
+              WHERE id = ? AND confidential = 1",
+        )
+        .bind(brief)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(set.rows_affected() == 1)
+    }
+
+    async fn offer_confidential_brief_draft(&self, session_id: &str, draft: &str) -> Result<bool> {
+        // One statement, so of two processes that drafted for the same
+        // session one stores its draft and the other finds it there.
+        let stored = sqlx::query(
+            "UPDATE sessions
+                SET confidential_brief_draft = ?
+              WHERE id = ? AND confidential = 1
+                AND confidential_brief IS NULL AND confidential_brief_draft IS NULL",
+        )
+        .bind(draft)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(stored.rows_affected() == 1)
     }
 
     async fn mark_confidential_with_forks(
