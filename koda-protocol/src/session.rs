@@ -316,7 +316,8 @@ pub enum SessionUnsubscribeStatus {
 }
 
 /// `session/list`: stored sessions, newest first. Codex's `thread/list`.
-/// A session started with `ephemeral` is never listed.
+/// A session started with `ephemeral` is never listed, and an archived one
+/// only with `archived`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionListParams {
@@ -351,6 +352,11 @@ pub struct SessionListParams {
     /// provider's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_providers: Option<Vec<String>>,
+    /// Optional archived filter; when set to true, only archived sessions
+    /// are returned. If false or null, only non-archived sessions are
+    /// returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
 }
 
 /// `session/list`'s `cwd`: one folder or several. Codex's
@@ -428,6 +434,47 @@ pub struct SessionDeleteParams {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDeleteResponse {}
+
+/// `session/archive`: put a stored session away, as Codex's
+/// `thread/archive` does. It stays stored and readable (`session/read`,
+/// `session/fork`), but `session/list` leaves it out unless asked for
+/// archived ones, and `session/resume` refuses it until
+/// `session/unarchive`. An open one is closed first, its running turn
+/// stopped and its unanswered requests withdrawn. The sessions of the
+/// sub-agents it ran are archived with it. `session/archived` follows, one
+/// for each session archived, to every client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionArchiveParams {
+    /// The session, by its full id.
+    pub session_id: String,
+}
+
+/// The answer to `session/archive`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionArchiveResponse {}
+
+/// `session/unarchive`: bring an archived session back, as Codex's
+/// `thread/unarchive` does, with the sessions of the sub-agents it ran. It
+/// is listed again and can be resumed; this doesn't open it.
+/// `session/unarchived` follows, one for each session restored, to every
+/// client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionUnarchiveParams {
+    /// The session, by its full id.
+    pub session_id: String,
+}
+
+/// The answer to `session/unarchive`: the session, as `session/read` gives
+/// it without its turns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnarchiveResponse {
+    /// The restored session.
+    pub session: Session,
+}
 
 /// `session/compact/start`: compact an open session's history now, as
 /// Codex's `thread/compact/start`. Answered at once; the compaction runs as
@@ -703,6 +750,24 @@ pub struct SessionStatusChangedNotification {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDeletedNotification {
+    /// The session.
+    pub session_id: String,
+}
+
+/// `session/archived`: a session was archived, for every client. Codex's
+/// `thread/archived`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionArchivedNotification {
+    /// The session.
+    pub session_id: String,
+}
+
+/// `session/unarchived`: an archived session was brought back, for every
+/// client. Codex's `thread/unarchived`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUnarchivedNotification {
     /// The session.
     pub session_id: String,
 }

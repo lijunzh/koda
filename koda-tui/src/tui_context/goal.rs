@@ -238,7 +238,8 @@ fn change(before: Option<&Goal>, now: &Goal) -> Option<String> {
 
 impl TuiContext {
     /// Say what changed when the host reports the session's goal changed,
-    /// or that background commands exited (the model is being told).
+    /// that background commands exited (the model is being told), or that
+    /// the session was archived.
     pub(crate) fn note_session(&mut self, message: &Outgoing) {
         let Outgoing::Notification(notification) = message else {
             return;
@@ -284,6 +285,23 @@ impl TuiContext {
             {
                 self.goal = None;
                 tui_output::dim_msg(&mut self.scroll_buffer, "Goal cleared.".into());
+            }
+            // Another client archived it (`koda archive`), and the host
+            // has closed it. Nothing more is sent to it as an open session:
+            // the next prompt opens it again first, which the host refuses
+            // until it is unarchived.
+            ServerNotification::SessionArchived(archived)
+                if archived.session_id == self.session.id =>
+            {
+                self.host_session.clear();
+                tui_output::warn_msg(
+                    &mut self.scroll_buffer,
+                    format!(
+                        "This session was archived. Run `koda unarchive {}` to go on with \
+                         it, or /new to start another.",
+                        self.session.id
+                    ),
+                );
             }
             _ => {}
         }

@@ -151,6 +151,18 @@ client_requests! {
         params: crate::session::SessionDeleteParams,
         response: crate::session::SessionDeleteResponse,
     },
+    /// Archive a stored session, closing it first if it is open, as
+    /// Codex's `thread/archive` does. `session/archived` follows.
+    SessionArchive => "session/archive" {
+        params: crate::session::SessionArchiveParams,
+        response: crate::session::SessionArchiveResponse,
+    },
+    /// Bring an archived session back, without opening it, as Codex's
+    /// `thread/unarchive` does. `session/unarchived` follows.
+    SessionUnarchive => "session/unarchive" {
+        params: crate::session::SessionUnarchiveParams,
+        response: crate::session::SessionUnarchiveResponse,
+    },
     /// Copy a stored session into a new one and open it, as Codex's
     /// `thread/fork` does.
     SessionFork => "session/fork" {
@@ -426,6 +438,82 @@ mod tests {
         let bad = ClientRequest::try_from(request("initialize", Some(json!({"clientInfo": 3}))))
             .unwrap_err();
         assert_eq!(bad.to_error_object().code, rpc::codes::INVALID_PARAMS);
+    }
+
+    /// Archiving goes on the wire as Codex's `thread/archive`,
+    /// `thread/unarchive` and `thread/list`'s `archived` do, with session
+    /// for thread: a client written for one reads the other.
+    #[test]
+    fn archiving_is_on_the_wire_as_codexs() {
+        use crate::ServerNotification;
+        use crate::session::{
+            SessionArchiveParams, SessionArchivedNotification, SessionListParams,
+            SessionUnarchiveParams, SessionUnarchivedNotification,
+        };
+        let id = || "s-1".to_string();
+        let archive = encode::<methods::SessionArchive>(
+            RequestId::Integer(1),
+            &SessionArchiveParams { session_id: id() },
+        )
+        .unwrap();
+        let unarchive = encode::<methods::SessionUnarchive>(
+            RequestId::Integer(2),
+            &SessionUnarchiveParams { session_id: id() },
+        )
+        .unwrap();
+        for (request, method) in [
+            (archive, "session/archive"),
+            (unarchive, "session/unarchive"),
+        ] {
+            assert_eq!(request.method, method);
+            assert_eq!(
+                request.params,
+                Some(json!({"sessionId": "s-1"})),
+                "{method}"
+            );
+            let decoded = ClientRequest::try_from(request).unwrap();
+            assert_eq!(decoded.method(), method);
+        }
+        // `thread/unarchive` answers with the thread; `thread/archive`, nothing.
+        let restored: <methods::SessionUnarchive as Method>::Response = serde_json::from_value(
+            json!({"session": {"id": "s-1", "createdAt": 1, "updatedAt": 2}}),
+        )
+        .unwrap();
+        assert_eq!(restored.session.id, "s-1");
+        let archived: <methods::SessionArchive as Method>::Response = Default::default();
+        assert_eq!(serde_json::to_value(archived).unwrap(), json!({}));
+
+        // The filter is sent only when set.
+        let listing = |archived| {
+            serde_json::to_value(SessionListParams {
+                archived,
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        assert_eq!(listing(Some(true)), json!({"archived": true}));
+        assert_eq!(listing(None), json!({}));
+
+        let told = [
+            (
+                ServerNotification::SessionArchived(SessionArchivedNotification {
+                    session_id: id(),
+                }),
+                "session/archived",
+            ),
+            (
+                ServerNotification::SessionUnarchived(SessionUnarchivedNotification {
+                    session_id: id(),
+                }),
+                "session/unarchived",
+            ),
+        ];
+        for (notification, method) in told {
+            assert_eq!(
+                serde_json::to_value(notification).unwrap(),
+                json!({"method": method, "params": {"sessionId": "s-1"}})
+            );
+        }
     }
 
     #[test]

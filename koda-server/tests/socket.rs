@@ -809,7 +809,7 @@ async fn an_approval_waits_for_a_client_that_attaches() {
 }
 
 /// What the server sends to every connection, subscribed or not, as Codex
-/// sends a thread's start, rename, delete and status.
+/// sends a thread's start, rename, delete, archive and status.
 fn is_broadcast(line: &Value) -> bool {
     matches!(
         line["method"].as_str(),
@@ -817,6 +817,8 @@ fn is_broadcast(line: &Value) -> bool {
             "session/started"
                 | "session/name/updated"
                 | "session/deleted"
+                | "session/archived"
+                | "session/unarchived"
                 | "session/status/changed"
         )
     )
@@ -1677,6 +1679,283 @@ async fn every_client_hears_a_rename_and_a_delete() {
         .unwrap();
     let deleted = watcher.until_method("session/deleted").await;
     assert_eq!(session_of(deleted.last().unwrap()), Some(session.as_str()));
+    koda.stop().await;
+}
+
+/// The ids `session/list` gives for `params`.
+async fn listed_ids(client: &mut Client, params: Value) -> Vec<String> {
+    let listed = client.request("session/list", params).await.unwrap();
+    listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| session["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// An error's code and message.
+fn refusal(error: Value) -> (i64, String) {
+    (
+        error["code"].as_i64().unwrap(),
+        error["message"].as_str().unwrap().to_string(),
+    )
+}
+
+/// `session/archive`, as Codex's `thread/archive`: a session a client has
+/// open is closed in the host, with the sessions of its sub-agents, and
+/// every connection hears `session/archived` for each, subscribed or not.
+/// It is left out of lists unless archived ones are asked for, still reads
+/// and forks, and can't be resumed, in Codex's words, until
+/// `session/unarchive`, which answers with the session, tells every
+/// connection, and doesn't open it: the next `session/resume` does.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_archived_session_is_closed_and_put_away_until_it_is_unarchived() {
+    use koda_state::session_store::{SessionOrigin, SessionStore, source};
+    let server = model(vec![text("Kept.")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let koda = Server::start_in(dir.path(), config(&server), Duration::from_secs(60)).await;
+    let mut owner = Client::ready(&koda).await;
+    let mut watcher = Client::ready(&koda).await;
+    let session = owner.start_session().await;
+    owner
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": [{"type": "text", "text": "keep this"}]}),
+        )
+        .await
+        .unwrap();
+    owner.until_method("turn/completed").await;
+    // The session of a sub-agent it ran, as core records one.
+    let child = koda_state::db::Database::init(&dir.path().join("config"))
+        .await
+        .unwrap()
+        .create_session_from(
+            "explore",
+            &dir.path().join("project"),
+            &SessionOrigin {
+                source: Some(source::SUB_AGENT.into()),
+                parent_session_id: Some(session.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let invalid_request = -32600;
+
+    // A client that isn't subscribed archives it.
+    let answer = watcher
+        .request("session/archive", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(answer, json!({}));
+    for client in [&mut owner, &mut watcher] {
+        let mut heard = client.until_method("session/archived").await;
+        heard.extend(client.until_method("session/archived").await);
+        let archived: Vec<&Value> = heard
+            .iter()
+            .filter(|l| l["method"] == "session/archived")
+            .map(|l| &l["params"]["sessionId"])
+            .collect();
+        assert_eq!(archived, [session.as_str(), child.as_str()]);
+        // It was closed first: not loaded, as every client hears.
+        let closed = heard.iter().any(|l| {
+            l["method"] == "session/status/changed"
+                && l["params"] == json!({"sessionId": session, "status": {"type": "notLoaded"}})
+        });
+        assert!(closed, "{heard:?}");
+    }
+    let (code, message) = refusal(
+        owner
+            .request(
+                "turn/start",
+                json!({"sessionId": session, "input": [{"type": "text", "text": "more"}]}),
+            )
+            .await
+            .unwrap_err(),
+    );
+    assert!(message.contains("no open session"), "{code}: {message}");
+
+    // Listed only when archived ones are asked for.
+    assert!(listed_ids(&mut watcher, json!({})).await.is_empty());
+    assert!(
+        listed_ids(&mut watcher, json!({"archived": false}))
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        listed_ids(&mut watcher, json!({"archived": true})).await,
+        std::slice::from_ref(&session)
+    );
+
+    // Still read, and forked; not resumed, and not archived twice.
+    let read = watcher
+        .request(
+            "session/read",
+            json!({"sessionId": session, "includeTurns": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["session"]["turns"].as_array().unwrap().len(), 1);
+    assert_eq!(read["session"]["status"], json!({"type": "notLoaded"}));
+    let fork = watcher
+        .request("session/fork", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let fork = fork["session"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        listed_ids(&mut watcher, json!({})).await,
+        std::slice::from_ref(&fork)
+    );
+    for (method, wanted) in [
+        (
+            "session/resume",
+            format!(
+                "session {session} is archived. Run `koda unarchive {session}` to unarchive it \
+                 first."
+            ),
+        ),
+        ("session/archive", format!("session {session} is archived")),
+    ] {
+        let refused = owner
+            .request(method, json!({"sessionId": session}))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal(refused), (invalid_request, wanted), "{method}");
+    }
+
+    // Unarchived: answered with the session, said to everyone, not opened.
+    let restored = owner
+        .request("session/unarchive", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(restored["session"]["id"], session.as_str(), "{restored}");
+    assert_eq!(
+        restored["session"]["status"],
+        json!({"type": "notLoaded"}),
+        "{restored}"
+    );
+    assert_eq!(restored["session"]["preview"], "keep this", "{restored}");
+    for client in [&mut owner, &mut watcher] {
+        let mut heard = client.until_method("session/unarchived").await;
+        heard.extend(client.until_method("session/unarchived").await);
+        let restored: Vec<&Value> = heard
+            .iter()
+            .filter(|l| l["method"] == "session/unarchived")
+            .map(|l| &l["params"]["sessionId"])
+            .collect();
+        assert_eq!(restored, [session.as_str(), child.as_str()]);
+    }
+    for (method, id, wanted) in [
+        (
+            "session/unarchive",
+            session.as_str(),
+            format!("session {session} is not archived"),
+        ),
+        (
+            "session/unarchive",
+            fork.as_str(),
+            format!("session {fork} is not archived"),
+        ),
+        (
+            "session/archive",
+            "no-such-session",
+            "no session \"no-such-session\"".to_string(),
+        ),
+    ] {
+        let refused = owner
+            .request(method, json!({"sessionId": id}))
+            .await
+            .unwrap_err();
+        assert_eq!(refusal(refused), (invalid_request, wanted), "{method} {id}");
+    }
+    assert_eq!(
+        listed_ids(&mut watcher, json!({"sortKey": "created_at"})).await,
+        [fork, session.clone()]
+    );
+    assert!(
+        listed_ids(&mut watcher, json!({"archived": true}))
+            .await
+            .is_empty()
+    );
+
+    // And it opens again, with its turn, for a turn of its own.
+    let resumed = watcher
+        .request("session/resume", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    assert_eq!(resumed["session"]["turns"].as_array().unwrap().len(), 1);
+    watcher
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": [{"type": "text", "text": "and on"}]}),
+        )
+        .await
+        .unwrap();
+    let done = watcher.until_method("turn/completed").await;
+    assert_eq!(
+        done.last().unwrap()["params"]["turn"]["status"],
+        "completed"
+    );
+    koda.stop().await;
+}
+
+/// Archiving doesn't wait for a session to be idle, as Codex's
+/// `thread/archive` shuts a running thread down: the turn stops, the
+/// approval it was waiting on is withdrawn for its clients, and only then
+/// is the session said to be archived. The turn is stored as interrupted.
+#[tokio::test(flavor = "multi_thread")]
+async fn archiving_stops_a_running_turn_and_withdraws_its_request() {
+    let server = model(vec![write_file("w1", "a.txt"), text("Written.")]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let koda = Server::start_in(dir.path(), config(&server), Duration::from_secs(60)).await;
+    let mut owner = Client::ready(&koda).await;
+    let mut other = Client::ready(&koda).await;
+    let session = owner.start_session().await;
+    owner
+        .request(
+            "turn/start",
+            json!({"sessionId": session, "input": [{"type": "text", "text": "write it"}]}),
+        )
+        .await
+        .unwrap();
+    let asked = owner.until_method("item/toolCall/requestApproval").await;
+    let request_id = asked.last().unwrap()["id"].clone();
+
+    other
+        .request("session/archive", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    let heard = owner.until_method("session/archived").await;
+    let of = |method: &str| {
+        heard
+            .iter()
+            .find(|l| l["method"] == method)
+            .unwrap_or_else(|| panic!("no {method} before session/archived: {heard:?}"))
+    };
+    assert_eq!(
+        of("serverRequest/resolved")["params"]["requestId"],
+        request_id
+    );
+    assert_eq!(
+        of("turn/completed")["params"]["turn"]["status"],
+        "interrupted"
+    );
+    assert!(
+        !dir.path().join("project").join("a.txt").exists(),
+        "the command it asked about never ran"
+    );
+
+    let read = other
+        .request(
+            "session/read",
+            json!({"sessionId": session, "includeTurns": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        read["session"]["turns"][0]["status"], "interrupted",
+        "{read}"
+    );
     koda.stop().await;
 }
 

@@ -6,13 +6,15 @@ Usage: koda [OPTIONS] [PROMPT]
        koda [OPTIONS] <COMMAND> [ARGS]
 
 Commands:
-  exec    Run one prompt without an interactive session, then exit
-  resume  Resume a saved session (pick from a list, or --last for the most recent)
-  fork    Copy a saved session and continue in the copy (pick from a list, or --last)
-  mcp     Manage the MCP servers every session starts
-  serve   Run the background server that interactive sessions use
-  app     Open Koda's desktop app (macOS)
-  help    Print this message or the help of the given subcommand(s)
+  exec       Run one prompt without an interactive session, then exit
+  resume     Resume a saved session (pick from a list, or --last for the most recent)
+  fork       Copy a saved session and continue in the copy (pick from a list, or --last)
+  archive    Archive a saved session by id
+  unarchive  Unarchive a saved session by id
+  mcp        Manage the MCP servers every session starts
+  serve      Run the background server that interactive sessions use
+  app        Open Koda's desktop app (macOS)
+  help       Print this message or the help of the given subcommand(s)
 
 Arguments:
   [PROMPT]

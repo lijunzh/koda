@@ -48,6 +48,10 @@ A session is in one of three states, which every window can see:
   is still running. A turn runs to its end with no window open.
 - **An approval nobody answers** is refused after a day
   (`approval_wait_timeout_secs`).
+- **An archived session** (`koda archive <id>`) is stored but left out of the
+  lists, and can't be opened until `koda unarchive <id>`. Archiving one that
+  is open closes it for every window, stopping its turn
+  ([Archiving a session](./sessions.md#archiving-a-session)).
 
 **The same session in two windows** (two TUIs, or the TUI and the app):
 both show everything as it happens.

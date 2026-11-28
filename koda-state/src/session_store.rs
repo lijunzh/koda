@@ -179,7 +179,7 @@ pub mod source {
 
 /// Which sessions to list, in what order, and from where, as Codex's
 /// `thread/list` filters, sorts and pages. Ephemeral sessions are never
-/// listed.
+/// listed, and archived ones only when asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionListQuery {
     /// Only sessions of these folders, and those from before folders were
@@ -192,6 +192,9 @@ pub struct SessionListQuery {
     pub unknown_source: bool,
     /// Only sessions of these providers; `None` lists every provider's.
     pub providers: Option<Vec<String>>,
+    /// Only archived sessions, not only the ones that aren't, as Codex's
+    /// `thread/list` takes `archived`.
+    pub archived: bool,
     /// Order by when each was last written, not when it was created.
     pub by_updated: bool,
     /// Oldest first, not newest first.
@@ -406,6 +409,8 @@ pub struct SessionInfo {
     pub parent_session_id: Option<String>,
     /// A side conversation or a review, not meant to be listed.
     pub ephemeral: bool,
+    /// When it was archived, in Unix seconds; `None` for one that isn't.
+    pub archived_unix: Option<i64>,
     /// Its place in the order sessions were made, which orders the
     /// sessions of one second in a list.
     pub sequence: i64,
@@ -428,7 +433,8 @@ pub trait SessionStore: Send + Sync {
         project_root: &Path,
         origin: &SessionOrigin,
     ) -> Result<String>;
-    /// List recent sessions for the given project root.
+    /// List recent sessions for the given project root; archived ones are
+    /// left out.
     async fn list_sessions(&self, limit: i64, project_root: &Path) -> Result<Vec<SessionInfo>> {
         self.list_sessions_from(limit, 0, project_root).await
     }
@@ -463,6 +469,18 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<String>;
     /// Delete a session by ID. Returns `true` if it existed.
     async fn delete_session(&self, session_id: &str) -> Result<bool>;
+    /// Archive a session, and with it the sessions of the sub-agents it
+    /// ran, and theirs, as Codex's `thread/archive` archives a thread's
+    /// spawned descendants. Nothing stored is changed but when each was
+    /// archived. Returns the sessions this archived: `session_id` first,
+    /// then its descendants, the deepest first; one already archived isn't
+    /// among them, and an empty list means `session_id` already was, or
+    /// names no session.
+    async fn archive_session(&self, session_id: &str) -> Result<Vec<String>>;
+    /// Bring an archived session back, with its archived descendants.
+    /// Returns the sessions this restored, `session_id` first; an empty
+    /// list means it wasn't archived, or names no session.
+    async fn unarchive_session(&self, session_id: &str) -> Result<Vec<String>>;
     /// Set the auto-generated title for a session.
     async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()>;
     /// Persist the current approval mode for a session (restored on resume).

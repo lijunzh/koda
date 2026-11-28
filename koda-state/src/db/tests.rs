@@ -2101,11 +2101,12 @@ async fn test_open_drops_the_owned_files_table() {
 }
 
 /// The file as Koda 0.7.12 left it: version 0, sessions without the columns
-/// version 2 adds.
+/// versions 2 and 3 add.
 async fn as_koda_0_7_12_left_it(db: &Database) {
     for sql in [
         "DROP INDEX idx_sessions_root_recent",
         "DROP INDEX idx_sessions_recent",
+        "ALTER TABLE sessions DROP COLUMN archived_at",
         "ALTER TABLE sessions DROP COLUMN source",
         "ALTER TABLE sessions DROP COLUMN originator",
         "ALTER TABLE sessions DROP COLUMN koda_version",
@@ -2127,9 +2128,9 @@ async fn schema_version(db: &Database) -> i64 {
     version
 }
 
-/// An older Koda's file gains version 2's columns once: its sessions get
-/// their previews and last-used times from their messages, and a
-/// sub-agent's session its parent from its metadata.
+/// An older Koda's file gains the later versions' columns once: its
+/// sessions get their previews and last-used times from their messages, a
+/// sub-agent's session its parent from its metadata, and none is archived.
 #[tokio::test]
 async fn an_older_file_is_brought_to_the_current_version() {
     let (db, tmp) = setup().await;
@@ -2158,7 +2159,7 @@ async fn an_older_file_is_brought_to_the_current_version() {
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 2);
+    assert_eq!(schema_version(&db).await, 3);
     let parent = db.get_session("parent").await.unwrap().unwrap();
     assert_eq!(parent.preview.as_deref(), Some("fix the test"));
     assert_eq!(parent.source, None, "who started it was never recorded");
@@ -2174,11 +2175,12 @@ async fn an_older_file_is_brought_to_the_current_version() {
     let empty = db.get_session("empty").await.unwrap().unwrap();
     assert_eq!(empty.preview, None);
     assert_eq!(empty.updated_unix, empty.created_unix);
+    assert_eq!(empty.archived_unix, None);
 
     // Opening it again changes nothing.
     drop(db);
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 2);
+    assert_eq!(schema_version(&db).await, 3);
 }
 
 /// Two Kodas opening an older file at once take turns: both open, and the
@@ -2191,7 +2193,7 @@ async fn two_processes_can_open_an_older_file_at_once() {
     let path = tmp.path().join("test.db");
     let (a, b) = tokio::join!(Database::open(&path), Database::open(&path));
     let (a, _b) = (a.unwrap(), b.unwrap());
-    assert_eq!(schema_version(&a).await, 2);
+    assert_eq!(schema_version(&a).await, 3);
 }
 
 /// A newer Koda's file opens as it is: this version adds nothing to it and
@@ -2208,6 +2210,160 @@ async fn a_newer_file_opens_unchanged() {
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
     assert_eq!(schema_version(&db).await, 99);
     db.create_session("default", tmp.path()).await.unwrap();
+}
+
+/// A file from before sessions could be archived (version 2) gains the
+/// column: its sessions are listed as before, none archived, and can be.
+#[tokio::test]
+async fn a_version_2_file_gains_the_archive_column() {
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    for sql in [
+        "ALTER TABLE sessions DROP COLUMN archived_at",
+        "PRAGMA user_version = 2",
+    ] {
+        sqlx::query(sql).execute(db.pool()).await.unwrap();
+    }
+    drop(db);
+
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 3);
+    let listed = db.list_sessions(10, tmp.path()).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].archived_unix, None);
+    assert_eq!(db.archive_session(&session).await.unwrap(), [session]);
+}
+
+/// An archived session is left out of every list unless archived ones are
+/// asked for, as Codex's `thread/list` takes `archived`, and stays readable
+/// by its id; unarchiving puts it back. Archiving twice, or unarchiving
+/// what isn't archived, changes nothing and says so with an empty list.
+#[tokio::test]
+async fn an_archived_session_is_listed_only_when_asked_for() {
+    use crate::session_store::SessionListQuery;
+    let (db, tmp) = setup().await;
+    let kept = db.create_session("default", tmp.path()).await.unwrap();
+    let put_away = db.create_session("default", tmp.path()).await.unwrap();
+    let ids = |sessions: Vec<crate::session_store::SessionInfo>| {
+        sessions.into_iter().map(|s| s.id).collect::<Vec<_>>()
+    };
+    let page = |archived: bool| SessionListQuery {
+        archived,
+        limit: 50,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        db.archive_session(&put_away).await.unwrap(),
+        std::slice::from_ref(&put_away)
+    );
+    assert_eq!(
+        ids(db.list_sessions_page(&page(false)).await.unwrap()),
+        std::slice::from_ref(&kept)
+    );
+    assert_eq!(
+        ids(db.list_sessions_page(&page(true)).await.unwrap()),
+        std::slice::from_ref(&put_away)
+    );
+    assert_eq!(
+        ids(db.list_sessions(10, tmp.path()).await.unwrap()),
+        std::slice::from_ref(&kept),
+        "the folder's own list leaves it out too"
+    );
+    let stored = db.get_session(&put_away).await.unwrap().unwrap();
+    assert!(stored.archived_unix.is_some(), "still read by its id");
+    assert!(db.archive_session(&put_away).await.unwrap().is_empty());
+
+    assert_eq!(
+        db.unarchive_session(&put_away).await.unwrap(),
+        std::slice::from_ref(&put_away)
+    );
+    assert_eq!(
+        ids(db.list_sessions_page(&page(false)).await.unwrap()),
+        [put_away.clone(), kept.clone()]
+    );
+    assert!(db.list_sessions_page(&page(true)).await.unwrap().is_empty());
+    let stored = db.get_session(&put_away).await.unwrap().unwrap();
+    assert_eq!(stored.archived_unix, None);
+    assert!(db.unarchive_session(&put_away).await.unwrap().is_empty());
+    assert!(db.unarchive_session(&kept).await.unwrap().is_empty());
+    assert!(
+        db.archive_session("no-such-session")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Archiving a session takes the sessions of the sub-agents it ran with
+/// it, and theirs, the deepest first, as Codex archives a thread's spawned
+/// descendants; a fork of it is another conversation and stays. One
+/// already archived isn't archived again, and unarchiving brings the whole
+/// subtree back.
+#[tokio::test]
+async fn archiving_takes_the_sub_agents_sessions_along() {
+    use crate::session_store::{SessionOrigin, source};
+    let (db, tmp) = setup().await;
+    let parent = db.create_session("default", tmp.path()).await.unwrap();
+    let under = |parent: &str| SessionOrigin {
+        source: Some(source::SUB_AGENT.into()),
+        parent_session_id: Some(parent.to_string()),
+        ..Default::default()
+    };
+    let child = db
+        .create_session_from("explore", tmp.path(), &under(&parent))
+        .await
+        .unwrap();
+    let grandchild = db
+        .create_session_from("explore", tmp.path(), &under(&child))
+        .await
+        .unwrap();
+    let other_child = db
+        .create_session_from("explore", tmp.path(), &under(&parent))
+        .await
+        .unwrap();
+    let fork = db
+        .fork_session(&parent, "a fork", tmp.path(), &SessionOrigin::default())
+        .await
+        .unwrap();
+    let archived = async |id: &str| {
+        let stored = db.get_session(id).await.unwrap().unwrap();
+        stored.archived_unix.is_some()
+    };
+
+    // One sub-agent's session was archived on its own before.
+    assert_eq!(
+        db.archive_session(&other_child).await.unwrap(),
+        std::slice::from_ref(&other_child)
+    );
+    assert_eq!(
+        db.archive_session(&parent).await.unwrap(),
+        [parent.clone(), grandchild.clone(), child.clone()]
+    );
+    for id in [&parent, &child, &grandchild, &other_child] {
+        assert!(archived(id).await, "{id}");
+    }
+    assert!(!archived(&fork).await, "a fork is not a descendant");
+
+    // A fork of an archived session isn't archived either.
+    let later_fork = db
+        .fork_session(&parent, "later", tmp.path(), &SessionOrigin::default())
+        .await
+        .unwrap();
+    assert!(!archived(&later_fork).await);
+
+    assert_eq!(
+        db.unarchive_session(&parent).await.unwrap(),
+        [
+            parent.clone(),
+            grandchild.clone(),
+            child.clone(),
+            other_child.clone()
+        ]
+    );
+    for id in [&parent, &child, &grandchild, &other_child] {
+        assert!(!archived(id).await, "{id}");
+    }
 }
 
 /// A session records where it came from, its first prompt as its preview,

@@ -119,6 +119,10 @@ server_notifications! {
     SessionStarted => "session/started" (crate::session::SessionStartedNotification),
     /// A session was deleted.
     SessionDeleted => "session/deleted" (crate::session::SessionDeletedNotification),
+    /// A session was archived.
+    SessionArchived => "session/archived" (crate::session::SessionArchivedNotification),
+    /// An archived session was brought back.
+    SessionUnarchived => "session/unarchived" (crate::session::SessionUnarchivedNotification),
     /// A session was named.
     SessionNameUpdated => "session/name/updated" (crate::session::SessionNameUpdatedNotification),
     /// What a session is doing changed.

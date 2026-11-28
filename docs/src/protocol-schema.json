@@ -3416,6 +3416,37 @@
         }
       ]
     },
+    "SessionArchiveParams": {
+      "additionalProperties": false,
+      "description": "`session/archive`: put a stored session away, as Codex's\n`thread/archive` does. It stays stored and readable (`session/read`,\n`session/fork`), but `session/list` leaves it out unless asked for\narchived ones, and `session/resume` refuses it until\n`session/unarchive`. An open one is closed first, its running turn\nstopped and its unanswered requests withdrawn. The sessions of the\nsub-agents it ran are archived with it. `session/archived` follows, one\nfor each session archived, to every client.",
+      "properties": {
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionArchiveResponse": {
+      "description": "The answer to `session/archive`.",
+      "type": "object"
+    },
+    "SessionArchivedNotification": {
+      "description": "`session/archived`: a session was archived, for every client. Codex's\n`thread/archived`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
     "SessionCompactStartParams": {
       "additionalProperties": false,
       "description": "`session/compact/start`: compact an open session's history now, as\nCodex's `thread/compact/start`. Answered at once; the compaction runs as\na turn of its own (`turn/started`, a `contextCompaction` item with the\n`manual` trigger, `turn/completed`). A running turn is stopped first and\nends interrupted. The compaction's turn can be interrupted, not steered.",
@@ -3765,8 +3796,15 @@
     },
     "SessionListParams": {
       "additionalProperties": false,
-      "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.\nA session started with `ephemeral` is never listed.",
+      "description": "`session/list`: stored sessions, newest first. Codex's `thread/list`.\nA session started with `ephemeral` is never listed, and an archived one\nonly with `archived`.",
       "properties": {
+        "archived": {
+          "description": "Optional archived filter; when set to true, only archived sessions\nare returned. If false or null, only non-archived sessions are\nreturned.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "cursor": {
           "description": "Where to go on from: an earlier answer's `nextCursor`, as Codex's\n`thread/list` pages. It names the last session of that page, so a\nsession made meanwhile doesn't shift the next; send the same\nfilters and order with it. Without one, the first page.",
           "type": [
@@ -4507,6 +4545,46 @@
       },
       "required": [
         "data"
+      ],
+      "type": "object"
+    },
+    "SessionUnarchiveParams": {
+      "additionalProperties": false,
+      "description": "`session/unarchive`: bring an archived session back, as Codex's\n`thread/unarchive` does, with the sessions of the sub-agents it ran. It\nis listed again and can be resumed; this doesn't open it.\n`session/unarchived` follows, one for each session restored, to every\nclient.",
+      "properties": {
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "SessionUnarchiveResponse": {
+      "description": "The answer to `session/unarchive`: the session, as `session/read` gives\nit without its turns.",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/Session",
+          "description": "The restored session."
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "SessionUnarchivedNotification": {
+      "description": "`session/unarchived`: an archived session was brought back, for every\nclient. Codex's `thread/unarchived`.",
+      "properties": {
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
       ],
       "type": "object"
     },
@@ -6297,6 +6375,14 @@
         "$ref": "#/$defs/ServeStopResponse"
       }
     },
+    "session/archive": {
+      "params": {
+        "$ref": "#/$defs/SessionArchiveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionArchiveResponse"
+      }
+    },
     "session/backgroundTerminals/clean": {
       "params": {
         "$ref": "#/$defs/BackgroundTerminalsCleanParams"
@@ -6449,6 +6535,14 @@
         "$ref": "#/$defs/SessionTurnsListResponse"
       }
     },
+    "session/unarchive": {
+      "params": {
+        "$ref": "#/$defs/SessionUnarchiveParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionUnarchiveResponse"
+      }
+    },
     "session/unsubscribe": {
       "params": {
         "$ref": "#/$defs/SessionUnsubscribeParams"
@@ -6588,6 +6682,11 @@
         "$ref": "#/$defs/ServerRequestResolvedNotification"
       }
     },
+    "session/archived": {
+      "params": {
+        "$ref": "#/$defs/SessionArchivedNotification"
+      }
+    },
     "session/backgroundTerminals/exited": {
       "params": {
         "$ref": "#/$defs/BackgroundTerminalsExitedNotification"
@@ -6641,6 +6740,11 @@
     "session/tokenUsage/updated": {
       "params": {
         "$ref": "#/$defs/SessionTokenUsageUpdatedNotification"
+      }
+    },
+    "session/unarchived": {
+      "params": {
+        "$ref": "#/$defs/SessionUnarchivedNotification"
       }
     },
     "turn/completed": {

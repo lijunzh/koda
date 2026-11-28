@@ -31,6 +31,10 @@ koda exec fork a3f8bc "try it the other way"
 
 # The older flag still works: koda -s <ID>, koda exec -s <ID> "..."
 
+# Archive a session: kept, but out of the lists; and bring it back
+koda archive a3f8bc
+koda unarchive a3f8bc
+
 # Delete a session permanently
 /resume delete a3f8bc
 ```
@@ -61,6 +65,35 @@ model and mode (`koda fork --model` names another model, as
 the original stays as it was, in `/resume`. Over the protocol,
 `session/fork` copies a stored session and opens the copy, as Codex's
 `thread/fork` does.
+
+## Archiving a session
+
+`koda archive <SESSION>` puts a session away without deleting it, as
+`codex archive` does. Nothing stored changes, and `koda unarchive <SESSION>`
+brings it back.
+
+- **What archiving hides:** the session leaves `/resume`, `koda resume`'s
+  list and `--last`, and the start of its ID no longer finds it. Resuming it
+  by its full ID is refused, with the `koda unarchive` command to run first.
+- **A session that is open is closed first.** A turn running in it stops and
+  is saved as interrupted, and a question or approval it was waiting on is
+  withdrawn. A window that had it open says it was archived; after
+  `koda unarchive`, the next prompt there goes on with it.
+- **Sub-agents' sessions go with it,** and come back with it. A fork is a
+  conversation of its own and stays.
+- **Forking still works:** `koda fork <full ID>` copies an archived session
+  into a new one, which isn't archived.
+- **`SESSION`** is the session's ID or its first characters. A full ID names
+  any session; a shorter one is looked for among the current directory's
+  sessions (`koda -C <DIR> archive …` for another's), the ones that aren't
+  archived for `koda archive` and the archived ones for `koda unarchive`.
+  Sessions aren't found by name.
+
+Both commands use the [background server](./background-server.md), starting
+it if needed, so a session open in a window is closed there; `--no-daemon`
+runs them in their own process instead. The TUI has no command for this yet.
+Over the protocol they are `session/archive` and `session/unarchive`, Codex's
+`thread/archive` and `thread/unarchive` ([Archiving](./serve.md#archiving-a-session)).
 
 ## Session title
 
