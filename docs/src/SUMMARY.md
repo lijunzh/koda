@@ -18,12 +18,20 @@
 # Using Koda
 
 - [Interactive TUI](./tui.md)
-- [The desktop app](./desktop-app.md)
 - [File & image attachments](./attachments.md)
 - [Slash commands](./commands.md)
 - [Keybindings](./keybindings.md)
 - [Trust modes](./approval.md)
 - [Sandbox](./sandbox.md)
+
+# The desktop app
+
+- [Overview and install](./desktop-app.md)
+- [Your first session](./desktop-quickstart.md)
+- [Sessions and the window](./desktop-sessions.md)
+- [Working in a session](./desktop-conversation.md)
+- [Reviewing changes](./desktop-changes.md)
+- [Settings and shortcuts](./desktop-settings.md)
 
 # Managing sessions
 
