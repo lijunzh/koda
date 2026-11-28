@@ -167,12 +167,21 @@ export function App() {
     setPanes((all) => all.map((p, i) => (i === focused ? { key: nextKey++, id: null } : p)));
   }, []);
 
-  // Cmd+N, as in Claude Code's desktop app.
+  // Cmd+N starts a session and Cmd+Ctrl+W takes the focused one out of
+  // split view, as in Claude Code's desktop app.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && !e.shiftKey && !e.altKey && !e.ctrlKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         start();
+      }
+      if (e.metaKey && e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'w') {
+        const { panes, focused } = current.current;
+        if (panes.length > 1) {
+          e.preventDefault();
+          setPanes((all) => all.filter((_, i) => i !== focused));
+          setFocused((f) => Math.max(0, f - 1));
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -203,6 +212,7 @@ export function App() {
         selectedId={panes[focused]?.id ?? null}
         canSplit={panes.length < MAX_PANES}
         onOpen={(id, beside) => open(id, { beside })}
+        onOpenSession={(session) => open(session.id, { session })}
         onNew={start}
         onMore={more}
         connectedTo={connected ? status.serverVersion : null}

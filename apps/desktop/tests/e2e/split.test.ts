@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!koda)('split view', () => {
-  it('opens a session beside another, each pane running its own', async () => {
+  it('opens a session beside another, each pane running its own; the list searches and renames', async () => {
     const home = scratch();
     homes.push(home);
     model = await scriptedModel([{ text: 'First answer.' }, { text: 'Second answer.' }, { text: 'Third answer.' }]);
@@ -71,5 +71,30 @@ describe.skipIf(!koda)('split view', () => {
     await expect.poll(() => panes.count()).toBe(1);
     expect(await panes.nth(0).textContent()).toContain('Second answer.');
     expect(await page.getByRole('button', { name: 'Close pane' }).count()).toBe(0);
+
+    // Option-click opens a session beside the open one; Cmd+Ctrl+W takes the focused one out again.
+    await list.getByRole('button', { name: /Alpha question/ }).click({ modifiers: ['Alt'] });
+    await expect.poll(() => panes.count()).toBe(2);
+    await page.keyboard.press('Meta+Control+w');
+    await expect.poll(() => panes.count()).toBe(1);
+
+    // Search narrows the list by name; Esc brings it back.
+    await list.getByRole('button', { name: 'Search' }).click();
+    const search = list.getByRole('textbox', { name: 'Search sessions' });
+    await search.fill('alpha');
+    await expect.poll(() => list.getByRole('button', { name: /Beta question/ }).count()).toBe(0);
+    expect(await list.getByRole('button', { name: /Alpha question/ }).count()).toBe(1);
+    await search.press('Escape');
+    await expect.poll(() => list.getByRole('button', { name: /Beta question/ }).count()).toBe(1);
+
+    // A row's menu renames the session where it is.
+    const row = list.getByRole('listitem').filter({ hasText: 'Alpha question' });
+    await row.hover();
+    await row.getByRole('button', { name: 'Session actions' }).click();
+    await page.getByRole('menuitem', { name: 'Rename' }).click();
+    const name = list.getByRole('textbox', { name: 'Session name' });
+    await name.fill('Alpha renamed');
+    await name.press('Enter');
+    await list.getByRole('button', { name: /Alpha renamed/ }).waitFor();
   });
 });

@@ -31,10 +31,12 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
 ## The window
 
 - **The session list**, on the left, shows every folder's sessions, the most
-  recently active first. Next to a session, *working* means a turn is
-  running, *needs you* means it waits for an approval or an answer, and
-  *open* means it's loaded on the server, ready. The list stays current when the TUI or
-  another window starts, renames or deletes a session.
+  recently active first. A small spinner marks a session whose turn is
+  running, and *needs you* one that waits for an approval or an answer. The
+  list stays current when the TUI or another window starts, renames or
+  deletes a session. **Search** narrows it by name. Hover a session for its
+  **…** menu (or right-click it): open it, open it in split view, rename,
+  fork or delete it.
 - **New session** (Cmd+N) opens an empty session with the prompt box. Under
   the box, pick the folder Koda works in (one you've used before, or
   **Open folder…**), the model and the mode. The session starts with your
@@ -91,27 +93,31 @@ isn't in front.
 
 ## Reviewing changes
 
-**Changes** opens a panel beside the conversation with what a turn changed,
-file by file, with line numbers. While a turn runs it updates as Koda edits;
-for an earlier turn, pick it from the list at the top.
+**Changes** (at the top right, or a file in the Changes card) opens a pane
+beside the conversation with what a turn changed. Each file is a row with
+its added and removed counts; click the row to fold it. Unchanged lines
+between the changes are folded to a count, and a bar at the left marks each
+added or removed line. While a turn runs the pane updates as Koda edits;
+for an earlier turn, pick it from the **Turn** menu at the top.
 
-Click a line to comment on it, and press Enter to add the comment. **Send**
-sends all your comments to Koda as one message, each with its file, line
-number and the line itself. If a turn is running, they're added to it;
-otherwise they start the next turn.
+To comment, hover a line and click the **+** beside its number. Enter adds
+the comment. Cmd+Enter, or **Send**, sends all your comments to Koda as one
+message, each with its file, line number and the line itself. If a turn is
+running, they're added to it; otherwise they start the next turn.
 
-The panel shows the edits Koda's Edit and Write tools made. Files a command
+The pane shows the edits Koda's Edit and Write tools made. Files a command
 changed (`sed`, a formatter, `git checkout`) and a sub-agent's edits aren't
 in it, as in Codex's turn diff.
 
 ## Side by side
 
-To work in two sessions at once, right-click a session in the list and
-choose **Open in split view**, or drag it onto the window. Each pane is a
-full session: its own conversation, controls, prompt box and Changes panel.
-Clicking a session in the list opens it in the pane you last used; a session
-that's already open goes to its pane. ✕ closes a pane. Up to four sessions
-fit side by side.
+To work in two sessions at once, Option-click a session in the list, choose
+**Open in split view** from its menu, or drag it onto the window. Each pane
+is a full session: its own conversation, prompt box and Changes pane. The
+pane you're not working in steps back a little. Clicking a session in the
+list opens it in the pane you last used; a session that's already open goes
+to its pane. ✕, or Cmd+Ctrl+W, takes a session out of split view. Up to four
+sessions fit side by side.
 
 ## Updates and the server
 

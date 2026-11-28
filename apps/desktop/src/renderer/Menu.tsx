@@ -2,7 +2,7 @@
 // a list of entries, some checked, some with a line of description or a
 // number key, some opening a further list, as Claude Code's desktop app has
 // for the model, the effort, the mode and a session's actions.
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react';
 
 export type Entry =
   | {
@@ -28,10 +28,13 @@ interface ListProps {
   entries: Entry[];
   label: string;
   className: string;
+  /** Where a menu opened at the pointer goes. */
+  style?: CSSProperties;
   close(): void;
 }
 
-function MenuList({ entries, label, className, close }: ListProps) {
+/** A menu's entries; `MenuButton` opens one under a button, a context menu at the pointer. */
+export function MenuList({ entries, label, className, style, close }: ListProps) {
   /** The open submenu, and its entries once they are there. */
   const [sub, setSub] = useState<{ id: string; entries: Entry[] | null } | null>(null);
   const openSub = (entry: Extract<Entry, { type: 'submenu' }>) => {
@@ -47,7 +50,7 @@ function MenuList({ entries, label, className, close }: ListProps) {
     );
   };
   return (
-    <div className={className} role="menu" aria-label={label}>
+    <div className={className} style={style} role="menu" aria-label={label}>
       {entries.map((entry, i) => {
         if (entry.type === 'separator') return <hr key={i} />;
         if (entry.type === 'heading') {

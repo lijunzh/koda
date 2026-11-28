@@ -766,10 +766,10 @@ textarea {
   align-items: center;
 }
 
-/* Changes, beside the conversation */
+/* Changes, beside the conversation, as Claude Code lays out a diff */
 .review {
   width: 46%;
-  min-width: 320px;
+  min-width: 340px;
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -785,55 +785,145 @@ textarea {
 .review header {
   border-bottom: 1px solid var(--border);
 }
-.review header strong {
+.review footer {
+  border-top: 1px solid var(--border);
+}
+.spacer {
   flex: 1;
 }
-.review header button {
-  background: none;
+.key-hint {
+  opacity: 0.65;
+  font-weight: 400;
+}
+.review-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
+  padding: 24px;
+  text-align: center;
 }
 .review-files {
   flex: 1;
   overflow: auto;
-  padding: 0 12px 12px;
 }
 .review-path {
-  margin: 10px 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 7px 12px;
+  text-align: left;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg);
+}
+.review-path:hover:not(:disabled) {
+  background: var(--surface);
+}
+.review-path .chevron {
+  color: var(--muted);
+  width: 10px;
+}
+.review-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
 }
 .review-lines {
   border-collapse: collapse;
   width: 100%;
-  font: 12px/1.5 var(--mono);
+  font: 12px/1.6 var(--mono);
 }
-.review-line {
-  cursor: pointer;
-}
-.review-line:hover {
-  outline: 1px solid var(--border);
+.review-skip td {
+  color: var(--muted);
+  font: 12px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
 }
 .review-line .num {
-  width: 3.5em;
+  position: relative;
+  width: 3.2em;
+  min-width: 3.2em;
   text-align: right;
-  padding-right: 6px;
+  padding: 0 6px;
   color: var(--muted);
   user-select: none;
+  vertical-align: top;
 }
 .review-line .code {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  padding: 0 12px 0 8px;
+}
+/* The bar at the left of a changed line: solid for an added one, hatched for a removed one. */
+.review-line.add td:first-child,
+.review-line.del td:first-child {
+  box-shadow: inset 4px 0 0 var(--green);
 }
 .review-line.add {
-  background: color-mix(in srgb, var(--green) 16%, transparent);
+  background: color-mix(in srgb, var(--green) 20%, transparent);
 }
 .review-line.del {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+.review-line.del td:first-child {
+  box-shadow: none;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--danger) 0 2px,
+    transparent 2px 4px
+  );
+  background-size: 4px 100%;
+  background-repeat: no-repeat;
+}
+.comment-add {
+  position: absolute;
+  left: 8px;
+  top: 1px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif;
+  opacity: 0;
+}
+.review-line:hover .comment-add,
+.comment-add:focus-visible {
+  opacity: 1;
+}
+.comment-add:hover:not(:disabled) {
+  background: var(--accent);
+}
+.review-comment td,
+.review-draft td {
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 .review-comment td {
-  font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
-  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.review-comment td .comment-text {
+  flex: 1;
 }
 .review-lines textarea,
-.review-lines button {
+.review-lines .actions button,
+.review-comment button {
   font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
 }
 .review-lines textarea {
@@ -1064,4 +1154,74 @@ textarea {
   flex: 1 1 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* The session list: search, a row's menu and its mark */
+.search-sessions {
+  width: 100%;
+  text-align: left;
+  background: none;
+  padding: 7px 10px;
+}
+.search-sessions::before {
+  content: '⌕';
+  display: inline-block;
+  width: 18px;
+  color: var(--muted);
+}
+.search-sessions:hover:not(:disabled) {
+  background: var(--hover);
+}
+.search-input,
+.rename-row {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0;
+}
+.session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.session-row .session {
+  flex: 1;
+  min-width: 0;
+}
+.session-row .menu-anchor {
+  position: absolute;
+  right: 4px;
+}
+.row-menu {
+  background: none;
+  padding: 1px 6px;
+  color: var(--muted);
+  opacity: 0;
+}
+.session-row:hover .row-menu,
+.row-menu:focus-visible,
+.row-menu[aria-expanded='true'] {
+  opacity: 1;
+  background: var(--bg-side);
+}
+.row-menu:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--selected);
+}
+.session-row:hover .session {
+  padding-right: 30px;
+}
+.mark.working {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: spin 1s linear infinite;
+  flex: none;
+}
+
+/* Split view: the pane out of focus steps back */
+.panes:has(.pane + .pane) .pane:not(.focused) .conversation-column,
+.panes:has(.pane + .pane) .pane:not(.focused) .new-session-body {
+  opacity: 0.7;
 }
