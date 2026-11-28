@@ -284,15 +284,79 @@ textarea {
   grid-template-columns: 264px 1fr;
   height: 100vh;
 }
+.layout.no-sidebar {
+  grid-template-columns: 1fr;
+}
 .sidebar {
   display: flex;
   flex-direction: column;
   background: var(--bg-side);
   border-right: 1px solid var(--border);
   min-height: 0;
+  /* The window's top bar: its buttons are over this. */
+  padding-top: var(--bar);
+}
+.sidebar[hidden] {
+  display: none;
 }
 .sidebar-top {
-  padding: 10px 8px 4px;
+  padding: 2px 8px 4px;
+}
+
+/* The window's top bar. On a Mac the window has no title bar of its own:
+   this strip drags it, the system's buttons sit at its left, and the app's
+   (sidebar, Back, Forward) beside them. */
+:root {
+  --bar: 40px;
+  /* Room for the system's window buttons. */
+  --lights: 0px;
+  /* The app's three buttons and the space around them. */
+  --tools: 104px;
+}
+:root[data-platform='darwin']:not([data-fullscreen]) {
+  --lights: 70px;
+}
+.window-band {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--bar);
+  /* It marks where the window drags; it's never in the way of a click. */
+  z-index: -1;
+  pointer-events: none;
+}
+:root[data-platform='darwin'] .window-band {
+  -webkit-app-region: drag;
+}
+/* What can be clicked in the strip isn't a handle for the window. */
+.window-tools,
+.session-view > header :is(button, input, h1),
+.menu,
+.banner,
+.overlay {
+  -webkit-app-region: no-drag;
+}
+.window-tools {
+  position: fixed;
+  z-index: 3;
+  top: 6px;
+  left: calc(var(--lights) + 8px);
+  display: flex;
+  gap: 2px;
+}
+.window-tools .icon-button:disabled {
+  opacity: 0.35;
+}
+/* With the sidebar hidden the first pane's header starts after the buttons. */
+.layout.no-sidebar .pane:first-child .session-view > header {
+  padding-left: calc(var(--lights) + var(--tools) + 12px);
+}
+.layout.no-sidebar .main-column > .banner {
+  margin-left: calc(var(--lights) + var(--tools) + 12px);
+}
+.status {
+  padding-top: 56px;
 }
 .new-session {
   width: 100%;

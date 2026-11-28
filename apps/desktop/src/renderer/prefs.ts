@@ -17,9 +17,11 @@ export interface Prefs {
   notifications: boolean;
   /** Keep the computer from idle-sleeping while the app is open. */
   keepAwake: boolean;
+  /** Whether the session list shows (Cmd+B); kept as the user left it. */
+  sidebar: boolean;
 }
 
-export const DEFAULT_PREFS: Prefs = { theme: 'system', width: 'narrow', view: 'normal', notifications: true, keepAwake: false };
+export const DEFAULT_PREFS: Prefs = { theme: 'system', width: 'narrow', view: 'normal', notifications: true, keepAwake: false, sidebar: true };
 const KEY = 'koda.prefs';
 
 /** The stored settings; anything missing or unreadable is the default. */
@@ -32,6 +34,7 @@ export function loadPrefs(storage: Pick<Storage, 'getItem'>): Prefs {
       view: stored.view === 'thinking' || stored.view === 'verbose' ? stored.view : 'normal',
       notifications: stored.notifications !== false,
       keepAwake: stored.keepAwake === true,
+      sidebar: stored.sidebar !== false,
     };
   } catch {
     return DEFAULT_PREFS;

@@ -26,9 +26,11 @@ interface Props {
   onSettings(): void;
   /** The server's version while connected; `null` while reconnecting. */
   connectedTo: string | null;
+  /** Hidden with Cmd+B: it keeps its search and scroll for when it's back. */
+  hidden: boolean;
 }
 
-export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onNew, onMore, onSettings, connectedTo }: Props) {
+export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onNew, onMore, onSettings, connectedTo, hidden }: Props) {
   const [query, setQuery] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +88,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
   ];
 
   return (
-    <nav className="sidebar" aria-label="Sessions">
+    <nav className="sidebar" aria-label="Sessions" hidden={hidden}>
       <div className="sidebar-top">
         <button className="side-action" onClick={onNew}>
           <PlusIcon />
