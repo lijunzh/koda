@@ -51,21 +51,25 @@ export async function closeApp({ app }: OpenApp): Promise<void> {
 }
 
 /**
- * End a test: close the app's connection, so it doesn't reconnect and start
- * another server; stop each home's server; then close the app. On Linux the
- * app closes only once no server it started holds its output (see
- * `closeApp`), so the server stops first. Without the first step the app
- * started a new server at once, and `koda serve --stop` waited its full 15
- * seconds for the socket to go, in every test.
+ * End a test: stop each home's server, close the app, then stop the server
+ * the app may have started again meanwhile. The app reconnects when its
+ * server goes away, as the TUI does, so stopping the server alone left one
+ * behind; and on Linux the app closes only once no server it started holds
+ * its output (see `closeApp`).
  */
 export async function shutDown(open: OpenApp | undefined, homes: string[]): Promise<void> {
-  if (open) {
-    await open.app
-      .evaluate(() => (globalThis as { kodaTestConnection?: { close(): void } }).kodaTestConnection?.close())
-      .catch(() => {});
-  }
   for (const home of homes) stopServer(home);
   if (open) await closeApp(open);
-  // A server a reconnect started before the connection closed: stop it too.
-  for (const home of homes) if (existsSync(socketOf(home))) stopServer(home);
+  for (const home of homes) {
+    // One started by a reconnect may still be coming up: stop it once it's there.
+    for (let quiet = 0; quiet < 3; ) {
+      if (existsSync(socketOf(home))) {
+        stopServer(home);
+        quiet = 0;
+      } else {
+        quiet++;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
 }
