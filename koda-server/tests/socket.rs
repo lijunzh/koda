@@ -559,9 +559,9 @@ async fn a_connection_opts_out_of_notifications_it_names() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_session_outlives_its_client_until_it_is_idle() {
     let server = model(vec![]).await;
-    // The unload delay is the time the second client has to connect and
-    // attach after the first leaves; 300 ms wasn't always enough on a busy
-    // Linux runner (CI, 2026-11-27).
+    // The unload delay is the time the second client has to attach after
+    // the first leaves; 300 ms wasn't always enough on a busy Linux runner
+    // (CI, 2026-11-27).
     let koda = Server::start(config(&server), Duration::from_secs(2)).await;
     let mut first = Client::ready(&koda).await;
     let session = first.start_session().await;
@@ -570,10 +570,12 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
     // for it, so the second isn't connected yet to hear it and take it for
     // the session starting again (macOS runner, 2026-11-28).
     first.until_method("session/started").await;
+    // Connected before the first leaves, so only its one request has to
+    // reach the server within the unload delay, not a new connection too.
+    let mut second = Client::ready(&koda).await;
     drop(first);
 
     // Still open: attaching gives it as it runs, without starting it again.
-    let mut second = Client::ready(&koda).await;
     let attached = second
         .request("session/resume", json!({"sessionId": session}))
         .await
@@ -601,20 +603,25 @@ async fn a_session_outlives_its_client_until_it_is_idle() {
         .unwrap();
     assert_eq!(again["status"], "notLoaded");
 
-    // Closed once idle past the delay: opening it starts it again.
-    tokio::time::sleep(Duration::from_millis(3500)).await;
+    // Closed once idle past the delay: opening it starts it again. Every
+    // client is told when it closes, so wait for that, not for a time.
+    second
+        .until(|l| {
+            l["method"] == "session/status/changed"
+                && session_of(l) == Some(session.as_str())
+                && l["params"]["status"]["type"] == "notLoaded"
+        })
+        .await;
     let reopened = second
         .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
     assert_eq!(reopened["session"]["id"], session.as_str());
-    assert!(
-        second
-            .seen()
-            .iter()
-            .any(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str())),
-        "started anew"
-    );
+    // Started anew: `session/started` is said, before or after the answer,
+    // as the two travel apart.
+    second
+        .until(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str()))
+        .await;
     koda.stop().await;
 }
 
@@ -1371,24 +1378,44 @@ async fn serve_stop_stops_the_server_unless_asked_only_when_idle() {
         "a session with a client is in use: {busy}"
     );
     // Its client gone, the session stays open but idle: stored, so losing
-    // nothing. Another client still counts.
-    drop(other);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // nothing. Another client still counts. It has asked something and been
+    // answered, so the server counts it before the session's client goes.
     let mut third = Client::ready(&koda).await;
-    let still = asking
-        .request("serve/stop", json!({"ifIdle": true}))
-        .await
-        .unwrap();
-    assert_eq!(still["stopped"], false, "{still}");
-    assert!(still["reason"].as_str().unwrap().contains("other client"));
+    third.request("state/read", json!({})).await.unwrap();
+    drop(other);
+    // Asked only if idle, the server says no and changes nothing, so asking
+    // again is a wait: here until it has seen the session's client leave.
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let still = asking
+            .request("serve/stop", json!({"ifIdle": true}))
+            .await
+            .unwrap();
+        assert_eq!(still["stopped"], false, "{still}");
+        if still["reason"].as_str().unwrap().contains("other client") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the session is still held: {still}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     drop(third.request("state/read", json!({})).await);
     drop(third);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let idle = asking
-        .request("serve/stop", json!({"ifIdle": true}))
-        .await
-        .unwrap();
-    assert_eq!(idle["stopped"], true, "{idle}");
+    // And here until it has seen the last other client leave.
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let idle = asking
+            .request("serve/stop", json!({"ifIdle": true}))
+            .await
+            .unwrap();
+        if idle["stopped"] == true {
+            break;
+        }
+        assert!(Instant::now() < deadline, "still held: {idle}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     tokio::time::timeout(WAIT, &mut koda.served)
         .await
         .expect("koda serve didn't stop")
@@ -2056,13 +2083,16 @@ async fn a_server_with_an_idle_exit_stops_once_idle() {
         config(&server),
         Options {
             unload_delay: Duration::from_secs(60),
-            idle_exit: Some(Duration::from_millis(400)),
+            // Also the time the client below has to connect once the server
+            // is up, so not a short one.
+            idle_exit: Some(Duration::from_secs(2)),
             approval_wait: None,
         },
     )
     .await;
     let client = Client::ready(&koda).await;
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    // Twice the idle exit: it would have stopped by now.
+    tokio::time::sleep(Duration::from_secs(4)).await;
     assert!(
         !koda.served.is_finished(),
         "not while a client is connected"
@@ -2142,12 +2172,17 @@ async fn a_message_over_the_limit_ends_its_connection() {
     let server = model(vec![]).await;
     let koda = Server::start(config(&server), Duration::from_secs(60)).await;
     let mut big = Client::ready(&koda).await;
+    // One byte over the limit and no more: the server stops reading at that
+    // byte, so nothing is left unread when it closes. With more, the rest
+    // had to be written within the second the server reads on for, or (on
+    // Linux) the close reset the connection.
     let chunk = vec![b'a'; 1 << 20];
-    for _ in 0..65 {
+    for _ in 0..64 {
         if big.input.write_all(&chunk).await.is_err() {
             break;
         }
     }
+    let _ = big.input.write_all(b"a").await;
     let refused = big.read().await.expect("an error before the end");
     assert_eq!(refused["error"]["code"], -32600, "{refused}");
     assert!(
@@ -2345,12 +2380,10 @@ async fn a_turn_whose_client_leaves_mid_stream_finishes_for_the_next_client() {
         .request("session/resume", json!({"sessionId": session}))
         .await
         .unwrap();
-    assert!(
-        next.seen()
-            .iter()
-            .any(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str())),
-        "opened from the store"
-    );
+    // Opened from the store: `session/started` is said, before or after
+    // the answer, as the two travel apart.
+    next.until(|l| l["method"] == "session/started" && session_of(l) == Some(session.as_str()))
+        .await;
     let turns = opened["session"]["turns"].as_array().unwrap();
     assert_eq!(turns.len(), 1, "{opened}");
     assert_eq!(turns[0]["status"], "completed", "{opened}");
@@ -2386,9 +2419,9 @@ async fn every_connection_is_warned_about_the_config_file() {
     };
 
     // The first may be told after its answer or as the host says it, so
-    // it waits for the warning; not the whole `WAIT`, if it never comes.
+    // it waits for the warning, as long as for any other message.
     let mut first = Client::ready(&koda).await;
-    let heard = tokio::time::timeout(Duration::from_secs(5), first.until_method("configWarning"))
+    let heard = tokio::time::timeout(WAIT, first.until_method("configWarning"))
         .await
         .expect("the first connection was never warned");
     let warning = heard.last().unwrap()["params"].clone();

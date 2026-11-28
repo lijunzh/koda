@@ -657,7 +657,9 @@ mod tests {
         // told to stop.
         outbox.push("d".into());
         assert_eq!(outbox.next().await, None);
-        tokio::time::timeout(std::time::Duration::from_secs(1), outbox.broken.notified())
+        // Told already, when the third line was pushed; the limit is only
+        // there so a missing notice fails the test rather than hanging it.
+        tokio::time::timeout(std::time::Duration::from_secs(30), outbox.broken.notified())
             .await
             .expect("the connection is told to stop");
     }

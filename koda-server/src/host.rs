@@ -1721,7 +1721,8 @@ mod tests {
         // Told why, then that it isn't open.
         let mut told = false;
         loop {
-            let message = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+            // Long enough for a busy machine.
+            let message = tokio::time::timeout(std::time::Duration::from_secs(30), events.recv())
                 .await
                 .expect("the failure is said")
                 .unwrap();

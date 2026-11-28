@@ -246,7 +246,7 @@ impl Wire {
     async fn finish(mut self) {
         drop(self.input.take());
         drop(self.output.take());
-        tokio::time::timeout(Duration::from_secs(15), &mut self.served)
+        tokio::time::timeout(WAIT, &mut self.served)
             .await
             .expect("koda serve didn't end after EOF")
             .unwrap()
@@ -504,16 +504,14 @@ async fn eof_at_an_approval_ends_the_connection() {
     while let Some(line) = wire.next().await {
         rest.push(line);
     }
-    tokio::time::timeout(Duration::from_secs(15), &mut wire.served)
+    tokio::time::timeout(WAIT, &mut wire.served)
         .await
         .expect("koda serve didn't end after EOF")
         .unwrap()
         .unwrap();
-    assert!(
-        closed.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        closed.elapsed()
-    );
+    // No answer can come, and nothing here waits for one: the limit only
+    // has to be one a busy machine keeps.
+    assert!(closed.elapsed() < WAIT, "{:?}", closed.elapsed());
     assert!(!wire.project.join("a.txt").exists());
     // What was queued still goes out: the request closed, the turn
     // ended once, interrupted.
@@ -537,7 +535,7 @@ async fn a_broken_stdout_ends_the_connection() {
     if let Err(e) = wire.try_send_line(&request.to_string()).await {
         assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
     }
-    tokio::time::timeout(Duration::from_secs(15), &mut wire.served)
+    tokio::time::timeout(WAIT, &mut wire.served)
         .await
         .expect("koda serve didn't end when stdout broke")
         .unwrap()
@@ -1040,13 +1038,30 @@ fn background(id: &str, command: &str) -> ResponseTemplate {
     tool_call(id, "Bash", json!({"command": command, "background": true}))
 }
 
+/// A background command that runs until the test lets it go
+/// ([`Wire::let_go`]), then runs `then`. A `sleep` that stood for "still
+/// running when the turn ends" exited first on a busy machine.
+fn held(id: &str, then: &str) -> ResponseTemplate {
+    background(id, &format!("{HELD}; {then}"))
+}
+
+/// How a [`held`] command waits: for a file in the project.
+const HELD: &str = "until [ -e let-go ]; do sleep 0.1; done";
+
+impl Wire {
+    /// Let the [`held`] background command go on.
+    fn let_go(&self) {
+        std::fs::write(self.project.join("let-go"), "").unwrap();
+    }
+}
+
 /// A background command that exits wakes the idle session, as Claude Code
 /// tells Claude: Koda starts a turn whose first step tells the model the
 /// command, its exit code and its last lines, and clients hear of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_background_command_that_exits_wakes_the_session() {
     let server = model(vec![
-        background("a", "sleep 0.5; echo all 12 tests passed; exit 1"),
+        held("a", "echo all 12 tests passed; exit 1"),
         text("Started the tests."),
         text("The tests finished."),
     ])
@@ -1056,6 +1071,10 @@ async fn a_background_command_that_exits_wakes_the_session() {
     let first = wire.until_method("turn/completed").await;
     assert_eq!(turn_completed(&first)["id"], started.as_str());
 
+    // The command exits only now, with the session idle: one that exited
+    // during the turn would be told to the model there, with no turn of
+    // its own.
+    wire.let_go();
     // Koda's own turn, with nothing sent to start it.
     let lines = wire.until_method("turn/completed").await;
     assert_eq!(count(&lines, "turn/started"), 1);
@@ -1065,7 +1084,7 @@ async fn a_background_command_that_exits_wakes_the_session() {
         .unwrap_or_else(|| panic!("no exit notice in {lines:?}"));
     let data = &exited["params"]["data"][0];
     assert_eq!(data["exitCode"], 1, "{exited}");
-    assert!(data["command"].as_str().unwrap().starts_with("sleep 0.5"));
+    assert!(data["command"].as_str().unwrap().starts_with(HELD));
 
     let requests = chat_requests(&server).await;
     assert_eq!(requests.len(), 3);
@@ -1093,7 +1112,7 @@ async fn a_background_command_that_exits_wakes_the_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_goal_waits_for_its_background_command() {
     let server = model(vec![
-        background("a", "sleep 1"),
+        held("a", "true"),
         text("Waiting for the build."),
         text("The build is done."),
         tool_call("b", "UpdateGoal", json!({"status": "complete"})),
@@ -1105,6 +1124,8 @@ async fn a_goal_waits_for_its_background_command() {
     wire.until_method("turn/completed").await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(chat_requests(&server).await.len(), 2, "the goal waits");
+    // The command runs until here, so it can't exit before that is checked.
+    wire.let_go();
 
     let lines = wire
         .until(|l| {
@@ -1163,7 +1184,7 @@ async fn a_goal_checks_in_on_a_command_that_keeps_it_waiting() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_evaluator_waits_for_background_work() {
     let server = model(vec![
-        background("a", "sleep 0.5"),
+        held("a", "true"),
         text("Waiting for the tests."),
         text("The tests pass."),
         text(r#"{"ok": true, "reason": "The tests pass."}"#),
@@ -1172,6 +1193,10 @@ async fn the_evaluator_waits_for_background_work() {
     let mut wire = Wire::open(judged(config(&server))).await;
     wire.set_goal(json!({"objective": "Make the tests pass"}))
         .await;
+    // The command runs until the goal's turn has ended: one that exited
+    // during the turn would have the turn checked at once.
+    wire.until_method("turn/completed").await;
+    wire.let_go();
     wire.until(|l| {
         l["method"] == "session/goal/updated" && l["params"]["goal"]["status"] == "complete"
     })

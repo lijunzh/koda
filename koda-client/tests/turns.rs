@@ -109,8 +109,22 @@ impl Koda {
         };
         koda.until("session/started").await;
         // The scripted server reports no context window, so Koda says what it
-        // assumed, once the session has started.
-        let warned = koda.until("warning").await;
+        // assumed, once the session has started. A warning with no session is
+        // the host's own (a new Claude model, with a key in the environment)
+        // and comes when it comes: wait for the session's, and count only it.
+        let mut warned = Vec::new();
+        loop {
+            warned.extend(koda.until("warning").await);
+            if matches!(warned.last(), Some(Outgoing::Notification(ServerNotification::Warning(w)))
+                if w.session_id.as_deref() == Some(koda.session.as_str()))
+            {
+                break;
+            }
+        }
+        warned.retain(|m| {
+            !matches!(m, Outgoing::Notification(ServerNotification::Warning(w))
+                if w.session_id.is_none())
+        });
         assert_eq!(names(&warned), "warning");
         match &warned[0] {
             Outgoing::Notification(ServerNotification::Warning(w)) => {
@@ -457,11 +471,9 @@ async fn an_interrupt_stops_the_turn_and_is_answered_once_it_has() {
 
     let asked = Instant::now();
     koda.interrupt(&turn_id).await.unwrap();
-    assert!(
-        asked.elapsed() < Duration::from_secs(10),
-        "{:?}",
-        asked.elapsed()
-    );
+    // Well before the model's reply, which is all this shows; a busy machine
+    // may take seconds to stop a turn.
+    assert!(asked.elapsed() < WAIT, "{:?}", asked.elapsed());
     // The answer came after the turn ended: turn/completed is already queued.
     let messages = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&messages).status, TurnStatus::Interrupted);
@@ -620,16 +632,14 @@ async fn the_loop_cap_waits_for_the_clients_decision() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_steer_reaches_the_model_as_a_user_message() {
-    let server = model(vec![
-        tool_call("call_1", "Read", json!({"file_path": "a.txt"}))
-            .set_delay(Duration::from_secs(2)),
-        text("Checked both."),
-    ])
-    .await;
+    let server = model(vec![asked_write("call_1", "a.txt"), text("Checked both.")]).await;
     let mut koda = Koda::start(config(&server)).await;
-    std::fs::write(koda.project.join("a.txt"), "a\n").unwrap();
-    let turn_id = koda.turn_with("Read a.txt", Some("m1")).await.unwrap();
-    koda.until("turn/started").await;
+    let turn_id = koda.turn_with("Write a.txt", Some("m1")).await.unwrap();
+    // The turn waits at an approval until the test answers it, so the steer
+    // is sent while it runs however slow the machine is. A reply delayed 2 s
+    // was the window before.
+    let mut messages = koda.until_request().await;
+    let approval = last_request(&messages).id().clone();
 
     // Steering reaches the model as text: other parts go with turn/start.
     let refused = server_error(
@@ -645,7 +655,8 @@ async fn a_steer_reaches_the_model_as_a_user_message() {
     assert!(refused.message.contains("text parts only"), "{refused:?}");
     let steered = koda.steer(&turn_id, "Also mention b", "s1").await.unwrap();
     assert_eq!(steered, turn_id);
-    let messages = koda.until("turn/completed").await;
+    koda.answer(&approval, json!({"decision": "accept"})).await;
+    messages.extend(koda.until("turn/completed").await);
     assert_eq!(turn_completed(&messages).status, TurnStatus::Completed);
 
     let delivered: Vec<_> = completed(&messages)
@@ -665,7 +676,7 @@ async fn a_steer_reaches_the_model_as_a_user_message() {
     assert_eq!(
         delivered,
         [
-            ("Read a.txt".to_string(), vec!["m1".to_string()]),
+            ("Write a.txt".to_string(), vec!["m1".to_string()]),
             ("Also mention b".to_string(), vec!["s1".to_string()]),
         ]
     );
@@ -1372,8 +1383,9 @@ async fn unsubscribe_stops_the_running_turn() {
     );
     let seen = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&seen).status, TurnStatus::Interrupted);
+    // Before the model's reply (20 s), which is all this shows.
     assert!(
-        asked.elapsed() < Duration::from_secs(10),
+        asked.elapsed() < Duration::from_secs(15),
         "{:?}",
         asked.elapsed()
     );
@@ -1625,12 +1637,14 @@ async fn the_host_enforces_the_mode_rules() {
         .await
         .unwrap();
     let reported = loop {
-        let next = tokio::time::timeout(Duration::from_secs(10), client.next_event()).await;
+        let next = tokio::time::timeout(WAIT, client.next_event()).await;
         match next
             .expect("no session/settings/updated")
             .expect("host stopped")
         {
-            Outgoing::Notification(ServerNotification::Warning(w)) => {
+            // The session's own: one with no session is the host's (a new
+            // Claude model, with a key in the environment), not about a mode.
+            Outgoing::Notification(ServerNotification::Warning(w)) if w.session_id.is_some() => {
                 panic!("warned: {}", w.message);
             }
             Outgoing::Notification(ServerNotification::SessionSettingsUpdated(n)) => {
@@ -1685,8 +1699,9 @@ async fn deleting_an_open_session_stops_its_turn_and_deletes_it() {
         })
         .await
         .unwrap();
+    // Before the model's reply (20 s), which is all this shows.
     assert!(
-        asked.elapsed() < Duration::from_secs(10),
+        asked.elapsed() < Duration::from_secs(15),
         "{:?}",
         asked.elapsed()
     );
@@ -1861,6 +1876,35 @@ impl Koda {
     }
 }
 
+/// [`model`], with reply `held` (counted from 0) kept back until the test
+/// sends on the channel or drops it: a turn that waits on its model call for
+/// as long as the test has things to do meanwhile. The scripted server
+/// answers on a thread of its own, so waiting there holds only its replies.
+async fn model_holding(
+    replies: Vec<ResponseTemplate>,
+    held: usize,
+) -> (FakeLlmServer, std::sync::mpsc::Sender<()>) {
+    use std::sync::Mutex;
+    let server = FakeLlmServer::spawn().await;
+    let queue = Mutex::new(std::collections::VecDeque::from(replies));
+    let (let_go, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |_| {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == held {
+                let _ = gate.lock().unwrap().recv_timeout(WAIT);
+            }
+            queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| text("(no more replies)"))
+        })
+        .await;
+    (server, let_go)
+}
+
 /// The turn's compaction item, as it completed.
 fn compaction(messages: &[Outgoing]) -> (CompactionTrigger, CompactionStatus, Option<String>) {
     let found = completed(messages).into_iter().find_map(|item| match item {
@@ -1879,15 +1923,19 @@ fn compaction(messages: &[Outgoing]) -> (CompactionTrigger, CompactionStatus, Op
 /// of its own, which can be stopped but not steered, as in Codex.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_compaction_replaces_the_running_turn_and_runs_as_its_own() {
-    let server = model(vec![
-        text("One."),
-        text("Two."),
-        text("Three."),
-        text("Too late.").set_delay(Duration::from_secs(20)),
-        summary("<summary>SUMMARY-MARKER covers the turns.</summary>")
-            .set_delay(Duration::from_secs(2)),
-        text("Four."),
-    ])
+    // The summary is kept back until the test has asked what it asks of a
+    // running compaction; a 2 s delay was the window for that before.
+    let (server, let_summary_go) = model_holding(
+        vec![
+            text("One."),
+            text("Two."),
+            text("Three."),
+            text("Too late.").set_delay(Duration::from_secs(20)),
+            summary("<summary>SUMMARY-MARKER covers the turns.</summary>"),
+            text("Four."),
+        ],
+        4,
+    )
     .await;
     let mut koda = Koda::start(config(&server)).await;
     for prompt in ["first", "second", "third"] {
@@ -1905,7 +1953,11 @@ async fn a_compaction_replaces_the_running_turn_and_runs_as_its_own() {
 
     let asked = Instant::now();
     koda.compact().await.unwrap();
-    assert!(asked.elapsed() < Duration::from_secs(5), "answered at once");
+    // Without waiting for the slow turn's reply (20 s).
+    assert!(
+        asked.elapsed() < Duration::from_secs(15),
+        "answered at once"
+    );
     let replaced = koda.until("turn/completed").await;
     assert_eq!(turn_completed(&replaced).status, TurnStatus::Interrupted);
 
@@ -1916,6 +1968,7 @@ async fn a_compaction_replaces_the_running_turn_and_runs_as_its_own() {
     let again = server_error(koda.compact().await);
     assert_eq!(again.message, "a compaction is already running");
 
+    let_summary_go.send(()).unwrap();
     let seen = koda.until("turn/completed").await;
     assert_eq!(
         turn_completed(&seen).status,
@@ -2688,8 +2741,20 @@ fn mcp_server(dir: &std::path::Path, delay: &str, gate: Option<&std::path::Path>
     let gate = gate
         .map(|g| format!("[ -e '{}' ] || exit 1\n", g.display()))
         .unwrap_or_default();
+    mcp_script(dir, &format!("{gate}sleep {delay}"))
+}
+
+/// [`mcp_server`] that answers nothing until the file `let_go` exists: a
+/// server still starting for as long as the test needs it to be.
+fn mcp_server_held(dir: &std::path::Path, let_go: &std::path::Path) -> String {
+    let wait = format!("until [ -e '{}' ]; do sleep 0.1; done", let_go.display());
+    mcp_script(dir, &wait)
+}
+
+/// The server's script in `dir`, which runs `first` before it answers.
+fn mcp_script(dir: &std::path::Path, first: &str) -> String {
     let script = format!(
-        r#"{gate}sleep {delay}
+        r#"{first}
 while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
@@ -2832,7 +2897,10 @@ async fn a_session_starts_the_stored_servers_and_reports_them() {
 async fn a_slow_server_holds_the_first_turn_not_the_session_start() {
     let server = model(vec![text("Done.")]).await;
     let mut koda = Koda::start(config(&server)).await;
-    let script = mcp_server(koda._dir.path(), "2", None);
+    // The server answers nothing until the test lets it: a server that
+    // took 2 s was one the session's start had to beat by the clock.
+    let let_go = koda._dir.path().join("let-the-server-go");
+    let script = mcp_server_held(koda._dir.path(), &let_go);
     koda.write_config(&[(
         "mcp_servers.notes",
         json!({"command": "sh", "args": [script]}),
@@ -2840,19 +2908,17 @@ async fn a_slow_server_holds_the_first_turn_not_the_session_start() {
     .await
     .unwrap();
 
-    let opening = Instant::now();
+    // Answered with the server still held, so the start didn't wait for it.
     koda.switch_to_new_session().await;
-    assert!(
-        opening.elapsed() < Duration::from_secs(2),
-        "the start waited"
-    );
     let listed = koda.mcp_status(Some(&koda.session)).await;
     assert_eq!(
         listed[0].runtime_status,
         McpServerConnectionStatus::Starting
     );
 
+    // The turn is taken with the server still held, and waits for it.
     koda.turn("use your tools").await;
+    std::fs::write(&let_go, "").unwrap();
     koda.until("turn/completed").await;
     assert!(offered(&server, 0, "notes__lookup").await);
     koda.client.shutdown().await;

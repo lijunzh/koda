@@ -1516,7 +1516,8 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let heard = tokio::time::timeout(Duration::from_secs(10), launched.events.recv())
+            // Long enough for a busy machine.
+            let heard = tokio::time::timeout(Duration::from_secs(30), launched.events.recv())
                 .await
                 .expect("the line arrived")
                 .expect("the connection is open");
