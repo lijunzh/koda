@@ -1742,3 +1742,26 @@ kbd {
     display: none;
   }
 }
+
+/* Archive: the sidebar's list of sessions put away, and one opened to read */
+.side-action[aria-pressed='true'] {
+  background: var(--hover);
+}
+.groups[hidden] {
+  display: none;
+}
+.session-folder {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+.archived-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+}

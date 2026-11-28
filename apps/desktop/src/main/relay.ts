@@ -14,6 +14,10 @@ const PAGE_METHODS: ReadonlySet<string> = new Set([
   'session/read',
   'session/turns/list',
   'session/name/set',
+  // Archiving is undone with unarchive, so the page may ask for both; a
+  // delete, which isn't, is the main process's to confirm.
+  'session/archive',
+  'session/unarchive',
   'session/goal/get',
   'session/goal/set',
   'session/goal/clear',

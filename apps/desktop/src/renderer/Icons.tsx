@@ -74,6 +74,12 @@ export const FolderIcon = () => (
     <path d="M2 5.2c0-.9.7-1.6 1.6-1.6h2.5l1.5 1.6h4.8c.9 0 1.6.7 1.6 1.6v4.4c0 .9-.7 1.6-1.6 1.6H3.6c-.9 0-1.6-.7-1.6-1.6z" />
   </Icon>
 );
+export const ArchiveIcon = () => (
+  <Icon>
+    <rect x="2" y="3" width="12" height="3" rx="1" />
+    <path d="M3.2 6v5.4c0 .9.7 1.6 1.6 1.6h6.4c.9 0 1.6-.7 1.6-1.6V6M6.5 9h3" />
+  </Icon>
+);
 export const SidebarIcon = () => (
   <Icon>
     <rect x="2" y="3" width="12" height="10" rx="2" />

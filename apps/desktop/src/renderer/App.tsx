@@ -6,7 +6,7 @@ import { forSession, type Pending, withRequests, without } from './requests';
 import { ServerLine } from './ServerLine';
 import { back, canGoBack, canGoForward, forget, forward, here, type History, START, visit } from './history';
 import { NewSession } from './NewSession';
-import { EMPTY, type SessionsState, withMessages, withPage } from './sessions';
+import { EMPTY, type SessionsState, withMessages, withPage, withSession } from './sessions';
 import { applyPrefs, loadPrefs, type Prefs, savePrefs } from './prefs';
 import { Settings } from './Settings';
 import { Sidebar } from './Sidebar';
@@ -29,6 +29,8 @@ interface PaneState {
   initial?: Session;
   /** A new session's first prompt. */
   firstPrompt?: string;
+  /** An archived session, shown to read. */
+  archived?: boolean;
 }
 
 const PAGE = 50;
@@ -76,6 +78,11 @@ export function App() {
   // session, starting one and moving to another pane all count.
   const shown = panes[focused]?.id ?? null;
   useEffect(() => setHistory((h) => visit(h, shown)), [shown]);
+  // The sessions this window knows are archived: one opened from the
+  // Archived list, or archived while the app ran. Opening one reads it.
+  const archivedIds = useRef(new Set<string>());
+  // Goes up when the archive changes, for the Archived list to ask again.
+  const [archiveTick, setArchiveTick] = useState(0);
   const listeners = useRef(new Set<Listener>());
   const subscribe = useCallback((listener: Listener) => {
     listeners.current.add(listener);
@@ -117,7 +124,30 @@ export function App() {
       for (const listener of listeners.current) listener(batch);
       for (const message of batch) {
         const params = message.params as { sessionId?: string } | undefined;
-        if (message.method === 'session/deleted' && params?.sessionId) closeSession(params.sessionId);
+        if (!params?.sessionId) continue;
+        const id = params.sessionId;
+        if (message.method === 'session/deleted') {
+          archivedIds.current.delete(id);
+          closeSession(id);
+          setArchiveTick((n) => n + 1);
+        }
+        // An archived session is closed on the server: its pane goes, as
+        // Claude Code's desktop app puts the session away.
+        if (message.method === 'session/archived') {
+          archivedIds.current.add(id);
+          closeSession(id);
+          setArchiveTick((n) => n + 1);
+        }
+        // Brought back: it is listed again, and a pane reading it opens it.
+        if (message.method === 'session/unarchived') {
+          archivedIds.current.delete(id);
+          setArchiveTick((n) => n + 1);
+          setPanes((all) => all.map((p) => (p.id === id && p.archived ? { key: nextKey++, id } : p)));
+          void call('session/read', { sessionId: id }).then(
+            (answer) => setSessions((state) => withSession(state, answer.session)),
+            () => {},
+          );
+        }
       }
     };
     const stop = window.koda.onMessages((batch) => {
@@ -164,14 +194,21 @@ export function App() {
    * pane, or, `beside`, in a new pane next to it (Claude Code's split view).
    */
   const open = useCallback(
-    (id: string, options: { session?: Session; beside?: boolean; pane?: number; firstPrompt?: string } = {}) => {
+    (id: string, options: { session?: Session; beside?: boolean; pane?: number; firstPrompt?: string; archived?: boolean } = {}) => {
       const { panes, focused } = current.current;
       const at = panes.findIndex((p) => p.id === id);
       if (at >= 0) {
         setFocused(at);
         return;
       }
-      const next: PaneState = { key: nextKey++, id, initial: options.session, firstPrompt: options.firstPrompt };
+      if (options.archived) archivedIds.current.add(id);
+      const next: PaneState = {
+        key: nextKey++,
+        id,
+        initial: options.session,
+        firstPrompt: options.firstPrompt,
+        archived: archivedIds.current.has(id),
+      };
       if (options.beside && panes.length < MAX_PANES) {
         const where = (options.pane ?? focused) + 1;
         setPanes([...panes.slice(0, where), next, ...panes.slice(where)]);
@@ -281,6 +318,8 @@ export function App() {
         canSplit={panes.length < MAX_PANES}
         onOpen={(id, beside) => open(id, { beside })}
         onOpenSession={(session) => open(session.id, { session })}
+        onOpenArchived={(id) => open(id, { archived: true })}
+        archiveTick={archiveTick}
         onNew={start}
         onMore={more}
         onSettings={() => setSettingsOpen(true)}
@@ -328,6 +367,7 @@ export function App() {
                   id={pane.id}
                   initial={pane.initial}
                   firstPrompt={pane.firstPrompt}
+                  archived={pane.archived}
                   subscribe={subscribe}
                   listed={sessions.byId.get(pane.id)}
                   requests={forSession([...pending], pane.id)}
