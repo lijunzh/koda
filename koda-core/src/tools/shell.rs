@@ -1773,11 +1773,48 @@ mod tests {
     /// process exiting or a file appearing, which takes as long as the
     /// runner is slow, not a fixed sleep.
     async fn until(what: &str, done: impl Fn() -> bool) {
+        until_or(what, done, String::new).await;
+    }
+
+    /// [`until`], with `why` in the failure: the state of what was waited on.
+    async fn until_or(what: &str, done: impl Fn() -> bool, why: impl Fn() -> String) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !done() {
-            assert!(std::time::Instant::now() < deadline, "never {what}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never {what}\n{}",
+                why()
+            );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
+    }
+
+    /// For a failure message: how the registry's background commands stand,
+    /// and what the one `started` reports has printed. A command the sandbox
+    /// couldn't start exits at once, and only its log says why: on Linux CI a
+    /// background `sleep 60` has "exited with code 1" with nothing else to go
+    /// on (2026-11-15 and 16).
+    fn background_report(registry: &BgRegistry, started: &ShellOutput) -> String {
+        let commands: Vec<_> = registry
+            .snapshot()
+            .into_iter()
+            .map(|s| (s.pid, s.command, s.status))
+            .collect();
+        let log = started
+            .summary
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("Output:"))
+            .and_then(|rest| rest.trim().split(' ').next())
+            .map(std::path::PathBuf::from);
+        let printed = match &log {
+            Some(log) => match std::fs::read_to_string(log) {
+                Ok(text) if text.is_empty() => format!("{}: (empty)", log.display()),
+                Ok(text) => format!("{}:\n{text}", log.display()),
+                Err(e) => format!("{}: unreadable: {e}", log.display()),
+            },
+            None => format!("no log named in: {}", started.summary),
+        };
+        format!("background commands (PID, command, status): {commands:?}\nlog {printed}")
     }
     use crate::tools::bg_process::{BgProcessStatus, BgRegistry};
 
@@ -2249,21 +2286,23 @@ mod tests {
         let registry = BgRegistry::new();
         let log = tmp.path().join("pid");
         let command = format!("sleep 30 > /dev/null 2>&1 & echo $! > {}", log.display());
-        run_with(
+        let started = run_with(
             tmp.path(),
             &registry,
             serde_json::json!({ "command": command, "background": true }),
         )
         .await;
+        // Why it isn't running, should a check below find it so.
+        let why = || background_report(&registry, &started);
         let pid = || {
             std::fs::read_to_string(&log)
                 .ok()
                 .and_then(|text| text.trim().parse::<u32>().ok())
         };
-        until("wrote its PID", || pid().is_some()).await;
+        until_or("wrote its PID", || pid().is_some(), why).await;
         let pid = pid().unwrap();
         let snap = registry.snapshot();
-        assert_eq!(snap[0].status, BgProcessStatus::Running, "{snap:?}");
+        assert_eq!(snap[0].status, BgProcessStatus::Running, "{}", why());
 
         let check = run_with(
             tmp.path(),
@@ -3315,7 +3354,7 @@ mod tests {
         let registry = BgRegistry::new();
         // 71 and 72 s: no other test sleeps that long, so pgrep finds only these.
         // Anchored, so it finds the sleeps and not the shell that runs them.
-        proxied(&registry, "sleep 71 & sleep 72; wait", true).await;
+        let started = proxied(&registry, "sleep 71 & sleep 72; wait", true).await;
         let running = || {
             std::process::Command::new("pgrep")
                 .args(["-f", "^sleep 7[12]$"])
@@ -3327,7 +3366,11 @@ mod tests {
         // Both children started, so the stop comes after the shell's forks.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while running() < 2 {
-            assert!(std::time::Instant::now() < deadline, "never started");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never started\n{}",
+                background_report(&registry, &started)
+            );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let pid = registry.snapshot()[0].pid;
@@ -3389,15 +3432,22 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn koda_runs_a_chained_check_on_its_own_background_process() {
         let registry = BgRegistry::new();
-        let pid = start_in_background(&registry, "sleep 60").await;
+        let (pid, started) = start_in_background(&registry, "sleep 60").await;
+        // Why it isn't running, should the check find it so.
+        let why = || background_report(&registry, &started);
         let check = format!(r#"kill -0 {pid} && echo "alive" || echo "gone""#);
         let args = serde_json::json!({"command": check});
         assert!(signals_only_own_background(&args, &registry, None));
         let up = bash(&registry, &check).await;
-        assert!(up.success, "{}", up.summary);
-        assert!(up.summary.contains("is running"), "{}", up.summary);
-        assert!(up.summary.contains("\nalive"), "{}", up.summary);
-        assert!(!up.summary.contains("gone"), "{}", up.summary);
+        assert!(up.success, "{}\n{}", up.summary, why());
+        assert!(
+            up.summary.contains("is running"),
+            "{}\n{}",
+            up.summary,
+            why()
+        );
+        assert!(up.summary.contains("\nalive"), "{}\n{}", up.summary, why());
+        assert!(!up.summary.contains("gone"), "{}\n{}", up.summary, why());
 
         registry.kill(pid);
         let down = bash(&registry, &check).await;
@@ -3440,9 +3490,11 @@ mod tests {
         }
     }
 
-    async fn start_in_background(registry: &BgRegistry, command: &str) -> u32 {
+    /// Start `command` in the background: its PID, and the start's result,
+    /// which [`background_report`] reads when a check finds it not running.
+    async fn start_in_background(registry: &BgRegistry, command: &str) -> (u32, ShellOutput) {
         let args = serde_json::json!({"command": command, "background": true});
-        run_shell_command(
+        let started = run_shell_command(
             project(),
             &args,
             256,
@@ -3457,7 +3509,7 @@ mod tests {
         )
         .await
         .unwrap();
-        registry.snapshot().last().unwrap().pid
+        (registry.snapshot().last().unwrap().pid, started)
     }
 
     async fn bash(registry: &BgRegistry, command: &str) -> ShellOutput {
@@ -3485,27 +3537,31 @@ mod tests {
     async fn koda_checks_and_stops_its_own_background_process() {
         use crate::tools::bg_process::BgProcessStatus;
         let registry = BgRegistry::new();
-        let pid = start_in_background(&registry, "sleep 60").await;
+        let (pid, started) = start_in_background(&registry, "sleep 60").await;
+        // Why it isn't running, should a check find it so.
+        let why = || background_report(&registry, &started);
 
         let args = serde_json::json!({"command": format!("kill {pid}")});
         assert!(signals_only_own_background(&args, &registry, None));
         assert!(!signals_only_own_background(&args, &registry, Some(7)));
 
         let check = bash(&registry, &format!("kill -0 {pid}")).await;
-        assert!(check.success, "{}", check.summary);
+        assert!(check.success, "{}\n{}", check.summary, why());
         assert!(
             check.summary.contains("is running: sleep 60"),
-            "{}",
-            check.summary
+            "{}\n{}",
+            check.summary,
+            why()
         );
 
         let stop = bash(&registry, &format!("kill {pid}")).await;
-        assert!(stop.success, "{}", stop.summary);
+        assert!(stop.success, "{}\n{}", stop.summary, why());
         assert!(
             stop.summary
                 .contains(&format!("Stopped background process {pid}: sleep 60")),
-            "{}",
-            stop.summary
+            "{}\n{}",
+            stop.summary,
+            why()
         );
         assert_ne!(registry.snapshot()[0].status, BgProcessStatus::Running);
 
@@ -3521,7 +3577,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_kill_that_names_another_process_runs_as_written() {
         let registry = BgRegistry::new();
-        let pid = start_in_background(&registry, "sleep 60").await;
+        let (pid, _) = start_in_background(&registry, "sleep 60").await;
         // One PID isn't Koda's, so the whole command is left to the shell.
         let args = serde_json::json!({"command": format!("kill {pid} 999999")});
         assert!(!signals_only_own_background(&args, &registry, None));

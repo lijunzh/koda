@@ -3,6 +3,7 @@
 //! koda-cli's PTY suite, which keeps what only a real terminal shows.
 
 mod models;
+mod pastes;
 mod plan;
 mod sessions;
 mod stops;
