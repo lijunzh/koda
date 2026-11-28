@@ -527,8 +527,10 @@ npm start                 # build into out/ and open the app
   (`docs/theme/`) are all built from it by `scripts/make-icon.sh`, which
   needs `rsvg-convert` and macOS's `iconutil`. They're committed, so a
   release build needs neither; rerun the script after changing the SVG.
-  The page shows the same file (`Logo.tsx`) while the app starts, on an
-  empty session and in Settings. `.github/social-preview.png` is the card
+  The page (`Logo.tsx`) shows `assets/mark.svg` while the app starts, on an
+  empty session and in Settings: the same print in the tile's amber with no
+  tile, on the page's background in light and dark. Its shapes are the
+  icon's, kept by hand: change both. `.github/social-preview.png` is the card
   for the repository's social preview, drawn from the icon; GitHub takes
   it only by upload, in the repository's settings.
 - **Tests that start a server** use `koda serve --start` on a scratch
