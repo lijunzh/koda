@@ -527,6 +527,10 @@ npm start                 # build into out/ and open the app
   (`docs/theme/`) are all built from it by `scripts/make-icon.sh`, which
   needs `rsvg-convert` and macOS's `iconutil`. They're committed, so a
   release build needs neither; rerun the script after changing the SVG.
+  The page shows the same file (`Logo.tsx`) while the app starts, on an
+  empty session and in Settings. `.github/social-preview.png` is the card
+  for the repository's social preview, drawn from the icon; GitHub takes
+  it only by upload, in the repository's settings.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

@@ -3,6 +3,7 @@
 // opens "New session". The session starts with the first prompt. The folder
 // is one that already has a session or one picked in the system's dialog;
 // the main process checks that, so the page never sends a path of its own.
+import { Logo } from './Logo';
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call } from './bridge';
@@ -116,6 +117,7 @@ export function NewSession({ sessions, onStarted, onClose }: Props) {
         )}
       </header>
       <div className="new-session-body">
+        <Logo size={72} />
         <p className="meta">Describe a task or ask a question. Koda works in the folder below.</p>
       </div>
       <div className="bottom">

@@ -3,6 +3,7 @@
 // the conversation's width), Conversation (the view the app opens in), the
 // desktop app itself (notifications, keeping the computer awake, versions)
 // and the keyboard shortcuts.
+import { Logo } from './Logo';
 import { type ReactNode, useEffect, useState } from 'react';
 import type { DefaultView, Prefs, Theme, Width } from './prefs';
 
@@ -164,6 +165,13 @@ export function Settings({ prefs, onPrefs, appVersion, version, onClose }: Props
           {section === 'app' && (
             <section>
               <h2>Desktop app</h2>
+              <div className="about">
+                <Logo size={48} />
+                <div>
+                  <strong>Koda</strong>
+                  <span className="meta">An AI coding agent, on your machine</span>
+                </div>
+              </div>
               <Setting label="Notifications" description="Say when Koda needs you or has finished, while the app isn't in front.">
                 <Switch label="Notifications" on={prefs.notifications} onToggle={(notifications) => onPrefs({ ...prefs, notifications })} />
               </Setting>
