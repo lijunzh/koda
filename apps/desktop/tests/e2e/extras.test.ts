@@ -94,9 +94,9 @@ describe.skipIf(!koda)('session extras', () => {
     try {
       await page.getByRole('button', { name: 'Set a goal' }).waitFor({ timeout: 30_000 });
     } catch {
-      const bar = await page.getByTestId('session-bar').textContent();
+      const bar = await page.getByTestId('details').textContent();
       const log = await open!.app.evaluate(() => (globalThis as unknown as { goalLog: string[] }).goalLog.join('\n'));
-      throw new Error(`"Set a goal" didn't come back after Clear.\nThe session bar: ${bar}\nWhat the app heard:\n${log}`);
+      throw new Error(`"Set a goal" didn't come back after Clear.\nThe details panel: ${bar}\nWhat the app heard:\n${log}`);
     }
   });
 
@@ -106,7 +106,8 @@ describe.skipIf(!koda)('session extras', () => {
     await box.fill('Original question');
     await box.press('Enter');
     await page.getByTestId('agent-message').filter({ hasText: 'First answer.' }).waitFor({ timeout: 30_000 });
-    await page.getByRole('button', { name: 'Fork' }).click();
+    await page.getByRole('button', { name: 'Session menu' }).click();
+    await page.getByRole('menuitem', { name: /Fork/ }).click();
     await page.getByRole('navigation').getByRole('button', { name: /Fork of/ }).waitFor({ timeout: 30_000 });
     expect(await page.getByRole('heading', { level: 1 }).textContent()).toMatch(/Fork of/);
     expect(await page.getByTestId('agent-message').filter({ hasText: 'First answer.' }).count()).toBe(1);

@@ -96,11 +96,13 @@ describe.skipIf(!koda)('the session list', () => {
         dialog.showMessageBox = (async () => ({ response: r, checkboxChecked: false })) as typeof dialog.showMessageBox;
       }, response);
     await answer(1);
-    await page.getByRole('button', { name: 'Delete' }).click();
+    await page.getByRole('button', { name: 'Session menu' }).click();
+    await page.getByRole('menuitem', { name: 'Delete' }).click();
     await new Promise((r) => setTimeout(r, 500));
     expect(await page.getByRole('button', { name: /Beta work/ }).count()).toBe(1);
     await answer(0);
-    await page.getByRole('button', { name: 'Delete' }).click();
+    await page.getByRole('button', { name: 'Session menu' }).click();
+    await page.getByRole('menuitem', { name: 'Delete' }).click();
     await expect.poll(() => page.getByRole('button', { name: /Beta work/ }).count()).toBe(0);
     // The pane it was in goes back to a new session.
     await page.getByTestId('new-session').waitFor();

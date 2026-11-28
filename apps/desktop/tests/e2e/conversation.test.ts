@@ -73,10 +73,13 @@ describe.skipIf(!koda)('the conversation', () => {
     expect(await page.getByTestId('lookup-calls').count()).toBe(0);
 
     // Verbose shows each call; Ctrl+O cycles Normal, Thinking, Verbose.
-    await page.getByRole('button', { name: 'Verbose' }).click();
+    // The session's menu holds the views: Verbose shows each call; Ctrl+O cycles Normal, Thinking, Verbose.
+    await page.getByRole('button', { name: 'Session menu' }).click();
+    await page.getByRole('menuitem', { name: /Transcript view/ }).click();
+    await page.getByRole('menuitemradio', { name: 'Verbose' }).click();
     expect(await page.getByTestId('tool-call').count()).toBe(2);
     await page.keyboard.press('Control+O');
-    expect(await page.getByRole('button', { name: 'Normal' }).getAttribute('aria-pressed')).toBe('true');
+    expect(await page.getByTestId('session-view').getAttribute('data-view')).toBe('normal');
     expect(await page.getByTestId('tool-call').count()).toBe(0);
   });
 

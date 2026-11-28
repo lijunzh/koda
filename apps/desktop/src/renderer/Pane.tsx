@@ -29,13 +29,15 @@ interface Props {
   view: View;
   onView(view: View): void;
   planShown: boolean;
+  detailsShown: boolean;
+  onDetails(shown: boolean): void;
   /** Open a session the server just made (a fork) in this pane. */
   onOpen(session: Session): void;
   /** Close this pane; absent when it's the only one. */
   onClose?(): void;
 }
 
-export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, onAnswer, view, onView, planShown, onOpen, onClose }: Props) {
+export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, onAnswer, view, onView, planShown, detailsShown, onDetails, onOpen, onClose }: Props) {
   const [selected, setSelected] = useState<Selected>({ id });
   const [transcript, setTranscript] = useState<TranscriptState | null>(null);
   const [controls, setControls] = useState<ControlsState | null>(null);
@@ -107,6 +109,8 @@ export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, on
       controls={controls}
       diffs={diffs}
       planShown={planShown}
+      detailsShown={detailsShown}
+      onDetails={onDetails}
       onOpen={onOpen}
       onAnswer={onAnswer}
       onClose={onClose}

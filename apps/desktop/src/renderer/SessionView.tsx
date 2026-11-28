@@ -1,23 +1,26 @@
-import type { Selected } from './App';
 import { useState } from 'react';
+import type { Session } from '../protocol/types.gen';
+import type { Selected } from './App';
 import { call } from './bridge';
 import { Composer } from './Composer';
-import type { TurnDiffs } from './diffs';
-import { ReviewPanel } from './ReviewPanel';
 import type { ControlsState } from './controls';
-import { PlanPanel, SessionBar } from './SessionBar';
-import { SessionControls } from './SessionControls';
-import type { Pending } from './requests';
-import { Requests } from './RequestCards';
-import { type ListedSession, statusLabel, title } from './sessions';
 import { Conversation } from './Conversation';
+import type { TurnDiffs } from './diffs';
+import { type Entry, MenuButton } from './Menu';
+import { PlanPanel } from './Plan';
+import { Requests } from './RequestCards';
+import type { Pending } from './requests';
+import { ReviewPanel } from './ReviewPanel';
+import { SessionControls } from './SessionControls';
+import { SessionDetails } from './SessionDetails';
+import { type ListedSession, statusLabel, title } from './sessions';
 import { runningTurn, type TranscriptState, type View, VIEWS } from './transcript';
 
 /** Claude Code's names for its desktop views. */
 const VIEW_NAMES: Record<View, string> = { normal: 'Normal', thinking: 'Thinking', verbose: 'Verbose' };
 
 interface Props {
-  selected: Selected | null;
+  selected: Selected;
   listed?: ListedSession;
   transcript: TranscriptState | null;
   view: View;
@@ -29,33 +32,41 @@ interface Props {
   /** The turns' diffs the server sent while they ran. */
   diffs: TurnDiffs;
   planShown: boolean;
-  /** Open a session the server just made (a fork). */
-  onOpen(session: import('../protocol/types.gen').Session): void;
+  /** Whether the session details panel shows, in every pane. */
+  detailsShown: boolean;
+  onDetails(shown: boolean): void;
+  /** Open a session the server just made (a fork, or one on another provider). */
+  onOpen(session: Session): void;
   /** Close the pane, when there are others. */
   onClose?(): void;
 }
 
-/** The open session: its conversation, and the prompt box. */
-export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, diffs, planShown, onOpen, onClose }: Props) {
+/**
+ * The open session, laid out as Claude Code's desktop app lays one out: its
+ * title with a menu of what can be done with it; the conversation and the
+ * prompt box; and, at the right, the Changes pane and the details panel.
+ */
+export function SessionView({
+  selected,
+  listed,
+  transcript,
+  view,
+  onView,
+  requests,
+  onAnswer,
+  controls,
+  diffs,
+  planShown,
+  detailsShown,
+  onDetails,
+  onOpen,
+  onClose,
+}: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
-  const [controlError, setControlError] = useState<string | null>(null);
-  if (!selected) {
-    return (
-      <main className="session-view empty-view">
-        {onClose && (
-          <button className="close-pane" aria-label="Close pane" onClick={onClose}>
-            ✕
-          </button>
-        )}
-        <p>Open a session from the list, or start a new one.</p>
-      </main>
-    );
-  }
+  const [error, setError] = useState<string | null>(null);
   const session = selected.session;
-  const firstPrompt = transcript?.turns
-    .flatMap((turn) => turn.items)
-    .find((item) => item.type === 'userMessage');
+  const firstPrompt = transcript?.turns.flatMap((turn) => turn.items).find((item) => item.type === 'userMessage');
   const prompted =
     firstPrompt?.type === 'userMessage' ? (firstPrompt.content.find((p) => p.type === 'text') as { text?: string })?.text : '';
   const name = title({
@@ -65,49 +76,83 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
   const folder = session?.cwd ?? listed?.cwd ?? null;
   const label = statusLabel(listed?.status ?? session?.status ?? null);
   const running = transcript ? runningTurn(transcript) : undefined;
+  const failed = (e: Error) => setError(e.message);
+
+  // What can be done with the session, behind the caret beside its title.
+  const menu: Entry[] = [
+    { type: 'item', id: 'rename', label: 'Rename', onPick: () => setRenaming(listed?.name ?? session?.name ?? '') },
+    {
+      type: 'item',
+      id: 'fork',
+      label: 'Fork',
+      description: 'A copy to go on in, leaving this one as it is',
+      onPick: () => void call('session/fork', { sessionId: selected.id }).then((answer) => onOpen(answer.session), failed),
+    },
+    { type: 'separator' },
+    {
+      type: 'submenu',
+      id: 'view',
+      label: 'Transcript view',
+      detail: VIEW_NAMES[view],
+      entries: VIEWS.map((v): Entry => ({ type: 'item', id: v, label: VIEW_NAMES[v], checked: v === view, onPick: () => onView(v) })),
+    },
+    {
+      type: 'item',
+      id: 'compact',
+      label: 'Compact',
+      description: 'Summarize the conversation so far, to free context',
+      onPick: () => void call('session/compact/start', { sessionId: selected.id }).catch(failed),
+    },
+    { type: 'separator' },
+    { type: 'item', id: 'delete', label: 'Delete', danger: true, onPick: () => void window.koda.deleteSession(selected.id) },
+  ];
+
   return (
-    <main className="session-view" data-testid="session-view">
+    <main className="session-view" data-testid="session-view" data-view={view}>
       <header>
         <div className="heading">
-          {renaming === null ? (
-            <h1 title="Click to rename" onClick={() => setRenaming(listed?.name ?? session?.name ?? '')}>
-              {name}
-            </h1>
-          ) : (
-            <input
-              className="rename"
-              aria-label="Session name"
-              autoFocus
-              maxLength={100}
-              value={renaming}
-              onChange={(e) => setRenaming(e.target.value)}
-              onBlur={() => setRenaming(null)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setRenaming(null);
-                if (e.key === 'Enter' && renaming.trim() && !e.nativeEvent.isComposing) {
-                  void call('session/name/set', { sessionId: selected.id, name: renaming.trim() }).finally(() => setRenaming(null));
-                }
-              }}
-            />
-          )}
+          <div className="title-row">
+            {renaming === null ? (
+              <h1 title="Click to rename" onClick={() => setRenaming(listed?.name ?? session?.name ?? '')}>
+                {name}
+              </h1>
+            ) : (
+              <input
+                className="rename"
+                aria-label="Session name"
+                autoFocus
+                maxLength={100}
+                value={renaming}
+                onChange={(e) => setRenaming(e.target.value)}
+                onBlur={() => setRenaming(null)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setRenaming(null);
+                  if (e.key === 'Enter' && renaming.trim() && !e.nativeEvent.isComposing) {
+                    void call('session/name/set', { sessionId: selected.id, name: renaming.trim() }).finally(() => setRenaming(null));
+                  }
+                }}
+              />
+            )}
+            <MenuButton label="Session menu" entries={menu} className="icon-button">
+              <span aria-hidden>⌄</span>
+            </MenuButton>
+          </div>
           <p className="subtitle">
             {folder && <code data-testid="session-folder">{folder}</code>}
-            {session?.model && <span> · {session.model}</span>}
             {label && <span data-testid="session-status"> · {label}</span>}
           </p>
         </div>
-        <div className="views" role="group" aria-label="Transcript view (Ctrl+O)">
-          {VIEWS.map((v) => (
-            <button key={v} aria-pressed={view === v} onClick={() => onView(v)}>
-              {VIEW_NAMES[v]}
-            </button>
-          ))}
-        </div>
-        <button aria-pressed={reviewing} onClick={() => setReviewing((r) => !r)} disabled={!transcript}>
+        <button className="icon-button" aria-pressed={reviewing} disabled={!transcript} onClick={() => setReviewing((r) => !r)}>
           Changes
         </button>
-        <button className="delete" onClick={() => void window.koda.deleteSession(selected.id)}>
-          Delete
+        <button
+          className="icon-button"
+          aria-label="Session details"
+          title="Session details"
+          aria-pressed={detailsShown}
+          onClick={() => onDetails(!detailsShown)}
+        >
+          <span aria-hidden>◨</span>
         </button>
         {onClose && (
           <button className="close-pane" aria-label="Close pane" onClick={onClose}>
@@ -115,8 +160,7 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
           </button>
         )}
       </header>
-      {controls && <SessionBar sessionId={selected.id} controls={controls} onForked={onOpen} />}
-      {selected.error && <p className="problem">{selected.error}</p>}
+      {(selected.error || error) && <p className="problem">{selected.error ?? error}</p>}
       {!session && !selected.error && <p className="detail">Opening…</p>}
       <div className="session-split">
         <div className="conversation-column">
@@ -124,7 +168,6 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
           <div className="bottom">
             {controls && <PlanPanel controls={controls} shown={planShown} />}
             <Requests requests={requests} onAnswer={onAnswer} />
-            {controlError && <p className="problem">{controlError}</p>}
             <Composer
               sessionId={selected.id}
               running={running}
@@ -132,14 +175,37 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
               waiting={requests[0]?.method ?? null}
               foot={
                 controls && (
-                  <SessionControls sessionId={selected.id} controls={controls} folder={folder} onOpen={onOpen} onError={setControlError} />
+                  <SessionControls
+                    sessionId={selected.id}
+                    controls={controls}
+                    folder={folder}
+                    onOpen={onOpen}
+                    onError={setError}
+                  />
                 )
               }
             />
           </div>
         </div>
         {reviewing && transcript && (
-          <ReviewPanel key={selected.id} sessionId={selected.id} cwd={folder} transcript={transcript} diffs={diffs} onClose={() => setReviewing(false)} />
+          <ReviewPanel
+            key={selected.id}
+            sessionId={selected.id}
+            cwd={folder}
+            transcript={transcript}
+            diffs={diffs}
+            onClose={() => setReviewing(false)}
+          />
+        )}
+        {detailsShown && controls && (
+          <SessionDetails
+            sessionId={selected.id}
+            folder={folder}
+            controls={controls}
+            transcript={transcript}
+            diffs={diffs}
+            onChanges={() => setReviewing(true)}
+          />
         )}
       </div>
     </main>

@@ -43,6 +43,7 @@ export function App() {
   const [view, setView] = useState<View>('normal');
   const [pending, setPending] = useState<readonly Pending[]>([]);
   const [planShown, setPlanShown] = useState(true);
+  const [detailsShown, setDetailsShown] = useState(true);
   // `open` runs after awaits (a new session's dialog): it reads these, not a render's.
   const current = useRef({ panes, focused });
   current.current = { panes, focused };
@@ -242,6 +243,8 @@ export function App() {
                   view={view}
                   onView={setView}
                   planShown={planShown}
+                  detailsShown={detailsShown}
+                  onDetails={setDetailsShown}
                   onOpen={(session) => open(session.id, { session, pane: i })}
                   onClose={panes.length > 1 ? () => closePane(i) : undefined}
                 />

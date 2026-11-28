@@ -443,21 +443,25 @@ npm start                 # build into out/ and open the app
   start. The model, effort and mode menus (`SessionControls.tsx`,
   `Menu.tsx`) are the same under a running session's prompt box; another
   provider's model there starts a new session on it.
-- **Session controls** (`src/renderer/controls.ts`, `SessionBar.tsx`):
-  under the title, the model (`model/list` of the session's provider) and
-  effort, the mode, the context meter (the TUI's reading: the last call's
-  tokens against the window, the 12,000-token baseline left out), Compact,
-  and a click on the title to rename. The model's plan
-  (`turn/plan/updated`) is a checklist above the prompt box while its turn
-  runs; Ctrl+T hides or shows it, as in Claude Code. The relay lets the
-  page change the model and effort and lower the mode to Plan; Auto is a
+- **Session details** (`src/renderer/controls.ts`, `SessionDetails.tsx`):
+  the panel at the right of the conversation, as Claude Code's desktop app
+  has one. Its cards: Environment (folder, provider, model); Context (the
+  TUI's reading: the last call's tokens against the window, the
+  12,000-token baseline left out of the percentage) with Compact session;
+  Changes (the files of the latest turn that changed something, opening
+  the Changes pane); the goal (`session/goal/*`); what runs in the
+  background (`session/backgroundTerminals/list`, read again as items and
+  turns end) with Stop for each; and MCP servers
+  (`mcpServerStatus/list`). A container query leaves the panel out of a
+  pane under 820px. The title's menu (`SessionView.tsx`) has Rename, Fork
+  (`session/fork` with the id alone: same folder and settings), the
+  transcript views, Compact and Delete. The model's plan
+  (`turn/plan/updated`, `Plan.tsx`) is a checklist above the prompt box
+  while its turn runs; Ctrl+T hides or shows it. The relay lets the page
+  change the model and effort and lower the mode to Plan; Auto is a
   main-process action (`setMode` in `src/main/sessions.ts`) after a system
   confirmation. A model picked here is the session's; it isn't saved to
-  `config.toml`. The bar also forks the session (`session/fork` with its id
-  alone: same folder and settings), sets, pauses, resumes and clears its
-  goal (`session/goal/*`), and lists what runs in the background
-  (`session/backgroundTerminals/list`, read again as items and turns end)
-  with Stop for each.
+  `config.toml`.
 - **The look** (`src/renderer/styles.css`): every colour, corner and gap
   comes from the tokens at the top of the file, set once for light and once
   for dark, after Claude Code's desktop app (neutral white and grey in
