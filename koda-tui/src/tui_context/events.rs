@@ -36,6 +36,13 @@ impl TuiContext {
     }
 
     pub(crate) fn handle_idle_paste(&mut self, text: &str) {
+        // Text typed just before the paste may still be held as a possible
+        // paste of its own (the burst): it goes in first, as it does before
+        // a key, so the paste lands after it. Codex's `handle_paste` flushes
+        // the same way (`chat_composer/paste_input.rs`).
+        self.flush_paste_burst_before_modified_input();
+        // A real paste ends the burst: what is typed next starts afresh.
+        self.paste_burst.clear_after_explicit_paste();
         if !matches!(self.prompt_mode, PromptMode::WizardInput { .. }) {
             // An empty paste is a clipboard holding an image and no text:
             // iTerm2's Cmd+V sends one, as Claude Code notes.

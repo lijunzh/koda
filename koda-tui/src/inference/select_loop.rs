@@ -163,6 +163,10 @@ impl TuiContext {
         cmd_tx: &mpsc::Sender<TurnCommand>,
         cmd_rx: &mut mpsc::Receiver<TurnCommand>,
     ) -> anyhow::Result<()> {
+        // Text typed just before a turn Koda started by itself may still be
+        // held as a possible paste. The turn's keys and pastes go straight
+        // into the input box, so the held text goes in first.
+        self.flush_paste_burst_before_modified_input();
         // The prompt, and what goes back to the input box if it can't start.
         let mut watch = None;
         let (prompt, restore) = match request {
