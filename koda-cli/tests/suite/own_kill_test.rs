@@ -147,6 +147,14 @@ async fn a_server_started_with_amp_is_stopped_koda_s_way_without_asking() {
         "{}",
         result("c3")
     );
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(!alive(p as u32), "the server is still running");
+    // A killed process is gone once it next runs, which a busy machine
+    // delays: wait for it instead of looking once.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while alive(p as u32) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server is still running"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

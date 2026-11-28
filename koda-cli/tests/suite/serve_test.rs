@@ -393,13 +393,19 @@ async fn serve_stop_and_the_idle_exit() {
     assert_eq!(none.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&none.stderr).contains("no koda serve is listening"));
 
-    let mut idle = koda(&["--idle-exit-secs", "1"]).spawn().unwrap();
-    wait_for_socket().await;
-    let status = tokio::time::timeout(Duration::from_secs(15), idle.wait())
+    // It is up for about a second, too short a time to find its socket in
+    // on a busy machine: that it listened is read from what it said.
+    let idle = koda(&["--idle-exit-secs", "1"]).spawn().unwrap();
+    let idle = tokio::time::timeout(WAIT, idle.wait_with_output())
         .await
         .expect("an idle server didn't exit")
         .unwrap();
-    assert!(status.success(), "{status:?}");
+    let said = String::from_utf8_lossy(&idle.stderr);
+    assert!(idle.status.success(), "{said}");
+    assert!(
+        said.contains(&format!("Koda is listening at {}", socket.display())),
+        "{said}"
+    );
     assert!(!socket.exists());
 }
 

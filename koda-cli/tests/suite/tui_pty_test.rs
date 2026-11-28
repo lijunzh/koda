@@ -195,19 +195,8 @@ impl Tui {
     /// Everything the TUI has written, escape codes stripped.
     fn output_text(&self) -> String {
         let bytes = self.output.lock().unwrap().clone();
-        let text = String::from_utf8_lossy(&bytes);
         // The resume hint is printed after the TUI leaves its screen.
-        let mut plain = String::new();
-        let mut in_escape = false;
-        for c in text.chars() {
-            match (in_escape, c) {
-                (false, '\x1b') => in_escape = true,
-                (true, c) if c.is_ascii_alphabetic() || c == '~' => in_escape = false,
-                (true, _) => {}
-                (false, c) => plain.push(c),
-            }
-        }
-        plain
+        plain_text(&String::from_utf8_lossy(&bytes))
     }
 
     fn wait_for_output(&self, text: &str) {
@@ -223,14 +212,26 @@ impl Tui {
     fn wait_for_output_after(&self, start: usize, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(60);
         while Instant::now() < deadline {
-            let output = self.output.lock().unwrap();
-            if String::from_utf8_lossy(&output[start..]).contains(text) {
+            if self.wrote_since(start, text) {
                 return;
             }
-            drop(output);
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!("koda never showed {text:?}");
+    }
+
+    /// Whether the output past its first `start` bytes has `text`: as
+    /// written, or once the escape codes and blanks are left out of both. A
+    /// redraw writes only the cells that changed and moves the cursor over
+    /// the rest, so a blank between two words may never be written. Text
+    /// that is itself an escape code (a notification) is matched as written.
+    fn wrote_since(&self, start: usize, text: &str) -> bool {
+        let output = self.output.lock().unwrap();
+        let written = String::from_utf8_lossy(&output[start..]).into_owned();
+        drop(output);
+        let squeeze = |text: &str| -> String { text.split_whitespace().collect() };
+        written.contains(text)
+            || !text.contains('\x1b') && squeeze(&plain_text(&written)).contains(&squeeze(text))
     }
 
     /// What the terminal shows now. ratatui redraws only the cells that
@@ -280,7 +281,18 @@ impl Tui {
         while !done() {
             assert!(Instant::now() < deadline, "timed out:\n{}", self.screen());
             if self.screen().contains("[y] approve") {
+                let asked = self.output_len();
                 self.type_text("y");
+                // Until Koda takes the key the dialog stays up, and a second
+                // `y` would land in the input box: wait for the dialog to
+                // close, or for the next one to be drawn.
+                while !done()
+                    && self.screen().contains("[y] approve")
+                    && !self.wrote_since(asked, "approve")
+                {
+                    assert!(Instant::now() < deadline, "timed out:\n{}", self.screen());
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             } else {
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -325,9 +337,11 @@ impl Tui {
         self.wait_for_screen_without(BUSY_PROMPT);
     }
 
-    /// Whether `koda` exits within a few seconds.
+    /// Whether `koda` exits. It has 30 s: a quit that meets a turn's end
+    /// waits out the turn's grace (5 s), and a busy machine is slow to tear
+    /// a process down.
     fn exits(&mut self) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if self.child.try_wait().unwrap().is_some() {
                 return true;
@@ -343,6 +357,21 @@ impl Drop for Tui {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// `text` with its escape codes left out.
+fn plain_text(text: &str) -> String {
+    let mut plain = String::new();
+    let mut in_escape = false;
+    for c in text.chars() {
+        match (in_escape, c) {
+            (false, '\x1b') => in_escape = true,
+            (true, c) if c.is_ascii_alphabetic() || c == '~' => in_escape = false,
+            (true, _) => {}
+            (false, c) => plain.push(c),
+        }
+    }
+    plain
 }
 
 fn open_pty() -> (RawFd, RawFd) {
@@ -627,23 +656,28 @@ async fn a_stop_keeps_the_calls_that_already_ran() {
 /// Text typed before the stop comes back to the composer instead of being lost.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_hands_steering_text_back() {
-    let reply = tool_calls(&[write_file("a.txt")]).set_delay(Duration::from_secs(3));
-    let server = scripted_model(vec![reply]).await;
+    let server = scripted_model(vec![tool_calls(&[write_file("a.txt")])]).await;
+    // The model's reply waits at the gate until the steering text is in:
+    // once the reply's approval is up, typed keys answer it instead.
+    let gate = server.gate("first prompt").await;
     let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let mut tui = Tui::start_with_model(home.path(), &gate.url());
 
     tui.submit("first prompt");
     wait_for_model_call(&server, 1).await;
     tui.submit("steering text");
+    tui.wait_for_screen("Next: steering text");
+    gate.release();
     tui.wait_for_output("approve");
     tui.stop_turn(CTRL_C);
 
     assert_eq!(model_calls(&server).await.len(), 1);
     tui.wait_for_screen("Not sent to the model");
-    assert!(
-        input_box(&tui.screen()).contains("steeringtext"),
-        "{}",
-        tui.screen()
+    // The note is higher on the screen than the input box, and a frame can
+    // arrive in pieces: wait for the box itself.
+    tui.wait_for_screen_that(
+        |screen| input_box(screen).contains("steeringtext"),
+        "show the steering text back in the input box",
     );
     tui.type_text("\r");
     let sent = wait_for_model_call(&server, 2).await;
@@ -698,8 +732,9 @@ async fn an_outside_sandbox_request_shows_its_warning_and_reason() {
 
 /// Quit with Ctrl+D and return the session id Koda prints for `--resume`.
 ///
-/// Ctrl+D quits only at idle: during a turn it goes to the composer, where it
-/// deletes nothing. So it waits for the turn to end, not just its last words.
+/// During a turn Ctrl+D stops the turn before it quits
+/// (`ctrl_d_quits_during_a_turn`), which these tests don't want. So it
+/// waits for the turn to end, not just its last words.
 fn quit_and_read_session_id(tui: &mut Tui) -> String {
     tui.wait_for_screen_without(BUSY_PROMPT);
     tui.type_text(CTRL_D);
@@ -866,7 +901,8 @@ async fn ctrl_d_quits_during_a_turn() {
     tui.type_text(CTRL_D);
     assert!(tui.exits(), "koda stayed up after Ctrl+D during a turn");
     let session = resume_hint_session_id(&tui);
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // A killed process is gone once it next runs, which a busy machine delays.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while running("sleep 33") {
         assert!(Instant::now() < deadline, "the command outlived the quit");
         std::thread::sleep(Duration::from_millis(50));
@@ -1044,8 +1080,10 @@ fn text_reply(text: &str) -> ResponseTemplate {
 
 /// Run `command`: type it, wait until the input box shows all of it, then
 /// Enter. Typed in one write, a command can reach Koda as a fast burst that
-/// Koda holds as a paste until it goes quiet; an Enter that arrives while
-/// the paste is still held is a newline in the paste, not a submit.
+/// Koda holds as a paste until it goes quiet. An Enter that arrives while
+/// the text is held puts it in the box first and then submits (the test
+/// below), so the command runs either way; the wait makes a command that
+/// didn't arrive whole fail here, showing the box, not at a later step.
 fn run_command(tui: &mut Tui, command: &str) {
     tui.type_text(command);
     let want: String = command.split_whitespace().collect();
@@ -1469,16 +1507,20 @@ async fn assert_no_more_calls(server: &FakeLlmServer, calls: usize) {
 /// run again as a turn of its own.
 #[tokio::test(flavor = "multi_thread")]
 async fn steering_text_reaches_the_next_call_of_the_turn() {
-    let read =
-        tool_calls(&[("Read", json!({"file_path": "notes.md"}))]).set_delay(Duration::from_secs(3));
+    let read = tool_calls(&[("Read", json!({"file_path": "notes.md"}))]);
     let server = scripted_model(vec![read]).await;
+    // The model's reply waits at the gate until Koda has taken the steering
+    // text: text sent after the reply would miss the turn's next call.
+    let gate = server.gate("first prompt").await;
     let home = home();
     std::fs::write(home.path().join("notes.md"), "alpha line\n").unwrap();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let mut tui = Tui::start_with_model(home.path(), &gate.url());
 
     tui.submit("first prompt");
     wait_for_model_call(&server, 1).await;
     tui.submit("steering text");
+    tui.wait_for_screen("Next: steering text");
+    gate.release();
 
     let sent = wait_for_model_call(&server, 2).await;
     let body: Value = serde_json::from_str(&sent).unwrap();
@@ -1652,7 +1694,8 @@ async fn a_background_process_runs_until_stop() {
     tui.submit("/stop");
     tui.wait_for_screen("Stopped 1 background task.");
     tui.wait_for_screen_without("/stop to stop");
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // A killed process is gone once it next runs, which a busy machine delays.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while running("sleep 35") {
         assert!(Instant::now() < deadline, "/stop left it running");
         std::thread::sleep(Duration::from_millis(50));
@@ -1671,10 +1714,11 @@ async fn a_sub_agent_row_shows_while_it_works() {
         json!({"agent_name": "explore", "prompt": "look around"}),
     )]);
     // Sub-agents call the model without streaming.
-    let answer = json_reply("SUB-AGENT-ANSWER").set_delay(Duration::from_secs(3));
-    let server = scripted_model(vec![invoke, answer]).await;
+    let server = scripted_model(vec![invoke, json_reply("SUB-AGENT-ANSWER")]).await;
+    // The sub-agent's answer waits at the gate until its row has been seen.
+    let gate = server.gate("look around").await;
     let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let mut tui = Tui::start_with_model(home.path(), &gate.url());
 
     tui.submit("first prompt");
     tui.wait_for_screen_that(
@@ -1686,6 +1730,7 @@ async fn a_sub_agent_row_shows_while_it_works() {
         },
         "show the sub-agent's row",
     );
+    gate.release();
     tui.wait_for_screen("All done.");
     tui.wait_for_screen_without("Esc to interrupt");
 }
@@ -1883,6 +1928,12 @@ async fn a_large_paste_is_a_marker_sent_where_it_was_pasted() {
         .collect::<Vec<_>>()
         .join("\n");
     tui.type_text("why does ");
+    // Typed fast, the words are held as a paste for a moment, and a paste
+    // that arrives meanwhile goes in ahead of them: wait for them to land.
+    tui.wait_for_screen_that(
+        |screen| input_box(screen).ends_with("whydoes"),
+        "show the typed words in the input box",
+    );
     tui.paste(&format!("\x1b[200~{log}\x1b[201~"));
     tui.wait_for_screen("[Pasted text #1 +5 lines]");
     assert!(!tui.screen().contains("line 3"), "{}", tui.screen());
@@ -2295,10 +2346,11 @@ async fn a_window_is_told_its_session_was_archived_and_goes_on_once_unarchived()
         1,
         "nothing went to the archived session"
     );
-    assert!(
-        input_box(&tui.screen()).contains("andtheshape"),
-        "the prompt comes back to the input box:\n{}",
-        tui.screen()
+    // The refusal is higher on the screen than the input box, and a frame
+    // can arrive in pieces: wait for the box itself.
+    tui.wait_for_screen_that(
+        |screen| input_box(screen).contains("andtheshape"),
+        "show the prompt back in the input box",
     );
 
     let restored = koda("unarchive");
@@ -2582,9 +2634,11 @@ async fn the_evaluators_verdicts_show_until_the_goal_is_met() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_background_command_that_exits_starts_a_turn() {
     let server = scripted_model(vec![
+        // It runs until the test makes `go`: a command that exits while the
+        // turn that started it still runs is told to that turn instead.
         tool_calls(&[(
             "Bash",
-            json!({"command": "sleep 0.5; echo built", "background": true}),
+            json!({"command": "until [ -e go ]; do sleep 0.05; done; echo built", "background": true}),
         )]),
         text_reply("Started the build."),
         text_reply("The build finished."),
@@ -2594,8 +2648,14 @@ async fn a_background_command_that_exits_starts_a_turn() {
     let mut tui = Tui::start_with_args(home.path(), &server.url(), &["--mode", "auto"], IDLE_HINT);
 
     tui.submit("build it in the background");
-    tui.wait_for_screen("Started the build.");
-    tui.wait_for_screen("Background command exited (code 0): sleep 0.5; echo built");
+    tui.wait_for_screen_that(
+        |screen| screen.contains("Started the build.") && !screen.contains(BUSY_PROMPT),
+        "finish the turn that started the build",
+    );
+    std::fs::write(home.path().join("go"), "").unwrap();
+    tui.wait_for_screen(
+        "Background command exited (code 0): until [ -e go ]; do sleep 0.05; done; echo built",
+    );
     tui.wait_for_screen("The build finished.");
     tui.wait_for_screen_without(BUSY_PROMPT);
     assert_eq!(model_calls(&server).await.len(), 3);
@@ -2605,12 +2665,14 @@ async fn a_background_command_that_exits_starts_a_turn() {
 /// that turn ends.
 #[tokio::test(flavor = "multi_thread")]
 async fn goal_pause_mid_turn_stops_the_goal() {
-    let server = scripted_model(vec![
-        text_reply("Working on it.").set_delay(Duration::from_secs(3)),
-    ])
-    .await;
+    let server = scripted_model(vec![text_reply("Working on it.")]).await;
+    // The turn's reply waits at the gate until the goal is paused: a turn
+    // that ended first would be followed by the goal's next one.
+    let gate = server
+        .gate("Continue working toward the active thread goal")
+        .await;
     let home = home();
-    let mut tui = Tui::start_with_model(home.path(), &server.url());
+    let mut tui = Tui::start_with_model(home.path(), &gate.url());
 
     tui.submit("/goal Keep the docs current");
     tui.wait_for_screen("Goal set: Keep the docs current");
@@ -2618,6 +2680,7 @@ async fn goal_pause_mid_turn_stops_the_goal() {
     tui.wait_for_screen(BUSY_PROMPT);
     tui.submit("/goal pause");
     tui.wait_for_screen("Goal paused.");
+    gate.release();
     tui.wait_for_screen("Working on it.");
     tui.wait_for_screen_without(BUSY_PROMPT);
     tokio::time::sleep(Duration::from_millis(800)).await;

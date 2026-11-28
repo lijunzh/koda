@@ -325,6 +325,125 @@ impl FakeLlmServer {
         self.mount_delayed("POST", r".*/chat/completions$", delay, body)
             .await
     }
+
+    /// A second address for this server that holds back the reply to every
+    /// request containing `marker` until the test calls
+    /// [`ReplyGate::release`]. For a step that has to happen while the model
+    /// is still answering: a fixed delay on the reply gives that step a
+    /// window, which a busy machine misses; a gate waits for it.
+    ///
+    /// Give Koda [`ReplyGate::url`] in place of [`Self::url`]. Requests go
+    /// through at once, so [`Self::received_requests`] shows a held one as
+    /// soon as it is sent, and requests without `marker` are answered as
+    /// usual. Once released, the gate stays open.
+    pub async fn gate(&self, marker: &str) -> ReplyGate {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("no port for the gate");
+        let url = format!("http://{}", listener.local_addr().expect("the gate's port"));
+        let upstream = *self.server.address();
+        let open = Arc::new(tokio::sync::watch::Sender::new(false));
+        let marker = marker.as_bytes().to_vec();
+        let gate = Arc::clone(&open);
+        let accept = tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                tokio::spawn(gated_connection(
+                    client,
+                    upstream,
+                    marker.clone(),
+                    gate.subscribe(),
+                ));
+            }
+        });
+        ReplyGate { url, open, accept }
+    }
+}
+
+/// A gate in front of a [`FakeLlmServer`], from [`FakeLlmServer::gate`].
+/// Dropping it closes its address.
+pub struct ReplyGate {
+    url: String,
+    open: Arc<tokio::sync::watch::Sender<bool>>,
+    accept: tokio::task::JoinHandle<()>,
+}
+
+impl ReplyGate {
+    /// Base URL with no trailing slash, as [`FakeLlmServer::url`] gives.
+    pub fn url(&self) -> String {
+        self.url.clone()
+    }
+
+    /// Let the held replies through, and every later one.
+    pub fn release(&self) {
+        self.open.send_replace(true);
+    }
+}
+
+impl Drop for ReplyGate {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
+}
+
+/// Carry one connection to the server at `upstream` and back, holding the
+/// reply to a request that contains `marker` until `open` says to go on.
+async fn gated_connection(
+    client: tokio::net::TcpStream,
+    upstream: std::net::SocketAddr,
+    marker: Vec<u8>,
+    mut open: tokio::sync::watch::Receiver<bool>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let Ok(server) = tokio::net::TcpStream::connect(upstream).await else {
+        return;
+    };
+    let (mut from_client, mut to_client) = client.into_split();
+    let (mut from_server, mut to_server) = server.into_split();
+    // Whether the request being answered contains the marker, and whether
+    // its answer has begun: the bytes after that are the next request's.
+    let held = AtomicBool::new(false);
+    let answering = AtomicBool::new(false);
+
+    let requests = async {
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 8192];
+        while let Ok(n @ 1..) = from_client.read(&mut chunk).await {
+            if answering.swap(false, Ordering::SeqCst) {
+                request.clear();
+                held.store(false, Ordering::SeqCst);
+            }
+            request.extend_from_slice(&chunk[..n]);
+            // Only the new bytes can complete a match.
+            let from = request.len().saturating_sub(n + marker.len());
+            if request[from..]
+                .windows(marker.len().max(1))
+                .any(|window| window == marker)
+            {
+                held.store(true, Ordering::SeqCst);
+            }
+            // Marked before the server has the bytes, so before it answers.
+            if to_server.write_all(&chunk[..n]).await.is_err() {
+                break;
+            }
+        }
+        let _ = to_server.shutdown().await;
+    };
+    let replies = async {
+        let mut chunk = [0u8; 8192];
+        while let Ok(n @ 1..) = from_server.read(&mut chunk).await {
+            if held.load(Ordering::SeqCst) && open.wait_for(|open| *open).await.is_err() {
+                break;
+            }
+            answering.store(true, Ordering::SeqCst);
+            if to_client.write_all(&chunk[..n]).await.is_err() {
+                break;
+            }
+        }
+        let _ = to_client.shutdown().await;
+    };
+    tokio::join!(requests, replies);
 }
 
 /// Answers each request with the next response of `script`, streamed or
@@ -556,6 +675,33 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .to_string()
+    }
+
+    /// A gate holds the reply to a request with its marker until it is
+    /// released, shows the request as received meanwhile, and answers
+    /// requests without the marker at once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_gate_holds_a_marked_reply_until_released() {
+        let server = FakeLlmServer::spawn().await;
+        server
+            .mount_script_json(r#"[{"text": "one"}, {"text": "two"}]"#)
+            .await;
+        let gate = server.gate("You are HELD").await;
+        let url = gate.url();
+
+        let held = tokio::spawn({
+            let url = url.clone();
+            async move { ask(&url, "You are HELD.").await }
+        });
+        // The server has the request while its reply waits at the gate.
+        while server.chat_messages().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(ask(&url, "You are free.").await, "two");
+        assert!(!held.is_finished(), "the held reply went through");
+
+        gate.release();
+        assert_eq!(held.await.unwrap(), "one");
     }
 
     /// Two agents calling at the same time each get their own script, in

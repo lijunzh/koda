@@ -1491,20 +1491,34 @@ async fn chat_calls(server: &FakeLlmServer) -> Vec<String> {
 /// turn's reply ends the run.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_waits_for_its_background_command() {
-    let server = stub(
-        vec![
-            tool_call(
-                "a",
-                "Bash",
-                json!({"command": "sleep 1; echo built", "background": true}),
-            ),
-            text("Started the build."),
-            text("The build finished."),
-        ],
-        no_other_calls,
-    )
-    .await;
-    let run = run_koda(&server).await;
+    let tmp = tempfile::tempdir().unwrap();
+    // The command runs until the model has been asked for its second
+    // reply, the first turn's last: a command that exits before that call
+    // is told to the turn that started it, and no second turn follows.
+    let go = tmp.path().join("go");
+    let script = Mutex::new(VecDeque::from(vec![
+        tool_call(
+            "a",
+            "Bash",
+            json!({"command": "until [ -e go ]; do sleep 0.05; done; echo built", "background": true}),
+        ),
+        text("Started the build."),
+        text("The build finished."),
+    ]));
+    let server = FakeLlmServer::spawn().await;
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |request| {
+            if body(request)["stream"] != json!(true) {
+                return ResponseTemplate::new(500);
+            }
+            let mut script = script.lock().unwrap();
+            if script.len() == 2 {
+                std::fs::write(&go, "").unwrap();
+            }
+            script.pop_front().unwrap_or_else(|| text("Done."))
+        })
+        .await;
+    let run = finish(command(&server, tmp.path())).await;
     assert!(run.output.status.success(), "{}", run.stdout);
 
     assert_eq!(run.of("turn/completed").len(), 2, "{}", run.stdout);
@@ -1545,7 +1559,9 @@ async fn a_background_command_stops_at_its_time_limit() {
             tool_call(
                 "a",
                 "Bash",
-                json!({"command": "sleep 60", "background": true, "timeout": 1}),
+                // 5 s, not 1: a limit that runs out before the first turn's
+                // second call is told to that turn, and no second turn follows.
+                json!({"command": "sleep 60", "background": true, "timeout": 5}),
             ),
             text("Started it."),
             text("It ran out of time."),
@@ -1564,9 +1580,9 @@ async fn a_background_command_stops_at_its_time_limit() {
 
     let calls = chat_calls(&server).await;
     assert_eq!(calls.len(), 3, "{calls:?}");
-    assert!(calls[1].contains("Time limit: 1s"), "{}", calls[1]);
+    assert!(calls[1].contains("Time limit: 5s"), "{}", calls[1]);
     assert!(
-        calls[2].contains("stopped after reaching its background time limit of 1s"),
+        calls[2].contains("stopped after reaching its background time limit of 5s"),
         "{}",
         calls[2]
     );
