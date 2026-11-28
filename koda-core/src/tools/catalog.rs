@@ -61,8 +61,8 @@ use std::sync::{Arc, RwLock};
 
 use super::{
     DynTool, Tool, ToolEffect, agent, ask_user, bg_agents, boxed, cargo, file_tools, glob_tool,
-    goal, grep, memory, monitor, recall, shell, skill_tools, spawn_agent, todo, web_fetch,
-    web_search, write_stdin,
+    goal, grep, memory, monitor, recall, session_archive, shell, skill_tools, spawn_agent, todo,
+    web_fetch, web_search, write_stdin,
 };
 
 /// The read-only metadata side of [`crate::tools::ToolRegistry`].
@@ -196,6 +196,10 @@ impl ToolCatalog {
         // that with `definition()` instead of `definitions()`.
         let recall_def = recall::definition();
         definitions.insert(recall_def.name.clone(), recall_def);
+        // Other sessions' conversations.
+        for def in session_archive::definitions() {
+            definitions.insert(def.name.clone(), def);
+        }
         // Typing into a background command's terminal.
         let write_stdin_def = write_stdin::WriteStdinTool.definition();
         definitions.insert(write_stdin_def.name.clone(), write_stdin_def);
@@ -242,6 +246,8 @@ impl ToolCatalog {
             boxed(goal::CreateGoalTool),
             boxed(goal::UpdateGoalTool),
             boxed(recall::RecallContextTool),
+            boxed(session_archive::SearchSessionsTool),
+            boxed(session_archive::ReadSessionTool),
             // PR-8: meta cohort. `InvokeAgent` and `AskUser` are
             // intercepted upstream of the registry; their trait
             // impls preserve the pre-#1265 "should not be reached"
@@ -523,6 +529,8 @@ mod tests {
             "ListSkills",
             "ActivateSkill",
             "RecallContext",
+            "SearchSessions",
+            "ReadSession",
         ] {
             assert!(
                 names.contains(&expected.to_string()),

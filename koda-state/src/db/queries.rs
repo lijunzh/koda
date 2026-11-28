@@ -1299,6 +1299,19 @@ impl SessionStore for Database {
         Ok(row.map(Into::into))
     }
 
+    async fn sessions_with_id_prefix(&self, prefix: &str, limit: i64) -> Result<Vec<SessionInfo>> {
+        let rows: Vec<SessionInfoRow> = sqlx::query_as(concat!(
+            session_info_select!(),
+            " WHERE substr(s.id, 1, length(?)) = ? LIMIT ?"
+        ))
+        .bind(prefix)
+        .bind(prefix)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
     /// Get the model's final answer since the last user message (for headless
     /// JSON output).
     ///

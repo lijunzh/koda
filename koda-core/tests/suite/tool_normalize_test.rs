@@ -64,6 +64,8 @@ async fn normalized_snake_case_names_are_routable() {
         ("memory_read", "MemoryRead"),
         ("memory_write", "MemoryWrite"),
         ("recall_context", "RecallContext"),
+        ("search_sessions", "SearchSessions"),
+        ("read_session", "ReadSession"),
     ];
 
     for (raw, expected) in snake_names {

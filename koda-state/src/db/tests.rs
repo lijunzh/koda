@@ -3085,3 +3085,38 @@ async fn sessions_are_listed_by_a_term_in_their_title_or_preview() {
     assert!(listed("1_0").await.is_empty());
     assert!(listed("fine").await.is_empty(), "a reply is not searched");
 }
+
+/// A shortened id finds the sessions whose id it starts, of every kind,
+/// reading `%` and `_` as themselves.
+#[tokio::test]
+async fn a_shortened_id_finds_the_sessions_it_starts() {
+    let (db, _tmp) = setup().await;
+    for sql in [
+        "INSERT INTO sessions (id, agent_name) VALUES ('28545aaa-1', 'default')",
+        "INSERT INTO sessions (id, agent_name, archived_at, ephemeral) \
+         VALUES ('28545bbb-2', 'default', datetime('now'), 1)",
+        "INSERT INTO sessions (id, agent_name) VALUES ('9f000000-3', 'default')",
+    ] {
+        sqlx::query(sql).execute(db.pool()).await.unwrap();
+    }
+    for (prefix, limit, expected) in [
+        ("28545", 5, vec!["28545aaa-1", "28545bbb-2"]),
+        ("28545b", 5, vec!["28545bbb-2"]),
+        ("9f000000-3", 5, vec!["9f000000-3"]),
+        ("2854_", 5, vec![]),
+        ("%", 5, vec![]),
+        ("0", 5, vec![]),
+    ] {
+        let mut found: Vec<String> = db
+            .sessions_with_id_prefix(prefix, limit)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        found.sort();
+        assert_eq!(found, expected, "{prefix:?}");
+    }
+    let capped = db.sessions_with_id_prefix("28545", 1).await.unwrap();
+    assert_eq!(capped.len(), 1);
+}

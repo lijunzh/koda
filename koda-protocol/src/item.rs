@@ -565,11 +565,10 @@ impl ToolKind {
     /// server's) is `Other`, as ACP's MCP bridges send it.
     pub fn of(name: &str) -> Self {
         match name {
-            "Read" | "List" | "ListAgents" | "ListSkills" | "ActivateSkill" | "MemoryRead" => {
-                Self::Read
-            }
+            "Read" | "List" | "ListAgents" | "ListSkills" | "ActivateSkill" | "MemoryRead"
+            | "ReadSession" => Self::Read,
             "Edit" | "Write" | "MemoryWrite" => Self::Edit,
-            "Grep" | "Glob" | "RecallContext" | "WebSearch" => Self::Search,
+            "Grep" | "Glob" | "RecallContext" | "SearchSessions" | "WebSearch" => Self::Search,
             "Bash" | "Cargo" | "WriteStdin" | "Monitor" => Self::Execute,
             "TodoWrite" | "AskUser" => Self::Think,
             "WebFetch" => Self::Fetch,

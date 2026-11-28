@@ -543,6 +543,17 @@ InvokeAgent is handled at the dispatch level (`tool_dispatch.rs`) before
 reaching the registry. RecallContext uses an optional `db` + `session_id`
 on the ToolRegistry, set via `.with_session()`. No sentinel strings.
 
+`SearchSessions` and `ReadSession`, which read the user's other sessions,
+hold no database handle. `koda-core` defines a trait, `SessionArchive`
+(`tools/session_archive.rs`), and the host gives each session's registry
+its implementation when it opens the session, with the calling session's
+id fixed inside it (`koda-server/src/host/session_archive.rs`). The search
+is `session/search`'s scan and the read is `session/read`'s turns through
+the same text, so the protocol and the tools can't drift apart, and the
+rule for which sessions a model may see is written once, in the host. The
+core formats and bounds the result, since that text is prompt. A sub-agent's
+registry gets no archive and isn't offered the tools.
+
 **Future trigger**: When tool additions become frequent enough that editing 3
 locations per tool (definitions, match arm, module import) is a bottleneck,
 convert to a `Tool` trait + `ToolContext`. Do both together, not piecemeal.
@@ -1543,7 +1554,8 @@ user-facing mental-model doc).
 
 ### Content the Agent Reads Is Data (P1, P3)
 
-Web pages, search results and MCP results are wrapped before the model sees
+Web pages, search results, MCP results and what `SearchSessions` and
+`ReadSession` return from other sessions are wrapped before the model sees
 them (`koda-core/src/untrusted.rs`): one line saying the content is data whose
 instructions carry no authority beyond the user's request, then the content
 between `<<<EXTERNAL_CONTENT>>>` markers with a random id. Marker look-alikes

@@ -498,6 +498,9 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<Vec<SessionInfo>>;
     /// One session by its full id, or `None` if there is none.
     async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
+    /// The sessions whose id starts with `prefix`, `limit` of them at most
+    /// in no order, of every kind: what a shortened id may name.
+    async fn sessions_with_id_prefix(&self, prefix: &str, limit: i64) -> Result<Vec<SessionInfo>>;
 
     /// Copy `source` into a new session named `title`, and return its id:
     /// the session's provider, model and mode, its messages (token counts

@@ -854,6 +854,8 @@ mod tests {
         "ListAgents",
         "InvokeAgent",
         "WebSearch",
+        "SearchSessions",
+        "ReadSession",
         "ListSkills",
         "ActivateSkill",
         // TodoWrite mutates Koda-owned session state only — no FS impact —
