@@ -9,6 +9,9 @@ export interface ControlsState {
   settings: SessionSettings | null;
   /** Percent of the context window left, once a model call has said. */
   contextLeft: number | null;
+  /** The last call's tokens and the model's window, once a model call has said. */
+  tokens: number | null;
+  window: number | null;
   /** The plan of the running turn; gone when the turn ends, as the TUI's panel. */
   plan: PlanStep[];
   /** The session's goal, if it has one. */
@@ -16,7 +19,7 @@ export interface ControlsState {
 }
 
 export function controlsFor(sessionId: string, settings: SessionSettings | null | undefined): ControlsState {
-  return { sessionId, settings: settings ?? null, contextLeft: null, plan: [], goal: null };
+  return { sessionId, settings: settings ?? null, contextLeft: null, tokens: null, window: null, plan: [], goal: null };
 }
 
 /** Tokens always in the context (system prompt, tools), which Codex leaves out of both sides. */
@@ -44,7 +47,12 @@ export function withControls(state: ControlsState, batch: readonly RpcMessage[])
         break;
       case 'session/tokenUsage/updated': {
         const usage = p.tokenUsage as TokenUsage;
-        if (usage.modelContextWindow) edit().contextLeft = contextLeft(usage.last.totalTokens, usage.modelContextWindow);
+        if (usage.modelContextWindow) {
+          const next = edit();
+          next.contextLeft = contextLeft(usage.last.totalTokens, usage.modelContextWindow);
+          next.tokens = usage.last.totalTokens;
+          next.window = usage.modelContextWindow;
+        }
         break;
       }
       case 'turn/plan/updated':

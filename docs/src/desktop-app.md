@@ -44,7 +44,8 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
   click it to see each call and what it printed. Long output folds to its
   first lines; click to see the rest.
 - **Views**: Normal, Thinking (the model's thoughts too) and Verbose (every
-  tool call on its own). Ctrl+O cycles them.
+  tool call on its own). Ctrl+O cycles them; they're also under
+  **Transcript view** in the session's menu.
 - **The prompt box**: Enter sends, Shift+Enter adds a line. While a turn
   runs, Enter adds your message to it, and Stop (or Esc) ends it.
 
@@ -59,20 +60,26 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
   (switching to it asks once to confirm); Plan only reads and plans. See
   [Trust modes](approval.md). Cmd+Shift+M opens the menu.
 
-## Above the conversation
+## The session's title and its panel
 
-| Control | What it does |
+Click the session's title to rename it. The caret beside it opens the
+session's menu: **Rename**, **Fork** (a copy to go on in, leaving this one
+as it is), **Transcript view**, **Compact** and **Delete** (after asking).
+
+At the right of the conversation is the session's details panel; the button
+at the top right hides or shows it, and a narrow pane leaves it out:
+
+| Card | What it shows |
 |---|---|
-| Context left | How much of the model's context window is free |
-| Compact | Summarizes the conversation so far, to free context |
-| Fork | A copy of the conversation to go on in, leaving this one as it is |
+| Environment | The folder the session works in, its provider and model |
+| Context | How much of the model's context window is used, and **Compact session**, which summarizes the conversation so far to free it |
+| Changes | The files the last changes touched; click one to review it (below) |
 | Goal | What the session works toward, with an optional token budget |
 | Background | Commands running in the background, each with Stop |
-| Changes | The turns' edits, for review (below) |
-| Delete | Deletes the session, after asking |
+| MCP servers | The servers Koda is connected to |
 
-Click the session's title to rename it. The model's plan shows as a
-checklist above the prompt box while a turn runs; Ctrl+T hides or shows it.
+The model's plan shows as a checklist above the prompt box while a turn
+runs; Ctrl+T hides or shows it.
 
 ## Approvals and questions
 

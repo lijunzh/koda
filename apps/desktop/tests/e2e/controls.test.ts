@@ -57,9 +57,9 @@ describe.skipIf(!koda)('session controls', () => {
     await expect.poll(() => plan.textContent()).toContain('1 step left');
     await page.keyboard.press('Control+T');
     await expect.poll(() => plan.textContent()).toContain('Read the code');
-    // Done: the plan goes, and the meter says how much context is left.
+    // Done: the plan goes, and the details panel says how full the context is.
     await expect.poll(() => page.getByTestId('plan').count(), { timeout: 30_000 }).toBe(0);
-    await expect.poll(() => page.getByTestId('context-left').textContent()).toMatch(/\d+% context left/);
+    await expect.poll(() => page.getByTestId('context-left').textContent()).toMatch(/\d+% used/);
 
     // The mode, under the prompt box: Plan at once, Auto only after the system dialog says so.
     const mode = page.getByRole('button', { name: 'Mode', exact: true });

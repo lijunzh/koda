@@ -215,8 +215,6 @@ textarea {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  max-height: 60vh;
-  overflow-y: auto;
 }
 .menu.anchored.up {
   top: auto;
@@ -413,13 +411,6 @@ textarea {
   padding: 10px 20px 8px;
   border-bottom: 1px solid var(--border);
 }
-.session-view > header > button:not(.delete) {
-  background: none;
-}
-.session-view > header > button:not(.delete):hover:not(:disabled),
-.session-view > header > button[aria-pressed='true'] {
-  background: var(--hover);
-}
 .heading {
   flex: 1 1 180px;
   min-width: 0;
@@ -465,29 +456,7 @@ textarea {
   margin: 0;
 }
 
-/* The open session's controls */
-.session-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  padding: 6px 20px;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-}
-.session-bar > button {
-  background: none;
-  padding: 3px 8px;
-}
-.session-bar > button:hover:not(:disabled) {
-  background: var(--hover);
-}
-.session-bar .views button {
-  padding: 2px 10px;
-}
-.goal-row {
-  flex-basis: 100%;
-}
+/* The goal and what runs in the background, in the details panel */
 .goal {
   display: flex;
   flex-wrap: wrap;
@@ -960,4 +929,139 @@ textarea {
 .menu.anchored.right .menu.side {
   left: auto;
   right: calc(100% + 2px);
+}
+
+/* The session's title, with its menu */
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.title-row h1 {
+  flex: 0 1 auto;
+}
+.icon-button {
+  background: none;
+  padding: 3px 8px;
+  color: var(--muted);
+}
+.icon-button:hover:not(:disabled),
+.icon-button[aria-pressed='true'],
+.icon-button[aria-expanded='true'] {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* The session details panel */
+.session-view {
+  container-type: inline-size;
+}
+.details {
+  width: 300px;
+  flex: none;
+  overflow-y: auto;
+  border-left: 1px solid var(--border);
+  padding: 4px 16px 16px;
+  font-size: 13px;
+}
+/* A narrow pane keeps its room for the conversation. */
+@container (max-width: 820px) {
+  .details {
+    display: none;
+  }
+}
+.card {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.card:last-child {
+  border-bottom: none;
+}
+.card h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.card p {
+  margin: 4px 0;
+}
+.card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.card-row .path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-row.between {
+  justify-content: space-between;
+}
+.card-row.end {
+  justify-content: flex-end;
+}
+.card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.card-file {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  padding: 4px 6px;
+  text-align: left;
+}
+.card-file code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-file:hover:not(:disabled) {
+  background: var(--hover);
+}
+.meter {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--raised);
+  overflow: hidden;
+  margin: 6px 0 8px;
+}
+.meter span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+}
+.background-card:not(:has(.background)) {
+  display: none;
+}
+.details .background-list {
+  position: static;
+  min-width: 0;
+  box-shadow: none;
+  border: none;
+  background: none;
+  padding: 4px 0 0;
+}
+.details .goal {
+  align-items: flex-start;
+}
+
+/* A tool call's title: its mark, then the call, wrapping under itself */
+.tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tool-head code {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
