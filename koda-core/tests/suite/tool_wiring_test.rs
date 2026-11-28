@@ -114,6 +114,8 @@ fn test_classify_tool_covers_all_tools_explicitly() {
         ("ListSkills", ToolEffect::ReadOnly),
         ("ActivateSkill", ToolEffect::ReadOnly),
         ("RecallContext", ToolEffect::ReadOnly),
+        ("SearchSessions", ToolEffect::ReadOnly),
+        ("ReadSession", ToolEffect::ReadOnly),
         ("AskUser", ToolEffect::ReadOnly),
         // WebFetch without a preapproved documentation URL reaches out.
         ("WebFetch", ToolEffect::RemoteAction),

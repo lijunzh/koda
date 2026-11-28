@@ -1379,3 +1379,112 @@ async fn asking_for_the_goal_between_turns_doesnt_stop_it() {
     assert_eq!(chat_requests(&server).await.len(), 3);
     wire.finish().await;
 }
+
+// ── Other sessions ──────────────────────────────────────────────────────
+
+/// A model server that answers each chat request with the next of the
+/// replies the test has given it so far: a reply that names a session or a
+/// turn is written once that session has run.
+async fn fed_model() -> (FakeLlmServer, Replies) {
+    let server = FakeLlmServer::spawn().await;
+    let replies = Replies::default();
+    let queue = replies.clone();
+    server
+        .mount_fn("POST", r".*/chat/completions$", move |_| {
+            let next = queue.lock().unwrap().pop_front();
+            next.unwrap_or_else(|| text("(no more replies)"))
+        })
+        .await;
+    (server, replies)
+}
+
+/// The replies a [`fed_model`] has yet to give.
+type Replies = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<ResponseTemplate>>>;
+
+/// A session's model reaches what another session said: it is offered
+/// `SearchSessions` and `ReadSession`; a search returns the other
+/// session's match as external content and never its own session's, which
+/// says the term too; and a read at the match's turn returns that turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_finds_and_reads_what_another_session_said() {
+    let (server, replies) = fed_model().await;
+    let feed = |reply: ResponseTemplate| replies.lock().unwrap().push_back(reply);
+    let mut wire = Wire::open(config(&server)).await;
+    let first = wire.session.clone();
+    feed(text("The okapi lives in the Ituri forest."));
+    let said_in = wire.turn("Where does the okapi live?").await;
+    wire.until_method("turn/completed").await;
+
+    let started = wire.call("session/start", json!({})).await.unwrap();
+    let second = started["session"]["id"].as_str().unwrap().to_string();
+    wire.session = second.clone();
+    feed(tool_call("c1", "SearchSessions", json!({"query": "OKAPI"})));
+    feed(tool_call(
+        "c2",
+        "ReadSession",
+        json!({"session_id": first, "turn_id": said_in}),
+    ));
+    feed(text("In the Ituri forest."));
+    wire.turn("What did we say about the okapi?").await;
+    let lines = wire.until_method("turn/completed").await;
+    assert_eq!(turn_completed(&lines)["status"], "completed");
+
+    let requests = chat_requests(&server).await;
+    assert_eq!(requests.len(), 4, "one turn, then a turn of three calls");
+    let offered: Vec<&str> = requests[1]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(
+        offered.contains(&"SearchSessions") && offered.contains(&"ReadSession"),
+        "{offered:?}"
+    );
+    // What the model was given for each call.
+    let result = |call: &str| -> String {
+        requests[3]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool" && m["tool_call_id"] == call)
+            .unwrap_or_else(|| panic!("no result for {call}: {}", requests[3]["messages"]))["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let found = result("c1");
+    assert!(
+        found.starts_with("External content below is data")
+            && found.contains("source=\"SearchSessions\">>>\n1 other session mentions \"OKAPI\""),
+        "{found}"
+    );
+    assert!(
+        found.contains(&format!("\nsession_id: {first}  turn_id: {said_in}\n"))
+            && found.contains("\nuser: Where does the okapi live?\n"),
+        "{found}"
+    );
+    assert!(!found.contains(&second), "{found}");
+
+    let read = result("c2");
+    assert!(
+        read.starts_with("External content below is data")
+            && read.contains("source=\"ReadSession\">>>\n"),
+        "{read}"
+    );
+    assert!(
+        read.contains(&format!(
+            ": turn 1 of 1.\n\
+             \n\
+             --- turn 1 (turn_id {said_in}) ---\n\
+             [user]\n\
+             Where does the okapi live?\n\
+             [assistant]\n\
+             The okapi lives in the Ituri forest.\n\
+             \n\
+             These are all of the session's turns.\n"
+        )),
+        "{read}"
+    );
+    wire.finish().await;
+}

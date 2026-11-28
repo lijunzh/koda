@@ -841,6 +841,13 @@ fn run_sub_agent<'a>(
                     denied.push(name.to_string());
                 }
             }
+            // Other sessions are reached through the main agent, whose
+            // registry the host gave the way to them; a sub-agent's has none.
+            for name in ["SearchSessions", "ReadSession"] {
+                if !denied.iter().any(|d| d == name) {
+                    denied.push(name.to_string());
+                }
+            }
             // Phase E of #996 wired `caller_spawner` through the
             // dispatch layer, so the bg-task tools (ListBackgroundTasks /
             // CancelTask / WaitTask) now correctly scope to the calling

@@ -243,6 +243,11 @@ pub struct ToolExecCtx<'a> {
     /// the context.
     pub session: Option<(&'a koda_state::db::Database, &'a str)>,
 
+    /// The other sessions, for `SearchSessions` and `ReadSession`; `None`
+    /// in a sub-agent and in a session no host opened. Other tools ignore
+    /// this.
+    pub session_archive: Option<std::sync::Arc<dyn crate::tools::session_archive::SessionArchive>>,
+
     /// Skill registry for `ListSkills` / `ActivateSkill`. Other
     /// tools ignore this. Added in PR-8 of #1265 item 5.
     pub skill_registry: &'a crate::skills::SkillRegistry,
@@ -477,6 +482,7 @@ impl<'a> ToolExecCtx<'a> {
             proxy_port: None,
             socks5_port: None,
             session: None,
+            session_archive: None,
             skill_registry,
             web_searcher: None,
             page_reader: None,
@@ -621,6 +627,7 @@ mod tests {
             proxy_port: None,
             socks5_port: None,
             session: None,
+            session_archive: None,
             skill_registry: skills,
             takes_images: false,
             takes_pdfs: false,

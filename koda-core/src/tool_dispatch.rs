@@ -969,7 +969,16 @@ async fn join_unless_cancelled<'n, F: std::future::Future>(
 fn stops_on_cancel(tool: &str) -> bool {
     matches!(
         tool,
-        "Bash" | "Cargo" | "WebFetch" | "WebSearch" | "Grep" | "Glob" | "List" | "Read"
+        "Bash"
+            | "Cargo"
+            | "WebFetch"
+            | "WebSearch"
+            | "Grep"
+            | "Glob"
+            | "List"
+            | "Read"
+            | "SearchSessions"
+            | "ReadSession"
     )
 }
 

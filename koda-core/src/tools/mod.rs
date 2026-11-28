@@ -90,6 +90,8 @@ pub mod notebook;
 pub mod pdf;
 /// On-demand conversation history retrieval (`RecallContext`).
 pub mod recall;
+/// Other sessions' conversations (`SearchSessions`, `ReadSession`).
+pub mod session_archive;
 /// Shell command execution tool (`Bash`).
 pub mod shell;
 /// Skill discovery and activation tools (`ListSkills`, `ActivateSkill`).
@@ -274,6 +276,9 @@ pub struct ToolRegistry {
     db: std::sync::RwLock<Option<std::sync::Arc<koda_state::db::Database>>>,
     /// Current session ID (for RecallContext).
     session_id: std::sync::RwLock<Option<String>>,
+    /// The other sessions, as this one may see them
+    /// ([`Self::set_session_archive`]).
+    session_archive: std::sync::RwLock<Option<Arc<dyn session_archive::SessionArchive>>>,
     /// The model provider's own web search, set each turn from the
     /// provider and model ([`Self::set_web_searcher`]).
     web_searcher: std::sync::RwLock<Option<Arc<dyn crate::providers::WebSearcher>>>,
@@ -368,6 +373,7 @@ impl ToolRegistry {
             max_goal_token_budget: None,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
+            session_archive: std::sync::RwLock::new(None),
             web_searcher: std::sync::RwLock::new(None),
             page_reader: std::sync::RwLock::new(None),
             approver: std::sync::RwLock::new(None),
@@ -451,6 +457,15 @@ impl ToolRegistry {
         }
         if let Ok(mut guard) = self.session_id.write() {
             *guard = Some(session_id);
+        }
+    }
+
+    /// Let `SearchSessions` and `ReadSession` reach other sessions through
+    /// `archive`, which the host that opened this session makes for it.
+    /// Without one they answer that they can't.
+    pub fn set_session_archive(&self, archive: Arc<dyn session_archive::SessionArchive>) {
+        if let Ok(mut guard) = self.session_archive.write() {
+            *guard = Some(archive);
         }
     }
 
@@ -814,6 +829,7 @@ impl ToolRegistry {
                 proxy_port,
                 socks5_port,
                 session,
+                session_archive: self.session_archive.read().ok().and_then(|g| g.clone()),
                 skill_registry: &self.skill_registry,
                 web_searcher: self.web_searcher.read().ok().and_then(|g| g.clone()),
                 page_reader: self.page_reader.read().ok().and_then(|g| g.clone()),

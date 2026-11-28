@@ -1277,3 +1277,56 @@ async fn parallel_sub_agents_each_play_their_own_script() {
     // Both scripts ran in full: a tool call and a reply each.
     assert_eq!(server.chat_messages().await.len(), 4);
 }
+
+/// A sub-agent isn't offered `SearchSessions` or `ReadSession`: other
+/// sessions are reached through the main agent, whose tools the host gave
+/// the way to them, and a tool that could only refuse would cost every
+/// call of the sub-agent its definition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sub_agent_is_not_offered_the_tools_for_other_sessions() {
+    let _lock = ENV_MUTEX.lock().await;
+    let env = Env::new().await;
+    let server = FakeLlmServer::spawn().await;
+    let agents_dir = env.root.join(".koda/agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(
+        agents_dir.join("helper.json"),
+        serde_json::json!({
+            "name": "helper",
+            "system_prompt": "You help.",
+            "allowed_tools": [],
+            "provider": "lmstudio",
+            "model": "stub",
+            "base_url": server.url()
+        })
+        .to_string(),
+    )
+    .unwrap();
+    server.mount_script_json(r#"[{"text": "Done."}]"#).await;
+    env.insert_user_message("delegate to helper").await;
+    let provider = MockProvider::new(vec![
+        MockResponse::tool_call(
+            "InvokeAgent",
+            serde_json::json!({"agent_name": "helper", "prompt": "help"}),
+        ),
+        MockResponse::Text("Helped.".into()),
+    ]);
+    env.run_inference(&provider).await;
+
+    let requests = koda_test_utils::openai::chat_requests(&server).await;
+    assert_eq!(requests.len(), 1, "the sub-agent's one call");
+    let offered: Vec<&str> = requests[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    assert!(offered.contains(&"Read"), "{offered:?}");
+    for name in ["SearchSessions", "ReadSession"] {
+        assert!(!offered.contains(&name), "{name} in {offered:?}");
+        assert!(
+            env.tool_defs().iter().any(|tool| tool.name == name),
+            "the main agent is offered {name}"
+        );
+    }
+}

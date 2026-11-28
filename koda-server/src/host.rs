@@ -41,6 +41,8 @@ use crate::session::{
     invalid,
 };
 
+mod session_archive;
+
 /// Open sessions' in-process handles, by id; shared with the client.
 pub(crate) type HandleMap = Arc<std::sync::Mutex<HashMap<String, SessionHandles>>>;
 
@@ -134,6 +136,18 @@ struct Listing<'a> {
     cursor: Option<&'a str>,
 }
 
+/// What a scan of the sessions for a term found ([`Host::scan_sessions`]).
+struct Scanned {
+    /// The sessions that say it, in the scan's order, each with its first
+    /// match.
+    found: Vec<(
+        koda_state::session_store::SessionInfo,
+        crate::session_search::Found,
+    )>,
+    /// Whether another session says it after these.
+    more: bool,
+}
+
 /// The longest name `session/name/set` takes, in characters.
 const MAX_SESSION_NAME: usize = 100;
 
@@ -189,31 +203,14 @@ pub(crate) struct HostArgs {
 pub(crate) fn spawn(args: HostArgs) -> (mpsc::Sender<HostCommand>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(64);
     let (ended, ended_rx) = mpsc::unbounded_channel();
-    let host = Arc::new(Host {
-        context: SessionContext {
-            config: args.config,
-            config_file: args.config_file,
-            project_root: args.project_root,
-            db: args.db,
-            sandbox: args.sandbox,
-            events: args.events,
-            request_ids: Arc::new(AtomicI64::new(0)),
-            open_requests: OpenRequests::default(),
-            statuses: session::Statuses::default(),
-            run_checked: Arc::default(),
-        },
-        handles: HandleMap::default(),
-        client: OnceLock::new(),
-        config_warnings: std::sync::Mutex::new(args.config_warnings),
-        sessions: Mutex::new(HashMap::new()),
-        tasks: Mutex::new(JoinSet::new()),
-        ended,
-        searches: crate::fuzzy_file_search::PendingSearches::default(),
-    });
+    let host = Host::new(args, ended);
     (tx, tokio::spawn(run(host, rx, ended_rx)))
 }
 
 struct Host {
+    /// The host itself, for what it hands a session that outlives the
+    /// request that opened it ([`session_archive::HostArchive`]).
+    me: std::sync::Weak<Host>,
     /// What every session shares; its config is what new sessions start with.
     context: SessionContext,
     /// Set by `initialize`; until then every other request is refused.
@@ -373,6 +370,33 @@ fn ordered_session(request: &rpc::Request) -> Option<String> {
 }
 
 impl Host {
+    /// A host with no session open, which tells `ended` when a session's
+    /// task ends.
+    fn new(args: HostArgs, ended: mpsc::UnboundedSender<(String, Option<String>)>) -> Arc<Self> {
+        Arc::new_cyclic(|me| Host {
+            me: me.clone(),
+            context: SessionContext {
+                config: args.config,
+                config_file: args.config_file,
+                project_root: args.project_root,
+                db: args.db,
+                sandbox: args.sandbox,
+                events: args.events,
+                request_ids: Arc::new(AtomicI64::new(0)),
+                open_requests: OpenRequests::default(),
+                statuses: session::Statuses::default(),
+                run_checked: Arc::default(),
+            },
+            handles: HandleMap::default(),
+            client: OnceLock::new(),
+            config_warnings: std::sync::Mutex::new(args.config_warnings),
+            sessions: Mutex::new(HashMap::new()),
+            tasks: Mutex::new(JoinSet::new()),
+            ended,
+            searches: crate::fuzzy_file_search::PendingSearches::default(),
+        })
+    }
+
     async fn handle(
         &self,
         request: rpc::Request,
@@ -973,7 +997,7 @@ impl Host {
         &self,
         params: SessionSearchParams,
     ) -> Result<SessionSearchResponse, ErrorObject> {
-        use koda_state::session_store::{SessionListQuery, SessionStore};
+        use koda_state::session_store::SessionListQuery;
         let term = params.search_term.trim();
         if term.is_empty() {
             return Err(invalid("session/search requires a non-empty searchTerm"));
@@ -987,7 +1011,7 @@ impl Host {
             .limit
             .unwrap_or(DEFAULT_SEARCH_LIMIT)
             .clamp(1, MAX_SEARCH_LIMIT) as usize;
-        let mut query = SessionListQuery {
+        let query = SessionListQuery {
             limit: SEARCH_SCAN_PAGE,
             ..self.listing_query(Listing {
                 method: "session/search",
@@ -1000,64 +1024,112 @@ impl Host {
             })?
         };
         // What open sessions have said so far is searched too.
-        self.store_open_sessions().await;
+        self.store_open_sessions(None).await;
 
+        let by_updated = query.by_updated;
+        let scanned = self
+            .scan_sessions(query, term, params.include_tool_output, limit, None)
+            .await?;
+        // The next page goes on from this one's last session.
+        let next_cursor = scanned
+            .found
+            .last()
+            .filter(|_| scanned.more)
+            .and_then(|(last, _)| serde_json::to_string(&ListCursor::after(last, by_updated)).ok());
+        Ok(SessionSearchResponse {
+            data: scanned
+                .found
+                .into_iter()
+                .map(|(stored, found)| SessionSearchResult {
+                    session: self.with_status(session::describe(&stored)),
+                    snippet: found.snippet,
+                    turn_id: Some(found.turn_id),
+                    item_id: Some(found.item_id),
+                    matched: found.matched,
+                })
+                .collect(),
+            next_cursor,
+        })
+    }
+
+    /// The sessions among `query`'s that say `term`, in its order and
+    /// `limit` at most, each with its first match: the scan under
+    /// `session/search` and under the model's `SearchSessions`. The store
+    /// gives the sessions that may hold the term, a page at a time, and
+    /// each is read until `limit` are found.
+    ///
+    /// With a `viewer`, the search is a session's model's: only the
+    /// sessions it may see, and a fork's first match is looked for after
+    /// what it copied ([`Self::copied_rows`]).
+    async fn scan_sessions(
+        &self,
+        mut query: koda_state::session_store::SessionListQuery,
+        term: &str,
+        tool_output: bool,
+        limit: usize,
+        viewer: Option<&session_archive::Viewer<'_>>,
+    ) -> Result<Scanned, ErrorObject> {
+        use koda_state::session_store::SessionStore;
         let db = &self.context.db;
         let matcher = crate::session_search::Term::new(term);
-        let mut data: Vec<SessionSearchResult> = Vec::with_capacity(limit);
-        // Where the page's last session stands in the order, and whether
-        // another match follows it.
-        let mut last = None;
-        let mut more = false;
+        let mut scanned = Scanned {
+            found: Vec::with_capacity(limit),
+            more: false,
+        };
         'scan: loop {
             let candidates = db
                 .search_candidates_page(&query, term)
                 .await
                 .map_err(|e| internal(format!("couldn't search sessions: {e:#}")))?;
-            for stored in &candidates {
+            let full = candidates.len() as i64 >= query.limit;
+            // A short page was the store's last.
+            let after = candidates
+                .last()
+                .filter(|_| full)
+                .map(|end| ListCursor::after(end, query.by_updated));
+            for stored in candidates {
+                if viewer.is_some_and(|viewer| !viewer.covers(&stored)) {
+                    continue;
+                }
                 let turns = crate::history::turns(db, &stored.id, false)
                     .await
                     .map_err(history_error)?;
                 let rows = crate::session_text::rows(&turns);
+                let copied = match viewer {
+                    Some(viewer) => self.copied_rows(viewer, &stored, &rows).await?,
+                    None => 0,
+                };
                 let Some(found) =
-                    crate::session_search::first_match(&rows, &matcher, params.include_tool_output)
+                    crate::session_search::first_match(&rows[copied..], &matcher, tool_output)
                 else {
                     continue;
                 };
-                if data.len() == limit {
-                    more = true;
+                if scanned.found.len() == limit {
+                    scanned.more = true;
                     break 'scan;
                 }
-                last = Some(ListCursor::after(stored, query.by_updated));
-                data.push(SessionSearchResult {
-                    session: self.with_status(session::describe(stored)),
-                    snippet: found.snippet,
-                    turn_id: Some(found.turn_id),
-                    item_id: Some(found.item_id),
-                    matched: found.matched,
-                });
+                scanned.found.push((stored, found));
             }
-            // A short page was the store's last.
-            match candidates.last() {
-                Some(end) if candidates.len() as i64 >= query.limit => {
-                    let end = ListCursor::after(end, query.by_updated);
-                    query.after = Some((end.at, end.seq));
-                }
-                _ => break,
+            match after {
+                Some(end) => query.after = Some((end.at, end.seq)),
+                None => break,
             }
         }
-        Ok(SessionSearchResponse {
-            data,
-            next_cursor: last
-                .filter(|_| more)
-                .and_then(|last| serde_json::to_string(&last).ok()),
-        })
+        Ok(scanned)
     }
 
     /// Have every open session store the turns it has sent so far, so a
-    /// read of the store that follows sees them.
-    async fn store_open_sessions(&self) {
-        let open: Vec<OpenSession> = self.sessions.lock().await.values().cloned().collect();
+    /// read of the store that follows sees them; all but session `except`,
+    /// when the read is that session's own and leaves it out.
+    async fn store_open_sessions(&self, except: Option<&str>) {
+        let open: Vec<OpenSession> = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(id, _)| Some(id.as_str()) != except)
+            .map(|(_, session)| session.clone())
+            .collect();
         let mut stored = Vec::new();
         for session in open {
             let (done, flushed) = oneshot::channel();
@@ -1086,6 +1158,21 @@ impl Host {
         (true, stored.await.ok().flatten())
     }
 
+    /// Session `id`'s turns as its clients were told of them. An open
+    /// session's last turn may still be running, with items not stored yet
+    /// or still open: laid over the stored turns as a join gets them, as
+    /// Codex's `thread/read` merges a thread's active turn.
+    async fn session_turns(&self, id: &str) -> Result<Vec<koda_protocol::turn::Turn>, ErrorObject> {
+        let (running, live) = self.settle(id).await;
+        let mut turns = crate::history::turns(&self.context.db, id, running)
+            .await
+            .map_err(history_error)?;
+        if let Some(live) = live {
+            live.over(&mut turns);
+        }
+        Ok(turns)
+    }
+
     /// `session/read`: a stored session as `session/list` gives it, with its
     /// turns when asked, as Codex's `thread/read`.
     async fn read_session(
@@ -1107,17 +1194,7 @@ impl Host {
             })?;
         let mut session = self.with_status(session::describe(&stored));
         if params.include_turns {
-            // An open session's last turn may still be running, with items
-            // not stored yet or still open: laid over the stored turns as
-            // a join gets them, as Codex's `thread/read` merges a thread's
-            // active turn.
-            let (running, live) = self.settle(&session.id).await;
-            session.turns = crate::history::turns(&self.context.db, &session.id, running)
-                .await
-                .map_err(history_error)?;
-            if let Some(live) = live {
-                live.over(&mut session.turns);
-            }
+            session.turns = self.session_turns(&session.id).await?;
         }
         Ok(koda_protocol::session::SessionReadResponse { session })
     }
@@ -1143,16 +1220,7 @@ impl Host {
                 format!("no session {:?}", params.session_id),
             ));
         }
-        // An open session's last turn may still be running, with items
-        // not stored yet or still open: the list has them as its clients
-        // were told of them.
-        let (running, live) = self.settle(&params.session_id).await;
-        let mut turns = crate::history::turns(&self.context.db, &params.session_id, running)
-            .await
-            .map_err(history_error)?;
-        if let Some(live) = live {
-            live.over(&mut turns);
-        }
+        let turns = self.session_turns(&params.session_id).await?;
         crate::history::page(
             turns,
             params.cursor.as_deref(),
@@ -1658,6 +1726,11 @@ impl Host {
         let context = self.session_context(params.cwd.as_deref(), params.config.as_ref())?;
         let mut opened = session::open(context, resume, policy, choice, origin).await?;
         let id = opened.session.id.clone();
+        // Its model reaches the other sessions through the host, as this
+        // session may see them.
+        opened.handles.agent.tools.set_session_archive(Arc::new(
+            session_archive::HostArchive::new(self.me.clone(), id.clone()),
+        ));
         // A resumed session comes back with its turns, as Codex's
         // `thread/resume` does.
         if resuming {

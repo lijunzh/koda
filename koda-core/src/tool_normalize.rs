@@ -42,7 +42,9 @@ const CANONICAL: &[&str] = &[
     "MemoryWrite",
     "Read",
     "ReadMcpResource",
+    "ReadSession",
     "RecallContext",
+    "SearchSessions",
     "SpawnAgent",
     "TodoWrite",
     "UpdateGoal",
@@ -144,6 +146,10 @@ static ALIASES: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
     // Recall
     m.insert("recall_context".into(), "RecallContext");
     m.insert("recall".into(), "RecallContext");
+
+    // Other sessions
+    m.insert("search_sessions".into(), "SearchSessions");
+    m.insert("read_session".into(), "ReadSession");
 
     // Pre-#1325 Phase 5b also mapped `list_background_tasks` /
     // `list_bg_tasks` / `cancel_task` / `wait_task` / `wait_for_task`
