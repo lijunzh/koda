@@ -18,8 +18,11 @@ contextBridge.exposeInMainWorld('koda', {
   respond: (id: number | string, result: unknown) => ipcRenderer.invoke('koda:respond', id, result),
   /** Replace an older server whose turns are running: `wait` for them, or `stop` them. */
   replaceServer: (turns: 'wait' | 'stop') => ipcRenderer.invoke('koda:replaceServer', turns),
-  /** A new session in a folder the user picks; resolves with it, or null if they cancelled. */
-  newSession: () => ipcRenderer.invoke('koda:newSession'),
+  /** Ask the user for a folder in the system's dialog; resolves with it, or null if they cancelled. */
+  pickFolder: () => ipcRenderer.invoke('koda:pickFolder'),
+  /** A new session in a folder the user picked or that has a session, on a provider the server lists. */
+  startSession: (options: { folder: string; provider?: string; model?: string }) =>
+    ipcRenderer.invoke('koda:startSession', options),
   /** Delete a session once the user confirms; resolves with whether it was deleted. */
   deleteSession: (id: string) => ipcRenderer.invoke('koda:deleteSession', id),
   /** Put a session in Auto (after the user confirms) or Plan; resolves with whether it changed. */

@@ -17,8 +17,10 @@ export type Listener = (batch: readonly RpcMessage[]) => void;
 
 interface Props {
   id: string;
-  /** The session, when the server just made it (a new session, a fork). */
+  /** The session, when the server just made it (a fork). */
   initial?: Session;
+  /** A new session's first prompt, sent once the pane follows the session. */
+  firstPrompt?: string;
   /** Hear the server's events; returns the way to stop. */
   subscribe(listener: Listener): () => void;
   listed?: ListedSession;
@@ -33,7 +35,7 @@ interface Props {
   onClose?(): void;
 }
 
-export function Pane({ id, initial, subscribe, listed, requests, onAnswer, view, onView, planShown, onOpen, onClose }: Props) {
+export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, onAnswer, view, onView, planShown, onOpen, onClose }: Props) {
   const [selected, setSelected] = useState<Selected>({ id });
   const [transcript, setTranscript] = useState<TranscriptState | null>(null);
   const [controls, setControls] = useState<ControlsState | null>(null);
@@ -72,6 +74,12 @@ export function Pane({ id, initial, subscribe, listed, requests, onAnswer, view,
       // answers at one point in the session's stream, so nothing repeats.
       setTranscript(withEvents(fromSession(session), early.current));
       early.current = [];
+      // Only now, so the pane sees the turn from its start.
+      if (firstPrompt) {
+        call('turn/start', { sessionId: id, input: [{ type: 'text', text: firstPrompt }] }).catch(
+          (error: Error) => open && setSelected({ id, session, error: error.message }),
+        );
+      }
     };
     if (initial) opened(initial);
     else {
@@ -84,7 +92,7 @@ export function Pane({ id, initial, subscribe, listed, requests, onAnswer, view,
       open = false;
       void call('session/unsubscribe', { sessionId: id }).catch(() => {});
     };
-    // `initial` is only the session's first state.
+    // `initial` and `firstPrompt` are only the session's first state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 

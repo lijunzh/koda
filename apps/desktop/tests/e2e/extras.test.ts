@@ -32,7 +32,7 @@ async function session(replies: Reply[]) {
     dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [picked] })) as typeof dialog.showOpenDialog;
   }, realpathSync(project));
   await page.getByRole('button', { name: 'New session' }).click();
-  await page.getByTestId('session-bar').waitFor({ timeout: 30_000 });
+  await page.getByRole('textbox', { name: 'Prompt' }).waitFor({ timeout: 30_000 });
   return page;
 }
 
@@ -72,6 +72,11 @@ describe.skipIf(!koda)('session extras', () => {
       });
     }, t0);
     const mark = (what: string) => open!.app.evaluate((_e, [what, t0]) => (globalThis as unknown as { goalLog: string[] }).goalLog.push(`${Date.now() - (t0 as number)}ms TEST ${what}`), [what, t0] as const);
+    // A session starts with its first prompt.
+    const box = page.getByRole('textbox', { name: 'Prompt' });
+    await box.fill('Hello');
+    await box.press('Enter');
+    await page.getByTestId('agent-message').filter({ hasText: 'All done.' }).first().waitFor({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Set a goal' }).click();
     await page.getByRole('textbox', { name: 'Goal' }).fill('Keep the tests green');
     await page.getByRole('button', { name: 'Set goal' }).click();

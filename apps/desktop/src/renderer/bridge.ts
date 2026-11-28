@@ -18,7 +18,8 @@ interface KodaBridge {
   request(method: string, params: unknown): Promise<unknown>;
   respond(id: number | string, result: unknown): Promise<void>;
   onMessages(listener: (batch: RpcMessage[]) => void): () => void;
-  newSession(): Promise<Session | null>;
+  pickFolder(): Promise<string | null>;
+  startSession(options: { folder: string; provider?: string; model?: string }): Promise<Session>;
   deleteSession(id: string): Promise<boolean>;
   setMode(id: string, mode: 'auto' | 'plan'): Promise<boolean>;
   replaceServer(turns: 'wait' | 'stop'): Promise<void>;

@@ -1,9 +1,7 @@
-// The open session's controls, under its title: model, effort and mode (as
-// the TUI's /model, /effort and Shift+Tab), how much context is left, and
-// compacting it.
-import { MenuButton } from './Menu';
-import { useEffect, useState } from 'react';
-import type { Model } from '../protocol/types.gen';
+// The open session's bar, under its title: how much context is left,
+// compacting it, forking, what runs in the background and the goal. The
+// model, effort and mode are under the prompt box (`SessionControls`).
+import { useState } from 'react';
 import { call } from './bridge';
 import type { ControlsState } from './controls';
 import { Background, GoalLine } from './SessionExtras';
@@ -19,63 +17,11 @@ export function SessionBar({
   onForked(session: import('../protocol/types.gen').Session): void;
 }) {
   const settings = controls.settings;
-  const [models, setModels] = useState<Model[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const provider = settings?.modelProvider;
-
-  useEffect(() => {
-    if (!provider) return;
-    let live = true;
-    call('model/list', { modelProvider: provider }).then(
-      (answer) => live && setModels(answer.data),
-      () => live && setModels([]),
-    );
-    return () => {
-      live = false;
-    };
-  }, [provider]);
 
   if (!settings) return null;
-  const update = (change: { model?: string; effort?: string }) =>
-    call('session/settings/update', { sessionId, ...change }).then(
-      () => setError(null),
-      (e: Error) => setError(e.message),
-    );
-  const current = models.find((m) => m.id === settings.model || (settings.alias && m.alias === settings.alias));
-  const efforts = current?.supportedReasoningEfforts ?? [];
-  // The session's own model leads the list even when the provider doesn't list it.
-  const choices = current || !settings.model ? models : [{ id: settings.model, isDefault: false, supportedReasoningEfforts: [] } as Model, ...models];
-
   return (
     <div className="session-bar" data-testid="session-bar">
-      <MenuButton
-        label="Model"
-        value={current ? (current.alias ?? current.id) : settings.model}
-        items={choices.map((m) => ({ value: m.alias ?? m.id, label: m.alias ?? m.id, detail: m.alias ? m.id : undefined }))}
-        onPick={(model) => void update({ model })}
-      />
-      {efforts.length > 0 && (
-        <MenuButton
-          label="Effort"
-          value={settings.effort ?? current?.defaultReasoningEffort ?? ''}
-          items={efforts.map((effort) => ({ value: effort, label: effort }))}
-          onPick={(effort) => void update({ effort })}
-        />
-      )}
-      <div className="views mode" role="group" aria-label="Mode">
-        {(['auto', 'plan'] as const).map((mode) => (
-          <button
-            key={mode}
-            aria-pressed={settings.mode === mode}
-            title={mode === 'auto' ? 'Edits and sandboxed commands without asking' : 'Read only: Koda plans, and changes nothing'}
-            onClick={() => {
-              if (settings.mode !== mode) void window.koda.setMode(sessionId, mode).catch((e: Error) => setError(e.message));
-            }}
-          >
-            {mode === 'auto' ? 'Auto' : 'Plan'}
-          </button>
-        ))}
-      </div>
       {controls.contextLeft !== null && (
         <span className="meta" data-testid="context-left" title="Of the model's context window">
           {controls.contextLeft}% context left

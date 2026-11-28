@@ -8,9 +8,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { KodaClient } from '../../src/main/koda-client';
 import { scratch } from '../helpers';
 import { koda, type OpenApp, openApp, socketOf, shutDown } from './app';
+import { type Model, scriptedModel, useModel } from './model';
 
 let open: OpenApp | undefined;
 let client: KodaClient | undefined;
+let model: Model | undefined;
 const homes: string[] = [];
 
 afterEach(async () => {
@@ -18,6 +20,8 @@ afterEach(async () => {
   client = undefined;
   await shutDown(open, homes.splice(0));
   open = undefined;
+  model?.close();
+  model = undefined;
 });
 
 /** A folder under `home`, by its real path (macOS's /var is /private/var). */
@@ -31,6 +35,8 @@ describe.skipIf(!koda)('the session list', () => {
   it('shows every folder’s sessions live, opens, starts and deletes them', async () => {
     const home = scratch();
     homes.push(home);
+    model = await scriptedModel([]);
+    useModel(home, model);
     open = await openApp(home);
     const { app, page } = open;
     await page.getByRole('button', { name: 'New session' }).waitFor({ timeout: 30_000 });
@@ -62,8 +68,20 @@ describe.skipIf(!koda)('the session list', () => {
     await app.evaluate(({ dialog }, picked) => {
       dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [picked] })) as typeof dialog.showOpenDialog;
     }, gamma);
+    // The new session offers the folder worked in last; "Open folder…" asks for another.
     await page.getByRole('button', { name: 'New session' }).click();
-    await expect.poll(() => page.getByTestId('session-folder').textContent()).toBe(gamma);
+    await page.getByTestId('new-session').waitFor();
+    expect(['alpha', 'beta']).toContain(await page.getByTestId('new-session-folder').textContent());
+    await page.getByRole('button', { name: 'Folder' }).click();
+    await page.getByRole('menuitem', { name: 'Open folder…' }).click();
+    await expect.poll(() => page.getByTestId('new-session-folder').textContent()).toBe('gamma');
+    // It starts with its first prompt, in that folder.
+    expect(await page.getByRole('navigation').getByRole('button', { name: /Gamma work/ }).count()).toBe(0);
+    const prompt = page.getByRole('textbox', { name: 'Prompt' });
+    await prompt.fill('Gamma work');
+    await prompt.press('Enter');
+    await expect.poll(() => page.getByTestId('session-folder').textContent(), { timeout: 30_000 }).toBe(gamma);
+    await page.getByTestId('agent-message').filter({ hasText: 'All done.' }).waitFor({ timeout: 30_000 });
     await expect.poll(async () => (await page.getByTestId('folder-group').locator('h2').allTextContents()).sort()).toEqual([
       'alpha',
       'beta',
@@ -84,7 +102,8 @@ describe.skipIf(!koda)('the session list', () => {
     await answer(0);
     await page.getByRole('button', { name: 'Delete' }).click();
     await expect.poll(() => page.getByRole('button', { name: /Beta work/ }).count()).toBe(0);
-    await page.getByText('Open a session from the list').waitFor();
+    // The pane it was in goes back to a new session.
+    await page.getByTestId('new-session').waitFor();
     const list = await client.request<{ data: Array<{ id: string }> }>('session/list', {});
     expect(list.data.map((s) => s.id)).not.toContain(b);
   });

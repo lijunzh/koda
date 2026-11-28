@@ -871,3 +871,93 @@ textarea {
   width: 100%;
   box-sizing: border-box;
 }
+
+/* Under the prompt box: the folder at the left, the model and mode at the right */
+.composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 4px 0;
+  font-size: 13px;
+}
+.foot-left,
+.foot-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.composer-row > button.send {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 15px;
+  line-height: 1;
+  flex: none;
+}
+.composer-row > button.send:disabled {
+  background: var(--raised);
+  color: var(--muted);
+  opacity: 1;
+}
+.composer-row > button.send.stop {
+  font-size: 11px;
+}
+.new-session-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+/* Menus: descriptions, keys, headings and menus beside menus */
+.menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 6px;
+}
+.menu-heading {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 10px 2px;
+}
+.menu-description {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+.menu-hint {
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 1em;
+  text-align: right;
+}
+.menu button.danger {
+  color: var(--danger);
+}
+.menu.anchored.right {
+  left: auto;
+  right: 0;
+}
+.menu-sub {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.menu.side {
+  position: absolute;
+  left: calc(100% + 2px);
+  bottom: -5px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.menu.anchored.right .menu.side {
+  left: auto;
+  right: calc(100% + 2px);
+}

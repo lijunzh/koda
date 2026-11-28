@@ -6,6 +6,7 @@ import type { TurnDiffs } from './diffs';
 import { ReviewPanel } from './ReviewPanel';
 import type { ControlsState } from './controls';
 import { PlanPanel, SessionBar } from './SessionBar';
+import { SessionControls } from './SessionControls';
 import type { Pending } from './requests';
 import { Requests } from './RequestCards';
 import { type ListedSession, statusLabel, title } from './sessions';
@@ -38,6 +39,7 @@ interface Props {
 export function SessionView({ selected, listed, transcript, view, onView, requests, onAnswer, controls, diffs, planShown, onOpen, onClose }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  const [controlError, setControlError] = useState<string | null>(null);
   if (!selected) {
     return (
       <main className="session-view empty-view">
@@ -122,7 +124,18 @@ export function SessionView({ selected, listed, transcript, view, onView, reques
           <div className="bottom">
             {controls && <PlanPanel controls={controls} shown={planShown} />}
             <Requests requests={requests} onAnswer={onAnswer} />
-            <Composer sessionId={selected.id} running={running} ready={Boolean(session)} waiting={requests[0]?.method ?? null} />
+            {controlError && <p className="problem">{controlError}</p>}
+            <Composer
+              sessionId={selected.id}
+              running={running}
+              ready={Boolean(session)}
+              waiting={requests[0]?.method ?? null}
+              foot={
+                controls && (
+                  <SessionControls sessionId={selected.id} controls={controls} folder={folder} onOpen={onOpen} onError={setControlError} />
+                )
+              }
+            />
           </div>
         </div>
         {reviewing && transcript && (
