@@ -477,6 +477,11 @@ npm start                 # build into out/ and open the app
   the others as one text message (`turn/steer` while a turn runs, else
   `turn/start`), quoting each line with its path and number. Commands' and
   sub-agents' changes aren't there, as the protocol says of the turn diff.
+- **The session list** (`Sidebar.tsx`): search filters the loaded sessions
+  by name in the page; a row's menu (`MenuButton`, and `MenuList` at the
+  pointer for a right-click) opens, splits, renames in place
+  (`session/name/set`), forks (`session/fork`) and deletes (the main
+  process's confirmed action).
 - **Panes** (`src/renderer/Pane.tsx`): each open session is a pane with its
   own transcript, controls and diffs, joined with `session/resume` when the
   pane opens and left with `session/unsubscribe` when it closes or shows

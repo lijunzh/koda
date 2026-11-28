@@ -1155,3 +1155,73 @@ textarea {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* The session list: search, a row's menu and its mark */
+.search-sessions {
+  width: 100%;
+  text-align: left;
+  background: none;
+  padding: 7px 10px;
+}
+.search-sessions::before {
+  content: '⌕';
+  display: inline-block;
+  width: 18px;
+  color: var(--muted);
+}
+.search-sessions:hover:not(:disabled) {
+  background: var(--hover);
+}
+.search-input,
+.rename-row {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 2px 0;
+}
+.session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.session-row .session {
+  flex: 1;
+  min-width: 0;
+}
+.session-row .menu-anchor {
+  position: absolute;
+  right: 4px;
+}
+.row-menu {
+  background: none;
+  padding: 1px 6px;
+  color: var(--muted);
+  opacity: 0;
+}
+.session-row:hover .row-menu,
+.row-menu:focus-visible,
+.row-menu[aria-expanded='true'] {
+  opacity: 1;
+  background: var(--bg-side);
+}
+.row-menu:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--selected);
+}
+.session-row:hover .session {
+  padding-right: 30px;
+}
+.mark.working {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: spin 1s linear infinite;
+  flex: none;
+}
+
+/* Split view: the pane out of focus steps back */
+.panes:has(.pane + .pane) .pane:not(.focused) .conversation-column,
+.panes:has(.pane + .pane) .pane:not(.focused) .new-session-body {
+  opacity: 0.7;
+}

@@ -31,10 +31,12 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
 ## The window
 
 - **The session list**, on the left, shows every folder's sessions, the most
-  recently active first. Next to a session, *working* means a turn is
-  running, *needs you* means it waits for an approval or an answer, and
-  *open* means it's loaded on the server, ready. The list stays current when the TUI or
-  another window starts, renames or deletes a session.
+  recently active first. A small spinner marks a session whose turn is
+  running, and *needs you* one that waits for an approval or an answer. The
+  list stays current when the TUI or another window starts, renames or
+  deletes a session. **Search** narrows it by name. Hover a session for its
+  **…** menu (or right-click it): open it, open it in split view, rename,
+  fork or delete it.
 - **New session** (Cmd+N) opens an empty session with the prompt box. Under
   the box, pick the folder Koda works in (one you've used before, or
   **Open folder…**), the model and the mode. The session starts with your
@@ -109,12 +111,13 @@ in it, as in Codex's turn diff.
 
 ## Side by side
 
-To work in two sessions at once, right-click a session in the list and
-choose **Open in split view**, or drag it onto the window. Each pane is a
-full session: its own conversation, controls, prompt box and Changes panel.
-Clicking a session in the list opens it in the pane you last used; a session
-that's already open goes to its pane. ✕ closes a pane. Up to four sessions
-fit side by side.
+To work in two sessions at once, Option-click a session in the list, choose
+**Open in split view** from its menu, or drag it onto the window. Each pane
+is a full session: its own conversation, prompt box and Changes pane. The
+pane you're not working in steps back a little. Clicking a session in the
+list opens it in the pane you last used; a session that's already open goes
+to its pane. ✕, or Cmd+Ctrl+W, takes a session out of split view. Up to four
+sessions fit side by side.
 
 ## Updates and the server
 
