@@ -1,4 +1,8 @@
-# Koda 🐻
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lijunzh/koda/main/docs/src/assets/koda-logo.png" alt="Koda's logo: a bear's paw print" width="128">
+</p>
+
+# Koda
 
 [![CI](https://github.com/lijunzh/koda/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunzh/koda/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/koda-cli.svg)](https://crates.io/crates/koda-cli)

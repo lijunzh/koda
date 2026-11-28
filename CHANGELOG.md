@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Koda has a logo, and the desktop app its own icon:** a bear's paw print, amber on a dark tile, in place of Electron's default icon in the Dock, Launchpad and Finder. The README and the manual carry it too, and the manual has a favicon.
+
 ## [0.8.2] - 2026-11-28
 
 The desktop app relaid after Claude Code's desktop app, and session archive. Nothing to change in configs, flags or sessions. After `brew upgrade koda`, run `koda app` once to get the new app.

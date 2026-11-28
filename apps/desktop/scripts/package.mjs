@@ -50,6 +50,8 @@ const [built] = await packager({
   appCategoryType: 'public.app-category.developer-tools',
   appVersion: version,
   buildVersion: version,
+  // Koda's own icon in place of Electron's (assets/icon.svg; scripts/make-icon.sh builds this).
+  icon: join(app, 'assets', 'icon.icns'),
   platform: 'darwin',
   arch: 'arm64',
   out,

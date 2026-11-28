@@ -1,4 +1,6 @@
-# Koda 🐻
+# Koda
+
+<img src="./assets/koda-logo.png" alt="Koda's logo: a bear's paw print" width="128">
 
 Koda is an AI coding agent for the terminal, on macOS and Linux. It reads and
 edits your project, runs commands in a [kernel sandbox](./sandbox.md), and

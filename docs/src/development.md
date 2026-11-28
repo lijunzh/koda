@@ -520,6 +520,13 @@ npm start                 # build into out/ and open the app
   (the fuses turn off the inspector it attaches through): check it by
   starting `Contents/MacOS/Koda` with a scratch `XDG_CONFIG_HOME` and
   reading the page through `--remote-debugging-port`.
+- **The icon** is `assets/icon.svg`: a bear's paw print, amber on a dark
+  tile in macOS's icon grid (an 824-point tile in a 1024 canvas). The
+  packaged app's `assets/icon.icns`, the logo in the README and the manual
+  (`docs/src/assets/koda-logo.png`) and the manual's favicon
+  (`docs/theme/`) are all built from it by `scripts/make-icon.sh`, which
+  needs `rsvg-convert` and macOS's `iconutil`. They're committed, so a
+  release build needs neither; rerun the script after changing the SVG.
 - **Tests that start a server** use `koda serve --start` on a scratch
   `XDG_CONFIG_HOME`, never the user's own server. `test:e2e` opens the
   built app with Playwright (`playwright-core`'s Electron driver, unseen,

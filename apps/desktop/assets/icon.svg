@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Koda's icon: a bear's print, amber on a dark tile. The pad is three-lobed; each of the
+     five toes is one water-drop shape whose point is the claw. The toes' areas are 12.4, 12.7,
+     14.0, 11.7 and 10.4 percent of the pad's, left to right. The tile is macOS's: 824 of the
+     1024 canvas, corners 186. Rebuild the .icns and the docs' images with
+     scripts/make-icon.sh after changing this file. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Koda</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#322c26"/>
+      <stop offset="1" stop-color="#1c1916"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+  <rect x="112" y="124" width="800" height="812" rx="180" fill="#000" opacity=".28" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="104" y="104" width="816" height="816" rx="182" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="8"/>
+  <g fill="#e3a552" transform="translate(512 512) rotate(22) scale(0.7965) translate(0 149)">
+    <!-- the pad -->
+    <path d="M0 -220C70 -220 120 -180 150 -120C175 -70 215 -50 245 -10C285 45 275 150 215 195C165 232 95 215 60 190C35 172 -35 172 -60 190C-95 215 -165 232 -215 195C-275 150 -285 45 -245 -10C-215 -50 -175 -70 -150 -120C-120 -180 -70 -220 0 -220Z"/>
+    <!-- the toes, left to right -->
+    <path transform="translate(-288 -152) rotate(-30) translate(0 89.6)" d="M0 0C-69.2 0.0 -73.3 -89.6 -41.5 -149.4C-19.4 -199.2 9.3 -231.6 20.8 -249.0C34.2 -214.1 63.6 -149.4 67.8 -82.2C72.6 -24.9 42.9 0.0 0.0 0.0Z"/>
+    <path transform="translate(-156 -292) rotate(-13) translate(0 90.7)" d="M0 0C-70.0 0.0 -74.2 -90.7 -42.0 -151.2C-19.6 -201.6 9.5 -234.4 21.0 -252.0C34.7 -216.7 64.4 -151.2 68.6 -83.2C73.5 -25.2 43.4 0.0 0.0 0.0Z"/>
+    <path transform="translate(0 -356) rotate(0) translate(0 95.3)" d="M0 0C-73.5 0.0 -77.9 -95.3 -44.1 -158.8C-20.6 -211.7 0.0 -246.1 0.0 -264.6C22.0 -227.5 67.6 -158.8 72.0 -87.3C77.2 -26.5 45.6 0.0 0.0 0.0Z"/>
+    <path transform="translate(156 -292) rotate(13) translate(0 87.1)" d="M0 0C-67.2 0.0 -71.2 -87.1 -40.3 -145.1C-18.8 -193.5 -9.1 -224.9 -20.2 -241.9C7.1 -208.0 61.8 -145.1 65.8 -79.8C70.5 -24.2 41.7 0.0 0.0 0.0Z"/>
+    <path transform="translate(288 -152) rotate(30) translate(0 82.1)" d="M0 0C-63.3 0.0 -67.1 -82.1 -38.0 -136.8C-17.7 -182.4 -8.6 -212.1 -19.0 -228.0C6.7 -196.1 58.3 -136.8 62.1 -75.3C66.5 -22.8 39.3 0.0 0.0 0.0Z"/>
+  </g>
+</svg>
