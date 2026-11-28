@@ -1,7 +1,8 @@
 // The session list's state, as pure functions of the server's answers and
 // notifications. The server sends every connection the sessions others start,
-// rename, delete and run (`session/started`, `session/name/updated`,
-// `session/deleted`, `session/archived`, `session/status/changed`), so the
+// rename, delete, run and mark confidential (`session/started`,
+// `session/name/updated`, `session/deleted`, `session/archived`,
+// `session/status/changed`, `session/confidential/updated`), so the
 // list stays current without opening any session. An archived session leaves
 // the list, as Claude Code's desktop app puts it away; the Archived list is
 // asked for on its own (`session/list` with `archived`).
@@ -15,7 +16,12 @@ export interface ListedSession {
   cwd: string | null;
   updatedAt: number;
   status: SessionStatus | null;
+  /** Marked confidential: its row and its title show a lock. */
+  confidential: boolean;
 }
+
+/** What the lock on a confidential session says. */
+export const CONFIDENTIAL_TIP = 'Confidential: only a local model can read this session from another session';
 
 export interface SessionsState {
   byId: ReadonlyMap<string, ListedSession>;
@@ -44,7 +50,24 @@ function entry(session: Session, before?: ListedSession): ListedSession {
     cwd: session.cwd ?? before?.cwd ?? null,
     updatedAt: Math.max(session.updatedAt, before?.updatedAt ?? 0),
     status: session.status ?? before?.status ?? null,
+    // A session always says: the server leaves the field out for one that isn't.
+    confidential: session.confidential === true,
   };
+}
+
+/**
+ * Whether session `id` is confidential after `batch`, having been
+ * `confidential` before it: the last `session/confidential/updated` for it
+ * decides. For a pane, which shows the mark for sessions the list doesn't
+ * have (an archived one).
+ */
+export function confidentialAfter(confidential: boolean, id: string, batch: readonly RpcMessage[]): boolean {
+  for (const message of batch) {
+    if (message.method !== 'session/confidential/updated') continue;
+    const params = message.params as { sessionId?: string; confidential?: boolean } | undefined;
+    if (params?.sessionId === id) confidential = params.confidential === true;
+  }
+  return confidential;
 }
 
 /** Add a page of `session/list`; `fresh` replaces what was there. */
@@ -71,6 +94,12 @@ export function withMessages(state: SessionsState, batch: readonly RpcMessage[],
       case 'session/name/updated': {
         const current = (byId ?? state.byId).get(params?.sessionId as string);
         if (current) edit().set(current.id, { ...current, name: params?.sessionName as string });
+        break;
+      }
+      case 'session/confidential/updated': {
+        const current = (byId ?? state.byId).get(params?.sessionId as string);
+        const confidential = params?.confidential === true;
+        if (current && current.confidential !== confidential) edit().set(current.id, { ...current, confidential });
         break;
       }
       case 'session/deleted':

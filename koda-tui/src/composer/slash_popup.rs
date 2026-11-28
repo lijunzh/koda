@@ -47,6 +47,12 @@ pub const SLASH_COMMANDS: &[(&str, &str, Option<&str>)] = &[
         "Summarize conversation to reclaim context",
         None,
     ),
+    // No arg hint: a bare `/confidential` marks the session.
+    (
+        "/confidential",
+        "Keep this session from models on remote providers (/confidential off)",
+        None,
+    ),
     // No arg hint, as for `/mcp`: with one, Enter on a bare `/copy`
     // completed it instead of copying.
     (

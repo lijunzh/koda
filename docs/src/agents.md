@@ -159,6 +159,11 @@ The main model dispatches to sub-agents via the `InvokeAgent` tool. Each
 sub-agent gets its own model, tools, and session. Write-capable sub-agents
 write in the project unless they ask for a worktree: see [Where sub-agents write](./sandbox.md#where-sub-agents-write).
 
+In a [confidential session](./sessions.md#confidential-sessions) a
+sub-agent starts only on a local model or on the session's own provider and
+endpoint: one whose file names another provider is refused, and the model
+is told why.
+
 ## Built-in agents
 
 | Agent     | Trust  | Purpose                                                                                                                |

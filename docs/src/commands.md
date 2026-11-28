@@ -238,6 +238,21 @@ Names the session, as Codex's `/rename` does; `/resume` lists it by that
 name. Without one, the first 50 characters of your first prompt are its
 title, and a name you give is never replaced by it.
 
+## `/confidential [off]`
+
+Marks the session confidential: when another session's model searches or
+reads your sessions, only one on a local model (LM Studio, Ollama, vLLM or
+llama.cpp, on your own machine or network) is given this one. Sessions
+forked from it are marked with it, and the line says how many.
+`/confidential off` takes the mark off this session alone. While it is
+marked, its sub-agents run only on such a model or on its own provider,
+and `MemoryWrite` saves nothing.
+`/resume` shows a lock on a confidential session, and `/status` says so. A
+session on a local model that reads a confidential one becomes confidential
+itself, and the TUI says so when it happens. It isn't encryption, and this
+session's own provider still gets its conversation
+([Confidential sessions](./sessions.md#confidential-sessions)).
+
 ## `/rewind [N]`
 
 Takes the last turn, or the last `N`, out of the conversation, as Codex's

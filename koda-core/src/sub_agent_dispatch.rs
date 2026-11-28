@@ -308,6 +308,52 @@ pub(crate) fn execute_sub_agent<'a>(
     }
 }
 
+/// Refuse to start sub-agent `agent_name` when session `parent_session_id`
+/// is confidential and the sub-agent's model isn't one its text may go to:
+/// a local one ([`crate::config::ProviderType::runs_locally`]), or the
+/// provider and endpoint the session itself runs on (`parent_config`),
+/// which has the text already. A sub-agent gets a prompt the session's
+/// model writes, and a fork its whole history, so it is held to the rule
+/// `session/resume` is.
+///
+/// The mark is read from the store each time: a session becomes
+/// confidential while it runs, when its model reads a confidential
+/// session. Core asks the store it already writes the sub-agent's session
+/// to; no host is involved, so every sub-agent type and a background one
+/// continued later pass through here. A store that can't answer refuses.
+async fn refuse_remote_in_confidential(
+    db: &koda_state::db::Database,
+    parent_session_id: &str,
+    parent_config: &crate::config::KodaConfig,
+    sub_config: &crate::config::KodaConfig,
+    agent_name: &str,
+) -> Result<()> {
+    let stored = db
+        .get_session(parent_session_id)
+        .await
+        .context("couldn't read whether this session is confidential, so no sub-agent starts")?;
+    if !stored.is_some_and(|stored| stored.confidential) {
+        return Ok(());
+    }
+    let (provider, url) = (sub_config.provider_type, sub_config.base_url.as_str());
+    let own = provider == parent_config.provider_type
+        && crate::providers::provider_catalog::same_endpoint(url, &parent_config.base_url);
+    if own || provider.runs_locally(Some(url)) {
+        return Ok(());
+    }
+    let why = if provider.is_local() {
+        "which is not a local endpoint"
+    } else {
+        "a remote provider"
+    };
+    anyhow::bail!(
+        "This session is confidential; sub-agent '{agent_name}' runs on {provider} at {url}, \
+         {why}, so it can't be given this session's text. Use a sub-agent that runs on a local \
+         model or on this session's own provider, or do the task yourself. The user can unmark \
+         the session."
+    )
+}
+
 /// Where [`run_sub_agent`] leaves its status emitter once it registers.
 type EndedSlot = std::sync::Arc<parking_lot::Mutex<Option<crate::child_agent::ChildStatusEmitter>>>;
 
@@ -606,6 +652,18 @@ fn run_sub_agent<'a>(
             (cfg, max_turns, raw.isolation)
         };
 
+        // Before the sub-agent has a session, a copy of the history or a
+        // prompt: in a confidential session it runs only where the
+        // session's text may go.
+        refuse_remote_in_confidential(
+            db,
+            parent_session_id,
+            parent_config,
+            &sub_config,
+            agent_name,
+        )
+        .await?;
+
         let sub_session = if let Some(sid) = resume_session {
             sid
         } else {
@@ -773,6 +831,12 @@ fn run_sub_agent<'a>(
                 Some(cache) => registry.with_shared_cache(cache),
                 None => registry,
             };
+            // Its tools obey the session's confidential mark, as the
+            // session's own do.
+            registry.set_mark_session(
+                std::sync::Arc::new(db.clone()),
+                parent_session_id.to_string(),
+            );
             // `WebSearch` on a Claude model searches with Anthropic's tool.
             registry.set_web_searcher(provider.web_searcher(&sub_config.model_settings.model));
             registry.set_page_reader(Some(std::sync::Arc::new(

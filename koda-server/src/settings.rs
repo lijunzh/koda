@@ -50,6 +50,39 @@ pub(crate) fn provider(id: &str) -> Result<ProviderType, ErrorObject> {
     }
 }
 
+/// Refuse to open a confidential session on `config`'s provider unless
+/// its text may go there: a local provider at a local endpoint
+/// ([`ProviderType::runs_locally`]), or the provider and endpoint the
+/// session already runs on (`own_provider`, `own_base_url`, as its row
+/// records them), which has had its text all along. A provider id says
+/// little about an endpoint (any OpenAI-compatible gateway is `openai`
+/// with a `base_url`), so the endpoint must be the session's own too.
+pub(crate) fn check_confidential(
+    config: &KodaConfig,
+    own_provider: Option<&str>,
+    own_base_url: Option<&str>,
+) -> Result<(), ErrorObject> {
+    use koda_core::providers::provider_catalog::same_endpoint;
+    let asked = config.provider_type;
+    if asked.runs_locally(Some(&config.base_url)) {
+        return Ok(());
+    }
+    let same_provider = own_provider == Some(asked.to_string().as_str());
+    let same_endpoint = own_base_url.is_some_and(|own| same_endpoint(own, &config.base_url));
+    if same_provider && same_endpoint {
+        return Ok(());
+    }
+    let own = match (own_provider, own_base_url) {
+        (Some(provider), Some(url)) => format!(" or on its own ({provider} at {url})"),
+        _ => String::new(),
+    };
+    Err(invalid(format!(
+        "this session is confidential: it opens only on a local provider{own}, not on {asked} \
+         at {}. Unmark it first to open it there.",
+        config.base_url
+    )))
+}
+
 fn unknown_provider(name: &str) -> ErrorObject {
     let ids: Vec<String> = ProviderType::OFFERED
         .iter()

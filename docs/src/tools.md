@@ -245,6 +245,27 @@ session's model may see.
   read by its id.
 - **Never returned:** the session making the call, sub-agents' sessions,
   `koda exec` runs and temporary sessions (a side conversation, a review).
+- **[Confidential sessions](./sessions.md#confidential-sessions)** are
+  given only to a session on a
+  [local model](./sessions.md#what-counts-as-a-local-model): LM Studio,
+  Ollama, vLLM or llama.cpp, at an endpoint on your own machine or
+  network. On any other, `SearchSessions` leaves them out
+  whether or not they match, and ends with a notice that doesn't depend on
+  the query: a line for each of the folder's confidential sessions, five
+  at most (`Confidential session 1a2b3c4d, last active 2026-11-20`), how
+  many more there are, and that they can be read from a session on a local
+  model or after you unmark them. `ReadSession` on one returns that line
+  and that sentence, as a result, not an error. Nothing in either comes
+  from the session: no title, no text, no folder. Neither tool has an
+  argument that changes this.
+- **Reading one marks the reader.** A session on a local model that
+  gets a confidential session's text, in a search result or a read,
+  becomes confidential itself before the result is returned, and the
+  result says so in one line: its transcript holds that text now.
+- **A confidential session's own tools hold back too.** `MemoryWrite`
+  saves nothing there, since every session of the project reads Koda's
+  notes, and `InvokeAgent` starts no sub-agent on a model that is neither
+  local nor the session's own provider and endpoint. Each says why.
 - **A fork** starts as a copy of its source. A search finds text said
   before the fork in the source, and the fork by what was said in it
   afterwards, so one text gives one match.

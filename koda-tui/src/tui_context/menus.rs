@@ -389,6 +389,7 @@ impl TuiContext {
             title: session.name.clone(),
             preview: session.preview.clone(),
             snippet,
+            confidential: session.confidential,
         }
     }
 

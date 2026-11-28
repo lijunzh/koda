@@ -286,6 +286,33 @@ impl TuiContext {
                 self.goal = None;
                 tui_output::dim_msg(&mut self.scroll_buffer, "Goal cleared.".into());
             }
+            // The session was marked confidential or unmarked by someone
+            // else: by Koda, because its model was given a confidential
+            // session's text, or from another client. This TUI's own
+            // `/confidential` has said so already.
+            ServerNotification::SessionConfidentialUpdated(told)
+                if told.session_id == self.session.id =>
+            {
+                let now = (told.session_id.clone(), told.confidential);
+                if self.confidential.as_ref() != Some(&now) {
+                    self.confidential = Some(now);
+                    if told.confidential {
+                        tui_output::warn_msg(
+                            &mut self.scroll_buffer,
+                            "This session is now confidential: it was given a confidential \
+                             session's text, or was marked from another client. Only a local \
+                             model can read it from another session. /confidential off \
+                             unmarks it."
+                                .into(),
+                        );
+                    } else {
+                        tui_output::dim_msg(
+                            &mut self.scroll_buffer,
+                            "This session is no longer confidential.".into(),
+                        );
+                    }
+                }
+            }
             // Another client archived it (`koda archive`), and the host
             // has closed it. Nothing more is sent to it as an open session:
             // the next prompt opens it again first, which the host refuses

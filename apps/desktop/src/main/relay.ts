@@ -89,6 +89,18 @@ CHECKED['session/fork'] = (params) => {
   return typeof params.sessionId === 'string' ? null : 'session/fork needs a sessionId';
 };
 
+// Marking a session confidential, or unmarking it: the page names the
+// session and says which, and nothing else. Unmarking lets other sessions'
+// models read it again, which gives the page nothing it hasn't: it reads
+// every session already (`session/read`), and the mark is the user's own,
+// set from a menu, with no dialog to confirm as a delete has.
+CHECKED['session/confidential/set'] = (params) => {
+  const extra = Object.keys(params).filter((key) => key !== 'sessionId' && key !== 'confidential');
+  if (extra.length) return `session/confidential/set takes sessionId and confidential from the page, not ${extra.join(', ')}`;
+  if (typeof params.sessionId !== 'string') return 'session/confidential/set needs a sessionId';
+  return typeof params.confidential === 'boolean' ? null : 'session/confidential/set needs confidential, true or false';
+};
+
 // Searching what was said in the stored sessions: the page sends the text,
 // whether to look in the archive instead, and how many to return, in which
 // order. It reads no more than `session/read` gives the page already; a

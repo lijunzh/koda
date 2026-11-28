@@ -9,7 +9,7 @@ import { call, type RpcMessage } from './bridge';
 import { type ControlsState, controlsFor, withControls } from './controls';
 import { type TurnDiffs, withDiffs } from './diffs';
 import type { Pending } from './requests';
-import type { ListedSession } from './sessions';
+import { confidentialAfter, type ListedSession } from './sessions';
 import { SessionView } from './SessionView';
 import { fromSession, type TranscriptState, type View, withEvents } from './transcript';
 
@@ -47,6 +47,8 @@ export function Pane({ id, initial, firstPrompt, archived, at, subscribe, listed
   const [controls, setControls] = useState<ControlsState | null>(null);
   /** The turns' diffs, as the server sends them while they run. */
   const [diffs, setDiffs] = useState<TurnDiffs>(new Map());
+  /** Whether the session is marked confidential: as it opened, then as the server says. */
+  const [confidential, setConfidential] = useState(false);
   /** Events from before the session's snapshot came, kept to apply after it. */
   const early = useRef<RpcMessage[]>([]);
 
@@ -55,6 +57,7 @@ export function Pane({ id, initial, firstPrompt, archived, at, subscribe, listed
       subscribe((batch) => {
         setControls((state) => (state ? withControls(state, batch) : state));
         setDiffs((state) => withDiffs(state, id, batch));
+        setConfidential((state) => confidentialAfter(state, id, batch));
         setTranscript((state) => {
           if (state) return withEvents(state, batch);
           // The snapshot hasn't come yet: keep the events for it.
@@ -81,6 +84,9 @@ export function Pane({ id, initial, firstPrompt, archived, at, subscribe, listed
       // The snapshot, then what came while it was on its way: the server
       // answers at one point in the session's stream, so nothing repeats.
       setTranscript(withEvents(fromSession(session), early.current));
+      // A mark that changed meanwhile was told to everyone, and may have
+      // come before this answer was read from the store.
+      setConfidential(confidentialAfter(session.confidential === true, id, early.current));
       early.current = [];
       // Only now, so the pane sees the turn from its start.
       if (firstPrompt) {
@@ -121,6 +127,7 @@ export function Pane({ id, initial, firstPrompt, archived, at, subscribe, listed
       archived={archived}
       at={at}
       listed={listed}
+      confidential={confidential}
       transcript={transcript}
       view={view}
       onView={onView}

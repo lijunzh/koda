@@ -70,6 +70,12 @@ pub struct Session {
     /// client deletes it, and `session/list` leaves it out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ephemeral: bool,
+    /// The user marked it confidential (`session/confidential/set`), or it
+    /// read a session that is: its text goes to no model on a remote
+    /// provider but its own. Koda's own; `session/confidential/updated`
+    /// follows each change.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub confidential: bool,
     /// What it is doing now, as Codex's `Thread.status`;
     /// `session/status/changed` follows each change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -820,6 +826,69 @@ pub struct SessionNameUpdatedNotification {
     pub session_id: String,
     /// Its name now. Codex's `threadName`.
     pub session_name: String,
+}
+
+/// `session/confidential/set`: mark a stored session confidential, or take
+/// the mark off. Koda's own; Codex's nearest thing is
+/// `thread/memoryMode/set`, which keeps a thread out of memory generation
+/// and, like this, can be set at any time and leaves the thread usable.
+///
+/// The text of a confidential session is never given to a model on a
+/// remote provider. The model's `SearchSessions` and `ReadSession` return
+/// it only to a session on a local provider (LM Studio, Ollama, vLLM,
+/// llama.cpp), and that session becomes confidential itself; a session on
+/// a remote provider is told only that confidential sessions exist.
+/// `session/resume` and `session/fork` open one on a local provider or on
+/// the provider and endpoint it already has, and refuse another; in the
+/// session itself a sub-agent runs only on such a model, and `MemoryWrite`
+/// saves nothing. A local provider is one of those kinds at an endpoint on
+/// the user's own machine or network. Marking reaches the session's
+/// sub-agents' sessions and the sessions already forked from it, and a
+/// fork made later is confidential; unmarking takes the mark off the
+/// session and its sub-agents' sessions only, each fork being unmarked by
+/// itself. A client's own `session/list`,
+/// `session/read`, `session/turns/list` and `session/search` are not
+/// affected: the mark is about what a model is given, not what the user
+/// sees. It is not encryption; the session is stored as before.
+///
+/// Works on any stored session, open or not, archived or not, and may be
+/// repeated. `session/confidential/updated` follows, one for each session
+/// changed, to every client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionConfidentialSetParams {
+    /// The session, by its full id.
+    pub session_id: String,
+    /// Whether it is confidential from now on.
+    pub confidential: bool,
+}
+
+/// The answer to `session/confidential/set`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfidentialSetResponse {
+    /// How many forks of the session were marked with it, each told with
+    /// its own `session/confidential/updated`. Left out when none were;
+    /// always so for an unmark, which leaves forks as they are.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub forks_marked: u32,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
+/// `session/confidential/updated`: a session was marked confidential or
+/// unmarked, for every client: by `session/confidential/set`, or by Koda
+/// when a session on a local provider read a confidential session. Koda's
+/// own; Codex's `thread/memoryMode/set` has no notification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionConfidentialUpdatedNotification {
+    /// The session.
+    pub session_id: String,
+    /// Whether it is confidential now.
+    pub confidential: bool,
 }
 
 /// What a session is doing. Codex's `ThreadStatus`.

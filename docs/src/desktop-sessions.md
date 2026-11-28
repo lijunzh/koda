@@ -18,6 +18,7 @@ running, and *needs you* one that waits for an approval or an answer. The
 list stays current when the TUI or another window starts, renames or
 deletes a session. Hover a session for its **…** menu (or right-click it):
 open it, open it in split view, rename, fork,
+[mark it confidential](#confidential-sessions),
 [archive](#archiving-a-session) or delete it.
 
 **Search** narrows the list by name as you type. From the second
@@ -52,6 +53,21 @@ pane you're not working in steps back a little. Clicking a session in the
 list opens it in the pane you last used; a session that's already open goes
 to its pane. ✕, or Cmd+Ctrl+W, takes a session out of split view. Up to four
 sessions fit side by side.
+
+## Confidential sessions
+
+**Mark confidential**, in a session's **…** menu, the Archived list's and
+the menu beside its title, keeps the session's text from models on remote
+providers: when another session's model searches or reads your sessions,
+only one on a local model (LM Studio, Ollama, vLLM or llama.cpp, on your
+own machine or network) gets this one. A lock shows on the session's row
+and beside its title; hover it for what it means. Sessions forked from it
+get the lock too. **Unmark confidential** takes it off that session
+alone. A session on a local
+model that reads a confidential one gets the lock too, as it happens.
+Your own list and Search show the session as before, and it is still
+stored in plain text on this machine
+([Sessions](./sessions.md#confidential-sessions) has the whole rule).
 
 ## Archiving a session
 

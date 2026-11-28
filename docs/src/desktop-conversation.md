@@ -53,7 +53,9 @@ window isn't in front.
 
 Click the session's title to rename it. The caret beside it opens the
 session's menu: **Rename**, **Fork** (a copy to go on in, leaving this one
-as it is), **Transcript view**, **Compact**, **Archive** and **Delete** (after asking).
+as it is), **Mark confidential** (a lock beside the title shows it is;
+[what that does](./desktop-sessions.md#confidential-sessions)),
+**Transcript view**, **Compact**, **Archive** and **Delete** (after asking).
 
 ## The side panel and the Activity panel
 

@@ -15,6 +15,15 @@ are collected or transmitted anywhere.
   servers its tools reach when the model calls `WebFetch`, `WebSearch` or an
   MCP tool. A page `WebFetch` fetches goes to the provider too, for a
   separate model call to read (Haiku on a Claude model)
+- The model can search and read your other sessions (`SearchSessions`,
+  `ReadSession`), so a session on a remote provider can send there what an
+  earlier session said, one that ran on a local model included. A session
+  you mark [confidential](./sessions.md#confidential-sessions) is given
+  only to [local models](./sessions.md#what-counts-as-a-local-model) (LM
+  Studio, Ollama, vLLM or llama.cpp on your own machine or network); its
+  forks and a session that reads it are marked too, its sub-agents run
+  only on such a model or its own, and its model saves no notes. The mark
+  isn't encryption: the session stays in the database as plain text
 - Version checks query crates.io only (no Koda-specific server)
 - With an Anthropic key, the Claude aliases ask Anthropic's Models API for the
   newest model ids

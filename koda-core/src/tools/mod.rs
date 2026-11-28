@@ -276,6 +276,9 @@ pub struct ToolRegistry {
     db: std::sync::RwLock<Option<std::sync::Arc<koda_state::db::Database>>>,
     /// Current session ID (for RecallContext).
     session_id: std::sync::RwLock<Option<String>>,
+    /// The session whose confidential mark these tools obey, when it
+    /// isn't the registry's own ([`Self::set_mark_session`]).
+    mark_session: std::sync::RwLock<Option<(std::sync::Arc<koda_state::db::Database>, String)>>,
     /// The other sessions, as this one may see them
     /// ([`Self::set_session_archive`]).
     session_archive: std::sync::RwLock<Option<Arc<dyn session_archive::SessionArchive>>>,
@@ -373,6 +376,7 @@ impl ToolRegistry {
             max_goal_token_budget: None,
             db: std::sync::RwLock::new(None),
             session_id: std::sync::RwLock::new(None),
+            mark_session: std::sync::RwLock::new(None),
             session_archive: std::sync::RwLock::new(None),
             web_searcher: std::sync::RwLock::new(None),
             page_reader: std::sync::RwLock::new(None),
@@ -457,6 +461,20 @@ impl ToolRegistry {
         }
         if let Ok(mut guard) = self.session_id.write() {
             *guard = Some(session_id);
+        }
+    }
+
+    /// Have the tools obey session `session_id`'s confidential mark: a
+    /// sub-agent's registry has no session of its own, and its tools write
+    /// where its parent's would. Without this, the registry's own session
+    /// ([`Self::set_session`]) decides.
+    pub fn set_mark_session(
+        &self,
+        db: std::sync::Arc<koda_state::db::Database>,
+        session_id: String,
+    ) {
+        if let Ok(mut guard) = self.mark_session.write() {
+            *guard = Some((db, session_id));
         }
     }
 
@@ -815,6 +833,11 @@ impl ToolRegistry {
                 (Some(db), Some(sid)) => Some((db, sid)),
                 _ => None,
             };
+            let marked = self.mark_session.read().ok().and_then(|g| g.clone());
+            let mark_session = match &marked {
+                Some((db, sid)) => Some((&**db, sid.as_str())),
+                None => session,
+            };
             let ctx = tool_trait::ToolExecCtx {
                 project_root: &self.project_root,
                 read_cache: &self.read_cache,
@@ -829,6 +852,7 @@ impl ToolRegistry {
                 proxy_port,
                 socks5_port,
                 session,
+                mark_session,
                 session_archive: self.session_archive.read().ok().and_then(|g| g.clone()),
                 skill_registry: &self.skill_registry,
                 web_searcher: self.web_searcher.read().ok().and_then(|g| g.clone()),

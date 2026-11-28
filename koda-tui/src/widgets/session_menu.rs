@@ -31,7 +31,13 @@ pub struct SessionItem {
     /// For a session found by what was said in it: the words around the
     /// match, shown in place of the date.
     pub snippet: Option<String>,
+    /// The session is marked confidential: its row says so.
+    pub confidential: bool,
 }
+
+/// What a confidential session's row carries before its name: a lock, as
+/// the desktop app's list shows one.
+pub const CONFIDENTIAL_MARK: &str = "\u{1f512}";
 
 impl DropdownItem for SessionItem {
     fn label(&self) -> &str {
@@ -41,7 +47,12 @@ impl DropdownItem for SessionItem {
         let name = self.title.as_deref().unwrap_or(&self.preview);
         let name: String = name.chars().take(30).collect();
         let second = self.snippet.as_deref().unwrap_or(&self.updated);
-        let mut desc = format!("{name}  {second}");
+        let mark = if self.confidential {
+            format!("{CONFIDENTIAL_MARK} ")
+        } else {
+            String::new()
+        };
+        let mut desc = format!("{mark}{name}  {second}");
         if self.is_current {
             desc.push_str(" \u{25c0} current");
         }
@@ -226,6 +237,7 @@ mod tests {
             title: title.map(str::to_string),
             preview: "fix the login bug".into(),
             snippet: None,
+            confidential: false,
         }
     }
 
@@ -252,6 +264,22 @@ mod tests {
             .iter()
             .map(|item| item.id.as_str())
             .collect()
+    }
+
+    /// A confidential session's row starts with the lock, before its
+    /// name; another's has none.
+    #[test]
+    fn a_confidential_session_shows_a_lock() {
+        let marked = SessionItem {
+            confidential: true,
+            ..item(Some("Parser work"), false)
+        };
+        assert_eq!(
+            marked.description(),
+            format!("{CONFIDENTIAL_MARK} Parser work  2026-03-08 14:30")
+        );
+        let plain = item(Some("Parser work"), false).description();
+        assert_eq!(plain, "Parser work  2026-03-08 14:30");
     }
 
     #[test]

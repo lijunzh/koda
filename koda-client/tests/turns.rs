@@ -1764,6 +1764,57 @@ async fn a_named_session_keeps_its_name_over_the_first_prompt() {
     assert!(unknown.message.contains("no session"), "{unknown:?}");
 }
 
+/// `session/confidential/set` marks an open session and unmarks it:
+/// `session/confidential/updated` follows each change, the session says it
+/// is confidential wherever it is listed or read, and it goes on taking
+/// turns, since the mark is about what other sessions' models are given.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_marked_confidential_says_so_and_goes_on() {
+    use koda_client::protocol::session::{SessionConfidentialSetParams, SessionReadParams};
+    let server = model(vec![text("Done.")]).await;
+    let mut koda = Koda::start(config(&server)).await;
+    let set = |session: &str, confidential: bool| SessionConfidentialSetParams {
+        session_id: session.to_string(),
+        confidential,
+    };
+    assert!(!koda.list().await[0].confidential);
+    for confidential in [true, false, true] {
+        koda.client
+            .request::<methods::SessionConfidentialSet>(set(&koda.session, confidential))
+            .await
+            .unwrap();
+        let seen = koda.until("session/confidential/updated").await;
+        assert!(
+            matches!(
+                seen.last(),
+                Some(Outgoing::Notification(ServerNotification::SessionConfidentialUpdated(n)))
+                    if n.session_id == koda.session && n.confidential == confidential
+            ),
+            "{seen:?}"
+        );
+        assert_eq!(koda.list().await[0].confidential, confidential);
+    }
+    koda.turn("carry on").await;
+    let turn = koda.until("turn/completed").await;
+    assert_eq!(turn_completed(&turn).status, TurnStatus::Completed);
+    let read = koda
+        .client
+        .request::<methods::SessionRead>(SessionReadParams {
+            session_id: koda.session.clone(),
+            include_turns: false,
+        })
+        .await
+        .unwrap();
+    assert!(read.session.confidential);
+
+    let unknown = server_error(
+        koda.client
+            .request::<methods::SessionConfidentialSet>(set("not-a-session", true))
+            .await,
+    );
+    assert!(unknown.message.contains("no session"), "{unknown:?}");
+}
+
 /// `session/fork` copies a stored session into a new one named "Fork of"
 /// it and opens it, as Codex's `thread/fork` does: the fork has the
 /// source's turns, its next turn sends the source's history, and the
@@ -3652,6 +3703,301 @@ fn whole(message: Value) -> ResponseTemplate {
             })
             .to_string(),
         )
+}
+
+/// Mark `koda`'s session confidential, or unmark it, and wait for the
+/// host to say so.
+async fn set_confidential(koda: &mut Koda, confidential: bool) {
+    use koda_client::protocol::session::SessionConfidentialSetParams;
+    koda.client
+        .request::<methods::SessionConfidentialSet>(SessionConfidentialSetParams {
+            session_id: koda.session.clone(),
+            confidential,
+        })
+        .await
+        .unwrap();
+    koda.until("session/confidential/updated").await;
+}
+
+/// In a confidential session a sub-agent starts only on a model the
+/// session's text may go to: a local one, or the session's own provider
+/// and endpoint (which a fork has). One configured for another provider,
+/// or for a local kind of provider at an endpoint that isn't local, is
+/// refused before it is sent anything, in words the model can act on. The
+/// mark is read when the sub-agent is asked for: the same sub-agent ran
+/// before the session was marked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_confidential_session_starts_no_sub_agent_on_a_remote_provider() {
+    let says = |text: &str| whole(json!({"role": "assistant", "content": text}));
+    let invoke = |id: &str, agent: &str, prompt: &str| {
+        let args = json!({"agent_name": agent, "prompt": prompt});
+        tool_call(id, "InvokeAgent", args)
+    };
+    let nearby = model(vec![says("Nearby did it.")]).await;
+    let server = model(vec![
+        // Not confidential yet: the sub-agent on another provider runs.
+        invoke("call_1", "elsewhere", "first task"),
+        says("Elsewhere did it."),
+        text("Done once."),
+        // Confidential: neither is started.
+        invoke("call_2", "elsewhere", "second task"),
+        invoke("call_3", "faraway", "third task"),
+        text("Refused."),
+        // The session's own provider and endpoint, a fork, and another
+        // local server still run.
+        invoke("call_4", "explore", "fourth task"),
+        says("Explore did it."),
+        invoke("call_5", "fork", "fifth task"),
+        says("The fork did it."),
+        invoke("call_6", "nearby", "sixth task"),
+        text("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("project/.koda/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    for (name, provider, base_url) in [
+        // A remote kind of provider, though this one answers on this machine.
+        ("elsewhere", "openai", server.url()),
+        (
+            "faraway",
+            "lmstudio",
+            "https://lm.example.invalid/v1".to_string(),
+        ),
+        ("nearby", "lmstudio", nearby.url()),
+    ] {
+        let agent = json!({
+            "name": name, "system_prompt": format!("You are {name}."), "allowed_tools": [],
+            "provider": provider, "model": "stub", "base_url": base_url,
+        });
+        std::fs::write(agents.join(format!("{name}.json")), agent.to_string()).unwrap();
+    }
+    let mut koda = Koda::start_in(config(&server), dir).await;
+    let sent = async |server: &FakeLlmServer| -> Vec<String> {
+        let requests = chat_requests(server).await;
+        requests.iter().map(|r| r["messages"].to_string()).collect()
+    };
+
+    koda.turn("Have elsewhere do the first task").await;
+    koda.until("turn/completed").await;
+    let before = sent(&server).await;
+    assert_eq!(before.len(), 3, "the session, the sub-agent, the session");
+    // The sub-agent's own request: its task, without the session's prompt.
+    assert!(
+        before[1].contains("first task") && !before[1].contains("Have elsewhere do"),
+        "{}",
+        before[1]
+    );
+    assert!(before[2].contains("Elsewhere did it."), "{}", before[2]);
+
+    set_confidential(&mut koda, true).await;
+    koda.turn("Now the second and third").await;
+    koda.until("turn/completed").await;
+    let refused = sent(&server).await;
+    assert_eq!(refused.len(), 6, "no sub-agent was sent anything");
+    assert!(
+        refused[3..]
+            .iter()
+            .all(|r| r.contains("Now the second and third")),
+        "every one is the session's own"
+    );
+    let elsewhere = format!(
+        "This session is confidential; sub-agent 'elsewhere' runs on openai at {}, a remote \
+         provider, so it can't be given this session's text. Use a sub-agent that runs on a \
+         local model or on this session's own provider, or do the task yourself. The user can \
+         unmark the session.",
+        server.url()
+    );
+    assert!(refused[4].contains(&elsewhere), "{}", refused[4]);
+    assert!(
+        refused[5].contains(
+            "This session is confidential; sub-agent 'faraway' runs on lm-studio at \
+             https://lm.example.invalid/v1, which is not a local endpoint, so it can't be given"
+        ),
+        "{}",
+        refused[5]
+    );
+
+    koda.turn("Then the rest").await;
+    koda.until("turn/completed").await;
+    let after = sent(&server).await;
+    assert_eq!(
+        after.len(),
+        12,
+        "two sub-agents ran here, between the session's four"
+    );
+    for (request, said) in [(8, "Explore did it."), (10, "The fork did it.")] {
+        assert!(after[request].contains(said), "{}", after[request]);
+    }
+    let nearby = sent(&nearby).await;
+    assert_eq!(nearby.len(), 1);
+    assert!(
+        nearby[0].contains("sixth task") && !nearby[0].contains("Then the rest"),
+        "{}",
+        nearby[0]
+    );
+}
+
+/// A confidential session on a remote provider still starts a sub-agent
+/// on that provider and endpoint, where its text goes already: `explore`
+/// takes them from the session and a fork has them. A sub-agent on
+/// another remote provider is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_confidential_session_keeps_sub_agents_on_its_own_provider() {
+    let says = |text: &str| whole(json!({"role": "assistant", "content": text}));
+    let invoke = |id: &str, agent: &str, prompt: &str| {
+        let args = json!({"agent_name": agent, "prompt": prompt});
+        tool_call(id, "InvokeAgent", args)
+    };
+    let server = model(vec![
+        invoke("call_1", "explore", "first task"),
+        says("Explore did it."),
+        invoke("call_2", "fork", "second task"),
+        says("The fork did it."),
+        invoke("call_3", "other", "third task"),
+        text("Done."),
+    ])
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("project/.koda/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let other = json!({
+        "name": "other", "system_prompt": "You are other.", "allowed_tools": [],
+        "provider": "groq", "model": "stub", "base_url": server.url(),
+    });
+    std::fs::write(agents.join("other.json"), other.to_string()).unwrap();
+    let mut koda = Koda::start_in(config(&server), dir).await;
+    // A session on a remote kind of provider, which here answers on this
+    // machine.
+    let started = koda
+        .client
+        .request::<methods::SessionStart>(SessionStartParams {
+            model_provider: Some("openai".to_string()),
+            base_url: Some(server.url()),
+            model: Some("stub".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    koda.session = started.session.id;
+    set_confidential(&mut koda, true).await;
+
+    koda.turn("Do the three tasks").await;
+    koda.until("turn/completed").await;
+    let requests = chat_requests(&server).await;
+    let sent: Vec<String> = requests.iter().map(|r| r["messages"].to_string()).collect();
+    assert_eq!(
+        sent.len(),
+        6,
+        "two sub-agents ran, the third was sent nothing"
+    );
+    assert!(sent[2].contains("Explore did it."), "{}", sent[2]);
+    assert!(sent[4].contains("The fork did it."), "{}", sent[4]);
+    let refused = format!(
+        "This session is confidential; sub-agent 'other' runs on groq at {}, a remote provider",
+        server.url()
+    );
+    assert!(sent[5].contains(&refused), "{}", sent[5]);
+}
+
+/// In a confidential session the model's `MemoryWrite` saves nothing and
+/// says why: its notes are read by every session of the project. A
+/// sub-agent's is refused the same way. The user's own
+/// `session/memory/add` saves as before, and once the session is unmarked
+/// the tool does too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_confidential_sessions_model_saves_no_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    // Koda's notes live under the config directory, which here is the
+    // test's own, never the real one.
+    let xdg = dir.path().join("xdg");
+    let _config_dir = own_config_dir(&xdg).await;
+    std::fs::create_dir_all(xdg.join("koda")).unwrap();
+    let write = |id: &str, content: &str| tool_call(id, "MemoryWrite", json!({"content": content}));
+    let server = model(vec![
+        write("call_1", "the okapi budget is 42"),
+        text("Not saved."),
+        // A sub-agent, on the session's own provider, tries the same.
+        tool_call(
+            "call_agent",
+            "InvokeAgent",
+            json!({"agent_name": "scribe", "prompt": "note the okapi count"}),
+        ),
+        whole(json!({
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_note",
+                "type": "function",
+                "function": {
+                    "name": "MemoryWrite",
+                    "arguments": json!({"content": "there are 7 okapi"}).to_string(),
+                },
+            }],
+        })),
+        whole(json!({"role": "assistant", "content": "It wasn't saved."})),
+        text("Not saved either."),
+        write("call_2", "the build uses nextest"),
+        text("Saved."),
+    ])
+    .await;
+    let agents = dir.path().join("project/.koda/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let scribe = json!({
+        "name": "scribe", "system_prompt": "You are scribe.", "allowed_tools": ["MemoryWrite"],
+        "trust": "auto",
+    });
+    std::fs::write(agents.join("scribe.json"), scribe.to_string()).unwrap();
+    let mut koda = Koda::start_in(config(&server), dir).await;
+    let project_notes = async |koda: &Koda| {
+        let notes = koda.read_memory().await.unwrap().notes;
+        assert_eq!(notes[0].scope, MemoryScope::Project);
+        notes[0].text.clone().unwrap_or_default()
+    };
+
+    set_confidential(&mut koda, true).await;
+    koda.turn("Remember the budget").await;
+    koda.until("turn/completed").await;
+    let told = chat_requests(&server).await[1]["messages"].to_string();
+    assert!(
+        told.contains(
+            "This session is confidential, so MemoryWrite saves nothing: Koda's notes are read \
+             by every session of the project, including ones on remote providers. The user can \
+             save a note themselves with /memory add."
+        ),
+        "{told}"
+    );
+    assert_eq!(project_notes(&koda).await, "");
+
+    koda.turn("Have scribe note the count").await;
+    koda.until("turn/completed").await;
+    // The sub-agent's second request carries what its call came to.
+    let told = chat_requests(&server).await[4]["messages"].to_string();
+    assert!(
+        told.contains("note the okapi count")
+            && told.contains("This session is confidential, so MemoryWrite saves nothing"),
+        "{told}"
+    );
+    assert_eq!(project_notes(&koda).await, "");
+
+    // The user's own note is theirs to save.
+    koda.add_memory(MemoryScope::Project, "ask before deploying")
+        .await
+        .unwrap();
+    let notes = project_notes(&koda).await;
+    assert!(
+        notes.contains("ask before deploying") && !notes.contains("okapi"),
+        "{notes}"
+    );
+
+    set_confidential(&mut koda, false).await;
+    koda.turn("Remember the build").await;
+    koda.until("turn/completed").await;
+    let notes = project_notes(&koda).await;
+    assert!(
+        notes.contains("the build uses nextest") && !notes.contains("okapi"),
+        "{notes}"
+    );
 }
 
 /// A resumed session returns its turns exactly as they were sent, a

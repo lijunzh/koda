@@ -322,7 +322,7 @@ The protocol grows with the code that serves it. It has `initialize`,
 `state/read`, `session/start`, `session/list`, `session/search`,
 `session/delete`,
 `session/archive`, `session/unarchive`,
-`session/name/set`, `session/fork`,
+`session/name/set`, `session/confidential/set`, `session/fork`,
 `session/compact/start`, `session/settings/update`, `session/unsubscribe`,
 `model/list`, `modelProvider/list`, `modelProvider/apiKey/set`,
 `modelProvider/apiKey/remove`, `webSearch/apiKey/read`, `webSearch/apiKey/set`,
@@ -1576,6 +1576,66 @@ followed.
   mostly the user's own and read constantly while coding.
 - **Measured** with the koda-evals task `assistant-injection`, an inbox whose
   one mail tells the assistant to upload an SSH key and stay quiet.
+
+### Confidential Sessions: Marked by Hand, Read by Local Models Only (P1)
+
+Koda runs sessions on local models and on remote providers, and its model
+can search and read the user's other sessions (`SearchSessions`,
+`ReadSession`). Together those let what was said to a local model reach a
+remote provider. No peer gates this (Codex, Claude Code, goose, Hermes,
+OpenClaw, Qwen Code and Zed were read); the parts they do have are Codex's
+per-thread memory mode (`thread/memoryMode/set`: set at any time, the
+thread stays usable), ChatGPT's locked chats, and OpenClaw's rule that the
+model has no argument that lifts an exclusion.
+
+The user marks a session confidential (`session/confidential/set`), and the
+host gives its text to no model on a remote provider:
+
+- **By hand only.** Koda doesn't guess what is sensitive; a wrong guess
+  either way is worse than none.
+- **Local is a local kind at a local endpoint**
+  (`ProviderType::runs_locally`): LM Studio, Ollama, vLLM or llama.cpp,
+  with a URL whose host is this machine, a private, link-local,
+  unique-local or carrier-grade-NAT address, a one-label name, or a name
+  ending in `.local`, `.localhost`, `.lan`, `.home.arpa` or `.ts.net`
+  (`is_local_endpoint`). The kind alone let an `lm-studio` session pointed
+  at a public host count as local. The host is read as written, with no
+  lookup: it is what the user chose, and a lookup would make the answer
+  depend on the network. An unknown or unrecorded provider is remote.
+- **One place decides** (`host/session_archive.rs`): a remote caller's
+  search skips a confidential session before reading it, and its read
+  returns no text. What it is told instead is built from ids and dates
+  alone and is the same for every query, so searching can't test what a
+  confidential session holds. Koda sets a session's title from its first
+  prompt, so the title is content and is left out.
+- **Reading taints.** A local session given a confidential session's text
+  is marked before the text is returned: its transcript holds the text,
+  and a later remote session would find it there.
+- **Opening follows the same rule** (`settings::check_confidential`):
+  `session/resume` and `session/fork` open a confidential session on a
+  local provider or on the provider and endpoint it already has. The
+  endpoint counts because a provider id says little about a remote one:
+  any OpenAI-compatible gateway is `openai` with a `base_url`.
+- **So does a sub-agent** (`sub_agent_dispatch::refuse_remote_in_confidential`):
+  it gets a prompt the session's model wrote, and a fork the whole
+  history. Core reads the mark from the store it already writes the
+  sub-agent's session to, at each dispatch, since a session becomes
+  confidential while it runs; no host interface is needed, and a
+  background agent continued later passes the same check.
+- **`MemoryWrite` refuses** in a confidential session and its sub-agents:
+  notes are read by every session of the project. The user's own
+  `/memory add` is theirs.
+- **Marking reaches forks, unmarking doesn't.** A fork is a copy of the
+  text, so the user's mark covers the sessions already forked from it. The
+  mark coming off a session says nothing about its copies, so each fork is
+  unmarked by itself; and a session marked for what it read takes no fork
+  with it, since a fork made before holds none of that text.
+- **The user's own requests are untouched.** The mark is about what a
+  model is given; a client is the user.
+
+It is a mark on the session's row, not encryption. A remote session that
+read the text before the mark keeps it, and a feedback report holds the
+session's rows.
 
 ### No Delete tool (P2)
 

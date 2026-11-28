@@ -35,6 +35,10 @@ koda exec fork a3f8bc "try it the other way"
 koda archive a3f8bc
 koda unarchive a3f8bc
 
+# Keep this session's text from models on remote providers, and undo that
+/confidential
+/confidential off
+
 # Delete a session permanently
 /resume delete a3f8bc
 ```
@@ -103,6 +107,98 @@ it if needed, so a session open in a window is closed there; `--no-daemon`
 runs them in their own process instead. The TUI has no command for this yet.
 Over the protocol they are `session/archive` and `session/unarchive`, Codex's
 `thread/archive` and `thread/unarchive` ([Archiving](./serve.md#archiving-a-session)).
+
+## Confidential sessions
+
+Koda's model can look through your other sessions
+([`SearchSessions` and `ReadSession`](./tools.md#other-sessions)), so what
+you said to a model on your own machine could otherwise be read by a session
+running on a remote provider and sent there. Mark a session **confidential**
+to stop that: `/confidential` in the TUI, or **Mark confidential** in the
+desktop app's session menus. `/confidential off` and **Unmark confidential**
+take the mark off. Only you set it; Koda never guesses that a session is
+sensitive.
+
+- **What the mark does:** the session's text is given only to a
+  [local model](#what-counts-as-a-local-model). From a session on any
+  other, `SearchSessions` never returns it and `ReadSession` returns no
+  text of it. That model is told only that confidential sessions exist: for
+  the folder it works in, up to five lines of the form
+  `Confidential session 1a2b3c4d, last active 2026-11-20`, then how many
+  more there are, and that they can be read from a session on a local model
+  or after you unmark them. The notice is the same whatever was searched
+  for, and says nothing taken from a session: no title, no text, no folder.
+  No argument of either tool changes this.
+- **A session that reads one becomes confidential.** When a session on a
+  local model is given a confidential session's text, by a search result
+  or a read, Koda marks that session too, before the text is handed over:
+  from then on its own transcript holds the text. The tool's result says
+  so, and so does the TUI. You can unmark it like any other.
+- **Opening it on another provider is refused.** A confidential session
+  resumes and forks on a local model, or on the provider and endpoint it
+  already has, which has seen its text already. `koda fork` with another
+  remote `--provider`, or `koda resume` or `koda fork` with another
+  `--base-url` that isn't local, is refused, and says to unmark the session
+  first.
+- **Its sub-agents run where it may.** In a confidential session a
+  sub-agent starts only on a local model or on the session's own provider
+  and endpoint. One [configured](./agents.md) for another is refused when
+  the model asks for it, and the model is told why, so it can pick another
+  or do the task itself. The mark is read each time, so this holds from the
+  moment a session becomes confidential.
+- **Its model saves no notes.** `MemoryWrite` refuses in a confidential
+  session, a sub-agent's too: Koda's notes are read by every session of the
+  project, on any provider. Your own `/memory add` saves as before.
+- **Forks are marked with it.** Marking a session marks the sessions
+  already forked from it, and theirs, since each holds a copy of the
+  conversation; `/confidential` says how many, and each gets its lock. A
+  fork made afterwards is confidential from the start, and so are the
+  sessions of the sub-agents it runs. Unmarking is one session at a time:
+  a fork stays confidential until you unmark it.
+- **Your own view doesn't change.** `/resume`, its search, the desktop
+  app's list and Search show a confidential session like any other, with a
+  lock on its row. The mark is about what a model is given.
+
+### What counts as a local model
+
+A model is local when both hold, read from what the session was started
+with, with no lookup of names:
+
+- **Its provider is a local kind:** LM Studio, Ollama, vLLM or llama.cpp.
+  A provider Koda doesn't know counts as remote.
+- **Its endpoint is on your own machine or network.** The host in its URL
+  (`http` or `https`) is one of:
+
+  | Host | Examples |
+  |---|---|
+  | This machine | `localhost`, `127.0.0.1`, `[::1]` |
+  | A private address | `10.x.x.x`, `172.16.x.x` to `172.31.x.x`, `192.168.x.x` |
+  | A link-local or unique-local address | `169.254.x.x`, `fe80::…`, `fd…` |
+  | A carrier-grade-NAT address, which Tailscale uses | `100.64.0.0` to `100.127.255.255` |
+  | A name of one label | `studio` |
+  | A name ending in `.local`, `.localhost`, `.lan`, `.home.arpa` or `.ts.net` | `studio.local`, `studio.tailnet.ts.net` |
+
+  Anything else is remote: a public address or name, a URL Koda can't
+  read, and an LM Studio server reached through a public host name. A
+  session with no endpoint recorded uses its provider's own, which for
+  these four is this machine.
+
+### What the mark doesn't do
+
+- **It isn't encryption.** The session is stored as before, in plain text
+  in `~/.config/koda/db/koda.db`, readable by you and by anything running
+  as you. The sandbox keeps the model's commands out of that folder.
+- **It isn't retroactive.** A session on a remote provider that read this
+  one before you marked it keeps what it read.
+- **A feedback report holds the session.** `/feedback` with history saves
+  the session's stored rows, what it read from a confidential session
+  included, in a ZIP you choose whether to share.
+- **It doesn't stop the session itself.** A session marked while it runs
+  on a remote provider goes on sending its own conversation there, as it
+  always has. The mark covers what other models can read.
+
+Over the protocol it is `session/confidential/set`
+([Marking a session confidential](./serve.md#marking-a-session-confidential)).
 
 ## Session title
 

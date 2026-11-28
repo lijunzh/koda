@@ -1,7 +1,7 @@
 // The session list's state, from the server's answers and notifications.
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../src/protocol/types.gen';
-import { byFolder, EMPTY, folderName, listed, listedPage, statusLabel, title, withMessages, withPage, withSession } from '../src/renderer/sessions';
+import { byFolder, confidentialAfter, EMPTY, folderName, listed, listedPage, statusLabel, title, withMessages, withPage, withSession } from '../src/renderer/sessions';
 
 function session(id: string, extra: Partial<Session> = {}): Session {
   return { id, createdAt: 1, updatedAt: 1, ephemeral: false, preview: '', turns: [], ...extra } as Session;
@@ -86,6 +86,37 @@ describe('session list', () => {
     expect(title(state.byId.get('a')!)).toBe('Back again');
     // A sub-agent's session comes back with its parent, and isn't listed.
     expect(withSession(state, session('child', { parentSessionId: 'a' }))).toBe(state);
+  });
+
+  it('follows a session marked confidential and unmarked, by the user or by Koda', () => {
+    // The server leaves `confidential` out for a session that isn't.
+    let state = withPage(EMPTY, { data: [session('a'), session('b', { confidential: true })] }, true);
+    const marks = () => [...state.byId.values()].map((s) => [s.id, s.confidential]);
+    expect(marks()).toEqual([['a', false], ['b', true]]);
+    state = withMessages(state, [
+      note('session/confidential/updated', { sessionId: 'a', confidential: true }),
+      note('session/confidential/updated', { sessionId: 'b', confidential: false }),
+      note('session/confidential/updated', { sessionId: 'elsewhere', confidential: true }),
+    ]);
+    expect(marks()).toEqual([['a', true], ['b', false]]);
+    // Told what it already shows, the list is left as it is.
+    expect(withMessages(state, [note('session/confidential/updated', { sessionId: 'a', confidential: true })])).toBe(state);
+    // A fresh listing decides: one that no longer says it is confidential isn't.
+    state = withPage(state, { data: [session('a')] }, false);
+    expect(marks()).toEqual([['a', false], ['b', false]]);
+    // The Archived list, and a session brought back, carry the mark too.
+    expect(listedPage({ data: [session('c', { confidential: true })] })[0].confidential).toBe(true);
+    expect(withSession(state, session('b', { confidential: true })).byId.get('b')!.confidential).toBe(true);
+  });
+
+  it("gives a pane its session's mark: the last word about that session", () => {
+    const told = (sessionId: string, confidential: boolean) => note('session/confidential/updated', { sessionId, confidential });
+    expect(confidentialAfter(false, 'a', [])).toBe(false);
+    expect(confidentialAfter(true, 'a', [note('session/name/updated', { sessionId: 'a', sessionName: 'x' })])).toBe(true);
+    expect(confidentialAfter(false, 'a', [told('a', true)])).toBe(true);
+    expect(confidentialAfter(true, 'a', [told('a', false)])).toBe(false);
+    expect(confidentialAfter(false, 'a', [told('a', true), told('a', false), told('b', true)])).toBe(false);
+    expect(confidentialAfter(false, 'a', [told('b', true)])).toBe(false);
   });
 
   it('shows the Archived list what the session list would show', () => {

@@ -441,9 +441,23 @@ pub struct SessionInfo {
     pub ephemeral: bool,
     /// When it was archived, in Unix seconds; `None` for one that isn't.
     pub archived_unix: Option<i64>,
+    /// The user marked it confidential, or it read a session that is: its
+    /// text goes to no model on a remote provider but its own.
+    pub confidential: bool,
     /// Its place in the order sessions were made, which orders the
     /// sessions of one second in a list.
     pub sequence: i64,
+}
+
+/// What [`SessionStore::mark_confidential_with_forks`] changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfidentialMarked {
+    /// The sessions it marked, the session itself first when it is one of
+    /// them; one already confidential isn't among them.
+    pub sessions: Vec<String>,
+    /// How many of them are forks a person can list: not a fork's
+    /// sub-agents' sessions, nor a side conversation's copy.
+    pub forks: usize,
 }
 
 /// Core storage contract for sessions, messages, and metadata.
@@ -456,7 +470,8 @@ pub trait SessionStore: Send + Sync {
         self.create_session_from(agent_name, project_root, &SessionOrigin::default())
             .await
     }
-    /// [`Self::create_session`], recording where it came from.
+    /// [`Self::create_session`], recording where it came from. A
+    /// sub-agent's session starts with its parent's confidential mark.
     async fn create_session_from(
         &self,
         agent_name: &str,
@@ -509,7 +524,8 @@ pub trait SessionStore: Send + Sync {
     /// `project_root`, where it opens, as a Codex fork takes the cwd it
     /// starts in (`koda fork --worktree` opens it in a new checkout). One
     /// transaction; `source` is left as it was. The copy records `source`
-    /// as what it was forked from, and `origin` as who forked it.
+    /// as what it was forked from, and `origin` as who forked it. A copy of
+    /// a confidential session is confidential: it holds the same text.
     async fn fork_session(
         &self,
         source: &str,
@@ -531,6 +547,32 @@ pub trait SessionStore: Send + Sync {
     /// Returns the sessions this restored, `session_id` first; an empty
     /// list means it wasn't archived, or names no session.
     async fn unarchive_session(&self, session_id: &str) -> Result<Vec<String>>;
+    /// Mark a session confidential, or take the mark off, and with it the
+    /// sessions of the sub-agents it ran, and theirs, which hold parts of
+    /// its conversation. Returns the sessions this changed, `session_id`
+    /// first when it is one of them; one already as asked isn't among them,
+    /// and an empty list means nothing changed, or `session_id` names no
+    /// session. Forks are left as they are
+    /// ([`Self::mark_confidential_with_forks`] reaches them); one made
+    /// afterwards starts with its source's mark ([`Self::fork_session`]),
+    /// and a sub-agent's session with its parent's
+    /// ([`Self::create_session_from`]).
+    async fn set_session_confidential(
+        &self,
+        session_id: &str,
+        confidential: bool,
+    ) -> Result<Vec<String>>;
+    /// Mark a session confidential as the user does: the session and its
+    /// sub-agents' sessions ([`Self::set_session_confidential`]), and with
+    /// them every stored session forked from it, and from those, each
+    /// with its own sub-agents' sessions. A fork holds a copy of the text.
+    /// Unmarking doesn't come back this way: each fork is unmarked by
+    /// itself.
+    async fn mark_confidential_with_forks(&self, session_id: &str) -> Result<ConfidentialMarked>;
+    /// Every confidential session, the most recently active first: of
+    /// every folder and kind, archived ones too. The caller decides which
+    /// of them to count.
+    async fn confidential_sessions(&self) -> Result<Vec<SessionInfo>>;
     /// Set the auto-generated title for a session.
     async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()>;
     /// Persist the current approval mode for a session (restored on resume).

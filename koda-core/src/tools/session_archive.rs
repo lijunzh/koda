@@ -13,6 +13,14 @@
 //! An old conversation can hold text from the web, so everything read from
 //! one goes to the model as external content ([`crate::untrusted::wrap`]),
 //! as a fetched page does.
+//!
+//! A session the user marked confidential is the host's to keep back: it
+//! gives a caller on a remote provider no text of one, only that such
+//! sessions exist ([`Withheld`](crate::tools::session_archive::Withheld)),
+//! and tells a caller on a local provider when reading one has made it
+//! confidential too. Neither tool has an argument that changes this, as OpenClaw's
+//! tools have none that lifts an exclusion. What this module adds is the
+//! wording, none of it from a confidential session's content.
 
 use crate::providers::ToolDefinition;
 use crate::tools::{Tool, ToolEffect, ToolExecCtx, ToolResult, wrap_result};
@@ -50,8 +58,9 @@ pub trait SessionArchive: Send + Sync {
     /// The sessions that say `search.query`, the most recently active
     /// first, each with its first match.
     async fn search(&self, search: &SessionSearch) -> Result<SessionHits>;
-    /// Some of one session's turns, as text.
-    async fn read(&self, read: &SessionRead) -> Result<SessionReading>;
+    /// Some of one session's turns, as text, or that the session is
+    /// confidential and the caller may not read it.
+    async fn read(&self, read: &SessionRead) -> Result<SessionReadAnswer>;
 }
 
 /// Who said a piece of a session's text.
@@ -126,6 +135,33 @@ pub struct SessionHits {
     pub hits: Vec<SessionHit>,
     /// Whether more sessions match than `limit` let through.
     pub more: bool,
+    /// The confidential sessions the search left out because the caller
+    /// runs on a remote provider. The same whatever was searched for.
+    pub withheld: Option<Withheld>,
+    /// A hit is from a confidential session, and giving it made the
+    /// calling session confidential.
+    pub caller_marked: bool,
+}
+
+/// A confidential session, as a caller that may not read it is told of it:
+/// nothing that comes from what was said in it. Not its title, which Koda
+/// takes from the first prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfidentialSession {
+    /// Its full id; a line shows the start of it.
+    pub id: String,
+    /// When it was last written, in Unix seconds.
+    pub last_active_unix: i64,
+}
+
+/// The confidential sessions kept from a caller on a remote provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Withheld {
+    /// Those of the caller's own folder, the most recently active first:
+    /// the few a notice lists.
+    pub listed: Vec<ConfidentialSession>,
+    /// How many there are in all, in every folder.
+    pub total: usize,
 }
 
 /// What `ReadSession` asks for.
@@ -177,6 +213,19 @@ pub struct SessionReading {
     pub previous_turn_id: Option<String>,
     /// The turn after `turns`, if there is one.
     pub next_turn_id: Option<String>,
+    /// The session is confidential, and reading it made the calling
+    /// session confidential.
+    pub caller_marked: bool,
+}
+
+/// What a read gives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionReadAnswer {
+    /// The turns asked for.
+    Turns(SessionReading),
+    /// The session is confidential and the caller runs on a remote
+    /// provider: no text, only that it exists.
+    Confidential(ConfidentialSession),
 }
 
 // ── The tools ───────────────────────────────────────────────────────────
@@ -327,13 +376,21 @@ async fn search_sessions(archive: Option<&dyn SessionArchive>, args: &Value) -> 
         include_tool_output: args["include_tool_output"].as_bool().unwrap_or(false),
     };
     let found = archive.search(&search).await?;
-    if found.hits.is_empty() {
-        return Ok(nothing_found(&search));
+    let mut text = if found.hits.is_empty() {
+        nothing_found(&search)
+    } else {
+        crate::untrusted::wrap("SearchSessions", &hits_text(&search, &found))
+    };
+    // Koda's own words, after the sessions' text.
+    if found.caller_marked {
+        text.push_str("\n\n");
+        text.push_str(CALLER_MARKED);
     }
-    Ok(crate::untrusted::wrap(
-        "SearchSessions",
-        &hits_text(&search, &found),
-    ))
+    if let Some(withheld) = &found.withheld {
+        text.push_str("\n\n");
+        text.push_str(&withheld_text(withheld));
+    }
+    Ok(text)
 }
 
 async fn read_session(archive: Option<&dyn SessionArchive>, args: &Value) -> Result<String> {
@@ -355,14 +412,82 @@ async fn read_session(archive: Option<&dyn SessionArchive>, args: &Value) -> Res
         turn_limit: count_arg(args, "turn_limit", DEFAULT_TURN_LIMIT, MAX_TURN_LIMIT),
         include_outputs: args["include_outputs"].as_bool().unwrap_or(false),
     };
-    let reading = archive.read(&read).await?;
-    Ok(crate::untrusted::wrap(
+    let reading = match archive.read(&read).await? {
+        SessionReadAnswer::Turns(reading) => reading,
+        SessionReadAnswer::Confidential(session) => {
+            return Ok(format!(
+                "{}\n{HOW_TO_READ_CONFIDENTIAL}",
+                confidential_line(&session)
+            ));
+        }
+    };
+    let mut text = crate::untrusted::wrap(
         "ReadSession",
         &reading_text(&reading, read.turn_id.is_some()),
-    ))
+    );
+    if reading.caller_marked {
+        text.push_str("\n\n");
+        text.push_str(CALLER_MARKED);
+    }
+    Ok(text)
 }
 
 // ── As text ─────────────────────────────────────────────────────────────
+
+/// How many characters of a confidential session's id a line shows: enough
+/// for `ReadSession` to name it from a session that may read it.
+const CONFIDENTIAL_ID_CHARS: usize = 8;
+
+/// What a caller that may not read confidential sessions is told to do,
+/// after a search's notice and in place of a read.
+const HOW_TO_READ_CONFIDENTIAL: &str = "A confidential session can be read only from a session \
+    on a local model, or after the user unmarks it.";
+
+/// What a caller is told when a result has made its own session
+/// confidential.
+const CALLER_MARKED: &str = "This session is now confidential too: it holds text from a \
+    confidential session. The user can unmark it.";
+
+/// A day, as a session's line gives it.
+fn day_of(unix: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(unix)
+        .map_or_else(|_| "?".to_string(), |at| at.date().to_string())
+}
+
+/// A confidential session on one line, with nothing of what it says.
+fn confidential_line(session: &ConfidentialSession) -> String {
+    let id: String = session.id.chars().take(CONFIDENTIAL_ID_CHARS).collect();
+    format!(
+        "Confidential session {id}, last active {}",
+        day_of(session.last_active_unix)
+    )
+}
+
+/// The notice a search from a remote provider ends with: the caller's
+/// folder's confidential sessions, how many more there are, and what to
+/// do. Built from the sessions' ids and dates alone, so it is the same for
+/// every query.
+fn withheld_text(withheld: &Withheld) -> String {
+    let mut text = String::new();
+    for session in &withheld.listed {
+        text.push_str(&confidential_line(session));
+        text.push('\n');
+    }
+    let listed = withheld.listed.len();
+    let more = withheld.total.saturating_sub(listed);
+    let (s, are) = if more == 1 { ("", "is") } else { ("s", "are") };
+    if listed == 0 {
+        text.push_str(&format!(
+            "{more} confidential session{s} in other folders {are} not listed.\n"
+        ));
+    } else if more > 0 {
+        text.push_str(&format!(
+            "{more} more confidential session{s} {are} not listed.\n"
+        ));
+    }
+    text.push_str(HOW_TO_READ_CONFIDENTIAL);
+    text
+}
 
 /// What a search that found nothing says: also what it left unsearched.
 fn nothing_found(search: &SessionSearch) -> String {
@@ -390,8 +515,7 @@ fn session_line(session: &ArchivedSession) -> String {
         None => title,
     };
     let folder = session.folder.as_deref().unwrap_or("an unknown folder");
-    let day = time::OffsetDateTime::from_unix_timestamp(session.last_active_unix)
-        .map_or_else(|_| "?".to_string(), |at| at.date().to_string());
+    let day = day_of(session.last_active_unix);
     let archived = if session.archived { ", archived" } else { "" };
     format!("\"{title}\" in {folder}, last active {day}{archived}")
 }
@@ -611,6 +735,7 @@ mod tests {
             first_turn: 1,
             previous_turn_id: None,
             next_turn_id: None,
+            caller_marked: false,
         }
     }
 
@@ -620,6 +745,8 @@ mod tests {
     struct Canned {
         hits: SessionHits,
         reading: Option<SessionReading>,
+        /// The session is confidential and the caller may not read it.
+        confidential: Option<ConfidentialSession>,
         searches: Mutex<Vec<SessionSearch>>,
         reads: Mutex<Vec<SessionRead>>,
     }
@@ -630,11 +757,12 @@ mod tests {
             self.searches.lock().unwrap().push(search.clone());
             Ok(self.hits.clone())
         }
-        async fn read(&self, read: &SessionRead) -> Result<SessionReading> {
+        async fn read(&self, read: &SessionRead) -> Result<SessionReadAnswer> {
             self.reads.lock().unwrap().push(read.clone());
-            match &self.reading {
-                Some(reading) => Ok(reading.clone()),
-                None => bail!("No session has the id {:?}.", read.session_id),
+            match (&self.confidential, &self.reading) {
+                (Some(session), _) => Ok(SessionReadAnswer::Confidential(session.clone())),
+                (None, Some(reading)) => Ok(SessionReadAnswer::Turns(reading.clone())),
+                (None, None) => bail!("No session has the id {:?}.", read.session_id),
             }
         }
     }
@@ -677,6 +805,7 @@ mod tests {
                     },
                 ],
                 more: true,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -786,6 +915,7 @@ mod tests {
                 total_turns: 3,
                 previous_turn_id: Some("t1".to_string()),
                 next_turn_id: Some("t3".to_string()),
+                caller_marked: false,
             }),
             ..Default::default()
         };
@@ -856,6 +986,167 @@ mod tests {
                 .starts_with("ReadSession works only in a top-level session"),
             "{refused}"
         );
+    }
+
+    fn confidential(id: &str, day: i64) -> ConfidentialSession {
+        ConfidentialSession {
+            id: id.to_string(),
+            // Days from 2026-11-20 00:00:00 UTC.
+            last_active_unix: 1_795_132_800 + day * 86_400,
+        }
+    }
+
+    /// A search that left confidential sessions out ends with a notice in
+    /// Koda's own words, outside the external content: the listed ones by
+    /// the start of their id and their day, how many more there are, and
+    /// what to do. It is the same after hits and after none.
+    #[tokio::test]
+    async fn a_search_says_which_confidential_sessions_it_left_out() {
+        let how = "A confidential session can be read only from a session on a local model, or \
+                   after the user unmarks it.";
+        let listed = vec![
+            confidential("0a1b2c3d-aaaa-bbbb-cccc-000000000001", 1),
+            confidential("9f8e7d6c-aaaa-bbbb-cccc-000000000002", 0),
+        ];
+        for (listed, total, expected) in [
+            (
+                listed.clone(),
+                2,
+                format!(
+                    "Confidential session 0a1b2c3d, last active 2026-11-21\n\
+                     Confidential session 9f8e7d6c, last active 2026-11-20\n{how}"
+                ),
+            ),
+            (
+                listed.clone(),
+                3,
+                format!(
+                    "Confidential session 0a1b2c3d, last active 2026-11-21\n\
+                     Confidential session 9f8e7d6c, last active 2026-11-20\n\
+                     1 more confidential session is not listed.\n{how}"
+                ),
+            ),
+            (
+                listed[..1].to_vec(),
+                8,
+                format!(
+                    "Confidential session 0a1b2c3d, last active 2026-11-21\n\
+                     7 more confidential sessions are not listed.\n{how}"
+                ),
+            ),
+            (
+                Vec::new(),
+                1,
+                format!("1 confidential session in other folders is not listed.\n{how}"),
+            ),
+            (
+                Vec::new(),
+                4,
+                format!("4 confidential sessions in other folders are not listed.\n{how}"),
+            ),
+        ] {
+            let withheld = Some(Withheld { listed, total });
+            let none = Canned {
+                hits: SessionHits {
+                    withheld: withheld.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let output = search_sessions(Some(&none), &json!({"query": "okapi"}))
+                .await
+                .unwrap();
+            assert_eq!(
+                output,
+                format!(
+                    "No other session mentions \"okapi\". Not searched: archived sessions \
+                     (include_archived), tool output (include_tool_output).\n\n{expected}"
+                )
+            );
+
+            let some = Canned {
+                hits: SessionHits {
+                    hits: vec![SessionHit {
+                        session: session("s1"),
+                        speaker: Speaker::User,
+                        snippet: "find the okapi".to_string(),
+                        turn_id: "t1".to_string(),
+                    }],
+                    withheld,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let output = search_sessions(Some(&some), &json!({"query": "okapi"}))
+                .await
+                .unwrap();
+            let (wrapped, notice) = output
+                .split_once(">>>\n\n")
+                .expect("a notice after the end");
+            assert!(
+                wrapped.starts_with(crate::untrusted::NOTE)
+                    && wrapped.contains("\nuser: find the okapi\n\n<<<END_EXTERNAL_CONTENT id="),
+                "{output}"
+            );
+            assert_eq!(notice, expected);
+        }
+    }
+
+    /// A read of a confidential session the caller may not read is a plain
+    /// result: the session's line and what to do, and nothing wrapped,
+    /// since nothing in it is the session's.
+    #[tokio::test]
+    async fn a_read_of_a_confidential_session_says_only_that_it_is_one() {
+        let archive = Canned {
+            confidential: Some(confidential("0a1b2c3d-aaaa-bbbb-cccc-000000000001", 0)),
+            reading: Some(reading(vec![turn("t1", 1, 10)])),
+            ..Default::default()
+        };
+        let output = read_session(Some(&archive), &json!({"session_id": "0a1b2c3d"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            output,
+            "Confidential session 0a1b2c3d, last active 2026-11-20\n\
+             A confidential session can be read only from a session on a local model, or after \
+             the user unmarks it."
+        );
+    }
+
+    /// A result that made the calling session confidential says so in one
+    /// line of Koda's own, after the external content.
+    #[tokio::test]
+    async fn a_result_that_marked_the_caller_says_so() {
+        let said = "\n\nThis session is now confidential too: it holds text from a confidential \
+                    session. The user can unmark it.";
+        let archive = Canned {
+            hits: SessionHits {
+                hits: vec![SessionHit {
+                    session: session("s1"),
+                    speaker: Speaker::User,
+                    snippet: "find the okapi".to_string(),
+                    turn_id: "t1".to_string(),
+                }],
+                caller_marked: true,
+                ..Default::default()
+            },
+            reading: Some(SessionReading {
+                caller_marked: true,
+                ..reading(vec![turn("t1", 1, 10)])
+            }),
+            ..Default::default()
+        };
+        let found = search_sessions(Some(&archive), &json!({"query": "okapi"}))
+            .await
+            .unwrap();
+        let read = read_session(Some(&archive), &json!({"session_id": "s1"}))
+            .await
+            .unwrap();
+        for output in [found, read] {
+            let (wrapped, after) = output.rsplit_once(">>>").expect("an end marker");
+            assert!(wrapped.contains("<<<END_EXTERNAL_CONTENT id="), "{output}");
+            assert_eq!(after, said, "{output}");
+        }
     }
 
     /// A text longer than 2,000 characters is cut there, counted in
