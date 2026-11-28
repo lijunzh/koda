@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-28
+
+The desktop app relaid after Claude Code's desktop app, and session archive. Nothing to change in configs, flags or sessions. After `brew upgrade koda`, run `koda app` once to get the new app.
+
 ### Added
 
 - **`koda archive <SESSION>` puts a session away without deleting it, and `koda unarchive <SESSION>` brings it back,** as `codex archive` and `codex unarchive` do. An archived session stays stored, but `/resume`, `koda resume` and `--last` no longer offer it, and resuming it by ID says to unarchive it first. A session that is open is closed first: a turn running in it stops, saved as interrupted, and a window that had it open says it was archived and goes on with it once it is unarchived. The sessions of its sub-agents are archived and restored with it. `SESSION` is an ID or its first characters; sessions aren't found by name yet, and the TUI has no `/archive` yet.
