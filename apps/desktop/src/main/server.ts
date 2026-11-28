@@ -100,7 +100,9 @@ export function startServer(opts: {
   if (opts.runningTurns) args.push('--running-turns', opts.runningTurns);
   return new Promise((resolve) => {
     // No timeout when waiting for an older server's turns: that takes as long as they do.
-    const timeout = opts.runningTurns === 'wait' ? 0 : 60_000;
+    // Otherwise longer than koda's own waits in a row: up to 60 s for an older
+    // server to stop its turns, then 30 s for the new one to answer.
+    const timeout = opts.runningTurns === 'wait' ? 0 : 120_000;
     execFile(opts.koda, args, { env: opts.env, timeout, encoding: 'utf8' }, (error, stdout, stderr) => {
       const line = stdout.trim().split('\n').pop() ?? '';
       try {

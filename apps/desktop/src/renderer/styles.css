@@ -771,6 +771,24 @@ textarea {
   font-size: 13px;
   margin-bottom: 6px;
 }
+/* Text added to the running turn that the model hasn't read yet. */
+.steers-waiting {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.steers-waiting li {
+  white-space: pre-wrap;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  margin-bottom: 4px;
+}
 .spinner {
   display: inline-block;
   color: var(--accent);

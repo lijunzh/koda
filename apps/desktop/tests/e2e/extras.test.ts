@@ -85,16 +85,17 @@ describe.skipIf(!koda)('session extras', () => {
     const send = page.getByRole('button', { name: 'Send', exact: true });
     await send.waitFor({ timeout: 30_000 });
     await page.getByRole('button', { name: 'Set a goal' }).click();
-    await page.getByRole('textbox', { name: 'Goal' }).fill('Keep the tests green');
-    await page.getByRole('button', { name: 'Set goal' }).click();
-    await mark('set clicked');
     const goal = page.getByTestId('goal');
-    // Pause is there once the server has set the goal and said so. The form the
-    // goal is typed in has the same test id and the same words, so its text
-    // says nothing about that.
+    // The form the goal is typed in is not the goal: nothing is set yet.
+    const form = page.getByTestId('goal-form');
+    await form.getByRole('textbox', { name: 'Goal' }).fill('Keep the tests green');
+    expect(await goal.count()).toBe(0);
+    await form.getByRole('button', { name: 'Set goal' }).click();
+    await mark('set clicked');
+    // The goal's line is there once the server has set the goal and said so.
+    await expect.poll(() => goal.textContent(), { timeout: 30_000 }).toContain('Keep the tests green');
     const pause = goal.getByRole('button', { name: 'Pause' });
     await pause.waitFor({ timeout: 30_000 });
-    expect(await goal.textContent()).toContain('Keep the tests green');
     await pause.click();
     await mark('pause clicked');
     // Resume is there once the server has paused it: the line has been redrawn, and Clear is where it stays.

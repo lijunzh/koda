@@ -54,6 +54,60 @@ export function stopServer(home: string) {
 /** The socket of the server under `home`. */
 export const socketOf = (home: string) => path.join(home, 'koda', 'serve', 'koda.sock');
 
+/** A hold on the app's requests of one method, kept in the main process. */
+export interface Hold {
+  /** How many requests wait. */
+  waiting(): Promise<number>;
+  /** Let them go on to the server, and hold no more. */
+  release(): Promise<void>;
+  /** Answer them with an error, and hold no more. */
+  fail(message: string): Promise<void>;
+}
+
+interface HoldGlobals {
+  kodaTestConnection: { request(method: string, params: unknown): Promise<unknown> };
+  kodaHold: {
+    real(method: string, params: unknown): Promise<unknown>;
+    waiting: Array<{ go(): void; fail(message: string): void }>;
+  };
+}
+
+/**
+ * Hold the app's `method` requests before they reach the server, until the
+ * test lets them go: a session stays "opening" for as long as a test needs.
+ */
+export async function holdRequests(app: ElectronApplication, method: string): Promise<Hold> {
+  await app.evaluate((_electron, held) => {
+    const g = globalThis as unknown as HoldGlobals;
+    const conn = g.kodaTestConnection;
+    const real = conn.request.bind(conn);
+    g.kodaHold = { real, waiting: [] };
+    conn.request = (method, params) =>
+      method !== held
+        ? real(method, params)
+        : new Promise((resolve, reject) => {
+            g.kodaHold.waiting.push({
+              go: () => resolve(real(method, params)),
+              fail: (message) => reject(new Error(message)),
+            });
+          });
+  }, method);
+  const end = (message: string | null) =>
+    app.evaluate((_electron, message) => {
+      const g = globalThis as unknown as HoldGlobals;
+      g.kodaTestConnection.request = g.kodaHold.real;
+      for (const held of g.kodaHold.waiting.splice(0)) {
+        if (message === null) held.go();
+        else held.fail(message);
+      }
+    }, message);
+  return {
+    waiting: () => app.evaluate(() => (globalThis as unknown as HoldGlobals).kodaHold.waiting.length),
+    release: () => end(null),
+    fail: (message) => end(message),
+  };
+}
+
 /** Quit the app; if it hasn't gone within 10 seconds, kill it, so a hang costs one test, not the run. */
 export async function closeApp({ app }: OpenApp): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
