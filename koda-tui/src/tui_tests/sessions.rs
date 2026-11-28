@@ -116,6 +116,73 @@ async fn sessions_resume_and_delete_by_id() {
     .await;
 }
 
+/// Typing in the `/resume` picker searches what was said: a session whose
+/// name doesn't have the word is listed with the words around it, the typed
+/// text stays out of the input box, and Enter resumes the session found.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn typing_in_the_picker_finds_a_session_by_what_was_said() {
+    let replies = vec![
+        text("The zebra crossing is the safe place."),
+        text("All done."),
+        text("All done."),
+    ];
+    let driver = TestTui::start(replies)
+        .await
+        .run(async |driver: Driver| {
+            driver
+                .submit_and_finish("bravo session words", "zebra crossing")
+                .await;
+            driver
+        })
+        .await;
+    let bravo = driver.sessions().await[0].clone();
+    let (driver, charlie) = one_turn(
+        TestTui::start_again(driver, None).await,
+        "charlie session words",
+    )
+    .await;
+    assert_ne!(bravo, charlie);
+
+    let tui = TestTui::start_again(driver, None).await;
+    tui.run(async |driver: Driver| {
+        driver.submit("/resume").await;
+        driver.wait_for_screen("Sessions").await;
+        let listed = picker_lines(&driver.screen(), "Sessions");
+        assert!(listed.contains(&charlie[..8]), "{listed}");
+
+        driver.type_keys("zebra");
+        // The host's answer: bravo, by its reply, where its date was.
+        driver.wait_for_screen("The zebra crossing").await;
+        let screen = driver.screen();
+        let listed = picker_lines(&screen, "Sessions matching \"zebra\"");
+        let row = listed
+            .lines()
+            .find(|line| line.contains(&bravo[..8]))
+            .unwrap_or_else(|| panic!("bravo isn't listed:\n{listed}"));
+        assert!(row.contains("bravo session words"), "{row}");
+        assert!(
+            row.contains("The zebra crossing is the safe place."),
+            "{row}"
+        );
+        assert!(!listed.contains(&charlie[..8]), "{listed}");
+        let typed = crate::test_tui::input_box(&screen);
+        assert!(!typed.contains("zebra"), "typed into the prompt: {typed}");
+
+        driver.press(KeyCode::Enter);
+        driver
+            .wait_for_screen(&format!("Resumed session {}", &bravo[..8]))
+            .await;
+        driver.wait_for_screen("session resumed").await;
+        driver.submit_and_finish("bravo again", "All done.").await;
+        let sent = driver.model_call(3).await;
+        assert!(sent.contains("bravo session words"), "{sent}");
+        assert!(!sent.contains("charlie session words"), "{sent}");
+        driver
+    })
+    .await;
+}
+
 /// `/init` asks the model to write AGENTS.md, as Codex's `/init` does, and
 /// leaves an existing instruction file alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

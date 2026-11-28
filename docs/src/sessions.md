@@ -42,6 +42,15 @@ koda unarchive a3f8bc
 **`--last`** is the session with the latest activity in this project, as
 Codex sorts by update time; a session where nothing was sent doesn't count.
 
+**Typing in the picker searches**, as in Claude Code's. The ten sessions it
+lists are narrowed at once by name, first prompt, id or date. From the
+second character Koda also looks through what was said in every session of
+the project (your prompts, the replies, and tool calls' names and
+arguments), and lists the sessions that mention the text under the others,
+each with the words around the first match where the date would be.
+Backspace takes a character back; Enter opens the selected session. The
+picker searches this project only.
+
 ## What a resumed session shows
 
 Its earlier turns, drawn as they were live, as Codex's TUI replays a

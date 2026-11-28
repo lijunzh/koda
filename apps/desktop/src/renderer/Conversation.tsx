@@ -1,16 +1,20 @@
 // The open session's conversation, in rows (`transcript.ts`), in Claude
 // Code's desktop views. A click opens or closes a folded row: a row of
-// lookups, or a command's longer output.
+// lookups, or a command's longer output. A session opened from a search
+// result shows the item that matched.
 import { memo, useLayoutEffect, useRef, useState } from 'react';
+import type { Place } from './App';
 import { CopyButton, DiffText, Markdown } from './Markdown';
 import { callTitle, type Row, shownOutput, type TranscriptState, turnRows, type View, workedFor } from './transcript';
 
 interface Props {
   transcript: TranscriptState;
   view: View;
+  /** The item to show, when a search result opened the session. */
+  at?: Place;
 }
 
-export function Conversation({ transcript, view }: Props) {
+export function Conversation({ transcript, view, at }: Props) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const toggle = (key: string) =>
     setOpen((before) => {
@@ -25,14 +29,38 @@ export function Conversation({ transcript, view }: Props) {
     const el = scroller.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
   });
+  // A search result's item, once per click, in place of the bottom. An item
+  // this view doesn't draw (or an old session's, which has no ids) leaves
+  // the conversation where it was. The view then stays there until the user
+  // scrolls: turns off screen have only a guessed height (`.turn` in the
+  // stylesheet), so the scroll this makes can look like being at the bottom.
+  const shownAt = useRef(0);
+  const held = useRef(false);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || !at || shownAt.current === at.n || transcript.turns.length === 0) return;
+    shownAt.current = at.n;
+    const row = [...el.querySelectorAll('[data-item]')].find((node) => node.getAttribute('data-item')?.split(' ').includes(at.item));
+    if (!row) return;
+    pinned.current = false;
+    held.current = true;
+    row.scrollIntoView({ block: 'center' });
+  });
+  const release = () => {
+    held.current = false;
+  };
   return (
     <div
       className="transcript"
       ref={scroller}
       data-testid="transcript"
+      onWheel={release}
+      onPointerDown={release}
+      onKeyDown={release}
+      onTouchStart={release}
       onScroll={(e) => {
         const el = e.currentTarget;
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        if (!held.current) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
       }}
     >
       {transcript.turns.map((turn) => (
@@ -58,13 +86,13 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
   switch (row.kind) {
     case 'user':
       return (
-        <div className="row user" data-testid="user-message">
+        <div className="row user" data-testid="user-message" data-item={row.key}>
           <div className="user-text">{row.text}</div>
         </div>
       );
     case 'message':
       return (
-        <div className={`row message${row.streaming ? ' streaming' : ''}`} data-testid="agent-message">
+        <div className={`row message${row.streaming ? ' streaming' : ''}`} data-testid="agent-message" data-item={row.key}>
           <Markdown text={row.text} />
           {!row.streaming && (
             <div className="message-actions">
@@ -92,7 +120,7 @@ const RowView = memo(function RowView({ row, open, toggle, full }: RowProps) {
     }
     case 'lookups':
       return (
-        <div className="row lookups" data-testid="lookups">
+        <div className="row lookups" data-testid="lookups" data-item={row.calls.map((call) => call.id).join(' ')}>
           <button className="fold work" aria-expanded={opened} onClick={() => toggle(row.key)}>
             {row.label}
             {row.failed > 0 && <span className="failed"> · {row.failed} failed</span>}
@@ -145,7 +173,7 @@ function ToolRow({
   const ms = call.durationMs ?? null;
   const failed = call.status === 'failed' || (exitCode !== null && exitCode !== 0);
   return (
-    <div className={`row tool status-${call.status}`} data-testid="tool-call">
+    <div className={`row tool status-${call.status}`} data-testid="tool-call" data-item={call.id}>
       <div className="tool-head">
         <span className={`dot ${call.effect ?? ''}`}>●</span> <code>{callTitle(call)}</code>
         {ms !== null && ms >= 1000 && <span className="meta"> · {workedFor(ms)}</span>}

@@ -374,35 +374,45 @@ impl TuiContext {
         self.menu = MenuContent::ProviderModels(dd, provider);
     }
 
-    /// The `/resume` picker.
+    /// A picker row for `session`; `snippet` when it was found by what was
+    /// said in it.
+    fn session_item(
+        &self,
+        session: &koda_client::protocol::session::Session,
+        snippet: Option<String>,
+    ) -> crate::widgets::session_menu::SessionItem {
+        crate::widgets::session_menu::SessionItem {
+            id: session.id.clone(),
+            short_id: session.id[..8.min(session.id.len())].to_string(),
+            updated: crate::util::unix_minutes(session.updated_at),
+            is_current: session.id == self.session.id,
+            title: session.name.clone(),
+            preview: session.preview.clone(),
+            snippet,
+        }
+    }
+
+    /// The `/resume` picker: the project's latest sessions. Typing in it
+    /// searches, as in Claude Code's picker: those sessions by name, id or
+    /// date at once, and every session of the project by what was said in
+    /// it, which the host answers a moment later
+    /// ([`Self::show_found_sessions`]).
     pub(crate) async fn open_session_picker(&mut self) {
         match crate::tui_commands::list_sessions(&self.client, 10).await {
             Ok(sessions) if !sessions.is_empty() => {
-                let items: Vec<crate::widgets::session_menu::SessionItem> = sessions
+                let items = sessions
                     .iter()
-                    .map(|s| crate::widgets::session_menu::SessionItem {
-                        id: s.id.clone(),
-                        short_id: s.id[..8.min(s.id.len())].to_string(),
-                        updated: crate::util::unix_minutes(s.updated_at),
-                        is_current: s.id == self.session.id,
-                        title: s.name.clone(),
-                        preview: s.preview.clone(),
-                    })
+                    .map(|s| self.session_item(s, None))
                     .collect();
                 let title = if self.fork_on_pick {
                     "Fork which session?"
                 } else {
                     "Sessions"
                 };
-                let mut dd = crate::widgets::dropdown::DropdownState::new(items, title);
-                if let Some(idx) = dd.filtered.iter().position(|s| s.is_current) {
-                    dd.selected = idx;
-                    let max_vis = crate::widgets::dropdown::MAX_VISIBLE;
-                    if idx >= max_vis {
-                        dd.scroll_offset = idx + 1 - max_vis;
-                    }
-                }
-                self.menu = MenuContent::Session(dd);
+                self.session_search.clear();
+                self.menu = MenuContent::Session(crate::widgets::session_menu::SessionPicker::new(
+                    items, title,
+                ));
             }
             Ok(_) => {
                 self.scroll_buffer.push(Line::styled(
@@ -416,6 +426,54 @@ impl TuiContext {
                     Style::default().fg(Color::Red),
                 ));
             }
+        }
+    }
+
+    /// A key typed in the `/resume` picker changes what it searches for:
+    /// its own sessions are narrowed now, and the host is asked which
+    /// sessions mention the text. Whether the key was the search's.
+    fn type_in_session_picker(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        let MenuContent::Session(picker) = &mut self.menu else {
+            return false;
+        };
+        let mut query = picker.query().to_string();
+        match (key.code, key.modifiers) {
+            (KeyCode::Char(c), m)
+                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+            {
+                query.push(c);
+            }
+            (KeyCode::Backspace, _) => {
+                query.pop();
+            }
+            _ => return false,
+        }
+        match picker.set_query(query) {
+            Some(term) => self.session_search.ask(&term),
+            None => self.session_search.clear(),
+        }
+        true
+    }
+
+    /// The host's answer to the picker's search for `term`: the sessions
+    /// that mention it go under the ones matched by name, each with the
+    /// words around the match. Dropped when the picker has closed or holds
+    /// another query by now.
+    pub(crate) fn show_found_sessions(&mut self, term: &str, found: crate::session_search::Found) {
+        if !matches!(self.menu, MenuContent::Session(_)) {
+            return;
+        }
+        let found = found.map(|sessions| {
+            sessions
+                .iter()
+                .map(|result| {
+                    let snippet = crate::widgets::session_menu::row_snippet(&result.snippet, term);
+                    self.session_item(&result.session, Some(snippet))
+                })
+                .collect()
+        });
+        if let MenuContent::Session(picker) = &mut self.menu {
+            picker.answered(term, found);
         }
     }
 
@@ -547,6 +605,10 @@ impl TuiContext {
             return Some(true);
         }
 
+        if self.type_in_session_picker(key) {
+            return Some(true);
+        }
+
         match key.code {
             // The wizard trail only shows which wizard is asking: Enter
             // answers the input box under it. Taking Enter here closed the
@@ -588,7 +650,7 @@ impl TuiContext {
             MenuContent::Key(dd) => nav!(dd),
             MenuContent::Feedback { dropdown, .. } => nav!(dropdown),
             MenuContent::PlanImplement(dd) => nav!(dd),
-            MenuContent::Session(dd) => nav!(dd),
+            MenuContent::Session(picker) => nav!(picker.dropdown),
             MenuContent::File { dropdown: dd, .. } => nav!(dd),
             MenuContent::Approval { .. }
             | MenuContent::AskUser { .. }
@@ -701,8 +763,8 @@ impl TuiContext {
                 }
                 return;
             }
-            MenuContent::Session(dd) if self.fork_on_pick => {
-                let picked = dd.selected_item().map(|item| item.id.clone());
+            MenuContent::Session(picker) if self.fork_on_pick => {
+                let picked = picker.dropdown.selected_item().map(|item| item.id.clone());
                 self.menu = MenuContent::None;
                 self.fork_on_pick = false;
                 if let Some(source) = picked {
@@ -710,8 +772,8 @@ impl TuiContext {
                 }
                 return;
             }
-            MenuContent::Session(dd) => {
-                if let Some(item) = dd.selected_item() {
+            MenuContent::Session(picker) => {
+                if let Some(item) = picker.dropdown.selected_item() {
                     if item.is_current {
                         self.scroll_buffer.push(Line::styled(
                             "  Already in this session.",

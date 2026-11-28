@@ -117,6 +117,8 @@ impl TuiContext {
                 self.client = client;
                 self.offline = false;
                 self.file_search.reconnected(self.client.request_handle());
+                self.session_search
+                    .reconnected(self.client.request_handle());
                 self.mcp_stale = true;
                 if let Some(side) = left_side {
                     // Best-effort, as leaving it does: it may be gone already.

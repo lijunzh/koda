@@ -1775,6 +1775,35 @@ kbd {
   color: var(--muted);
   font-size: 12px;
 }
+/* Search's content results: the title and folder, then what was said around the match */
+.session.found {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.found-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.snippet {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+.snippet mark {
+  background: none;
+  color: var(--text);
+  font-weight: 600;
+}
+.empty.searching {
+  margin: 12px 0 0;
+}
 .archived-bar {
   display: flex;
   align-items: center;

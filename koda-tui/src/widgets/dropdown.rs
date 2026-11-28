@@ -140,6 +140,12 @@ impl<T: DropdownItem> DropdownState<T> {
         self.recenter();
     }
 
+    /// Select the item at `index`, scrolled into view.
+    pub fn select(&mut self, index: usize) {
+        self.selected = index.min(self.filtered.len().saturating_sub(1));
+        self.recenter();
+    }
+
     /// Keep the selected item vertically centred in the visible window.
     fn recenter(&mut self) {
         let visible = MAX_VISIBLE.min(self.filtered.len());
