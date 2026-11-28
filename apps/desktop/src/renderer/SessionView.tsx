@@ -24,6 +24,8 @@ const VIEW_NAMES: Record<View, string> = { normal: 'Normal', thinking: 'Thinking
 
 interface Props {
   selected: Selected;
+  /** An archived session: its conversation, and Unarchive in place of the prompt box. */
+  archived?: boolean;
   listed?: ListedSession;
   transcript: TranscriptState | null;
   view: View;
@@ -51,6 +53,7 @@ interface Props {
  */
 export function SessionView({
   selected,
+  archived,
   listed,
   transcript,
   view,
@@ -103,9 +106,10 @@ export function SessionView({
     preview: listed?.preview || session?.preview || prompted || '',
   });
   const folder = session?.cwd ?? listed?.cwd ?? null;
-  const label = statusLabel(listed?.status ?? session?.status ?? null);
+  const label = archived ? 'archived' : statusLabel(listed?.status ?? session?.status ?? null);
   const running = transcript ? runningTurn(transcript) : undefined;
   const failed = (e: Error) => setError(e.message);
+  const unarchive = () => void call('session/unarchive', { sessionId: selected.id }).catch(failed);
 
   // What can be done with the session, behind the caret beside its title.
   const menu: Entry[] = [
@@ -130,9 +134,19 @@ export function SessionView({
       id: 'compact',
       label: 'Compact',
       description: 'Summarize the conversation so far, to free context',
+      disabled: archived,
       onPick: () => void call('session/compact/start', { sessionId: selected.id }).catch(failed),
     },
     { type: 'separator' },
+    archived
+      ? { type: 'item', id: 'unarchive', label: 'Unarchive', onPick: unarchive }
+      : {
+          type: 'item',
+          id: 'archive',
+          label: 'Archive',
+          description: 'Put it away; a running turn stops',
+          onPick: () => void call('session/archive', { sessionId: selected.id }).catch(failed),
+        },
     { type: 'item', id: 'delete', label: 'Delete', danger: true, onPick: () => void window.koda.deleteSession(selected.id) },
   ];
 
@@ -201,6 +215,14 @@ export function SessionView({
       <div className="session-split">
         <div className="conversation-column">
           {transcript && <Conversation transcript={transcript} view={view} />}
+          {archived ? (
+            <div className="bottom">
+              <div className="archived-bar" data-testid="archived-bar">
+                <span>This session is archived.</span>
+                <button onClick={unarchive}>Unarchive</button>
+              </div>
+            </div>
+          ) : (
           <div className="bottom">
             {controls && <PlanPanel controls={controls} shown={planShown} />}
             <Requests requests={requests} onAnswer={onAnswer} />
@@ -222,6 +244,7 @@ export function SessionView({
               }
             />
           </div>
+          )}
         </div>
         {sideShown && transcript && (
           <SidePanel
@@ -244,6 +267,7 @@ export function SessionView({
             transcript={transcript}
             diffs={diffs}
             onChanges={showChanges}
+            archived={archived}
           />
         )}
       </div>

@@ -15,6 +15,12 @@ describe('relay', () => {
     expect(refusal('turn/interrupt', { sessionId: 's' })).toBeNull();
   });
 
+  it('lets the page archive a session and bring it back: both are undone by the other', () => {
+    expect(refusal('session/archive', { sessionId: 's' })).toBeNull();
+    expect(refusal('session/unarchive', { sessionId: 's' })).toBeNull();
+    expect(refusal('session/delete', { sessionId: 's' })).toMatch(/isn't open to the page/);
+  });
+
   it("keeps the server's settings, keys and lifetime away from the page", () => {
     for (const method of [
       'config/batchWrite',

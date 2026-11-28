@@ -20,6 +20,8 @@ interface Props {
   diffs: TurnDiffs;
   /** Open the Changes pane. */
   onChanges(): void;
+  /** An archived session isn't open: nothing here acts on it. */
+  archived?: boolean;
 }
 
 /** 12345 as "12.3K", as Claude Code's Context card counts tokens. */
@@ -29,7 +31,7 @@ export function tokenCount(n: number): string {
   return String(n);
 }
 
-export function SessionDetails({ sessionId, folder, controls, transcript, diffs, onChanges }: Props) {
+export function SessionDetails({ sessionId, folder, controls, transcript, diffs, onChanges, archived }: Props) {
   const settings = controls.settings;
   const [error, setError] = useState<string | null>(null);
   const [servers, setServers] = useState<McpServerStatus[]>([]);
@@ -94,14 +96,16 @@ export function SessionDetails({ sessionId, folder, controls, transcript, diffs,
             </div>
           </>
         )}
-        <p className="card-row end">
-          <button
-            title="Summarize the conversation so far, to free context"
-            onClick={() => void call('session/compact/start', { sessionId }).then(() => setError(null), (e: Error) => setError(e.message))}
-          >
-            Compact session
-          </button>
-        </p>
+        {!archived && (
+          <p className="card-row end">
+            <button
+              title="Summarize the conversation so far, to free context"
+              onClick={() => void call('session/compact/start', { sessionId }).then(() => setError(null), (e: Error) => setError(e.message))}
+            >
+              Compact session
+            </button>
+          </p>
+        )}
         {error && <p className="problem">{error}</p>}
       </section>
 
@@ -125,15 +129,19 @@ export function SessionDetails({ sessionId, folder, controls, transcript, diffs,
         )}
       </section>
 
-      <section className="card">
-        <h2>Goal</h2>
-        <GoalLine sessionId={sessionId} goal={controls.goal} />
-      </section>
+      {!archived && (
+        <section className="card">
+          <h2>Goal</h2>
+          <GoalLine sessionId={sessionId} goal={controls.goal} />
+        </section>
+      )}
 
-      <section className="card background-card">
-        <h2>Background</h2>
-        <Background sessionId={sessionId} />
-      </section>
+      {!archived && (
+        <section className="card background-card">
+          <h2>Background</h2>
+          <Background sessionId={sessionId} />
+        </section>
+      )}
 
       {servers.length > 0 && (
         <section className="card">

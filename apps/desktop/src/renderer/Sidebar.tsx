@@ -2,13 +2,17 @@
 // Search at the top; every folder's sessions, the most recently active
 // first; a mark on a session that is working or waiting for you; and a "…"
 // menu on each (also on a right-click) to open it beside another, rename,
-// fork or delete it. Option-click opens a session in split view.
+// fork, archive or delete it. Option-click opens a session in split view.
+// "Archived" shows the sessions put away, to read, unarchive or delete.
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call } from './bridge';
-import { GearIcon, PlusIcon, SearchIcon } from './Icons';
+import { ArchiveIcon, GearIcon, PlusIcon, SearchIcon } from './Icons';
 import { type Entry, MenuButton, MenuList } from './Menu';
-import { byFolder, folderName, type ListedSession, type SessionsState, statusLabel, title } from './sessions';
+import { byFolder, folderName, type ListedSession, listedPage, type SessionsState, statusLabel, title } from './sessions';
+
+/** How many archived sessions the list asks for: the most recent ones. */
+const ARCHIVED_SHOWN = 100;
 
 interface Props {
   sessions: SessionsState;
@@ -21,6 +25,10 @@ interface Props {
   onOpen(id: string, beside: boolean): void;
   /** Open a session the server just made (a fork). */
   onOpenSession(session: Session): void;
+  /** Open an archived session, to read. */
+  onOpenArchived(id: string): void;
+  /** Goes up when a session is archived, unarchived or deleted. */
+  archiveTick: number;
   onNew(): void;
   onMore(): void;
   onSettings(): void;
@@ -30,7 +38,7 @@ interface Props {
   hidden: boolean;
 }
 
-export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onNew, onMore, onSettings, connectedTo, hidden }: Props) {
+export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpenSession, onOpenArchived, archiveTick, onNew, onMore, onSettings, connectedTo, hidden }: Props) {
   const [query, setQuery] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +62,34 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
     };
   }, [menu]);
 
+  // The Archived list, asked for while it shows and again when it changes.
+  const [archivedShown, setArchivedShown] = useState(false);
+  const [archived, setArchived] = useState<ListedSession[] | null>(null);
+  useEffect(() => {
+    if (!archivedShown) return;
+    let current = true;
+    call('session/list', { archived: true, limit: ARCHIVED_SHOWN, sortKey: 'updated_at' }).then(
+      (page) => current && setArchived(listedPage(page)),
+      (e: Error) => current && setError(e.message),
+    );
+    return () => {
+      current = false;
+    };
+  }, [archivedShown, archiveTick]);
+
   const wanted = query?.trim().toLowerCase() ?? '';
+  const failed = (e: Error) => setError(e.message);
+  const archivedEntries = (session: ListedSession): Entry[] => [
+    { type: 'item', id: 'open', label: 'Open', onPick: () => onOpenArchived(session.id) },
+    {
+      type: 'item',
+      id: 'unarchive',
+      label: 'Unarchive',
+      onPick: () => void call('session/unarchive', { sessionId: session.id }).catch(failed),
+    },
+    { type: 'separator' },
+    { type: 'item', id: 'delete', label: 'Delete', danger: true, onPick: () => void window.koda.deleteSession(session.id) },
+  ];
   const groups = byFolder(sessions)
     .map((group) => ({
       ...group,
@@ -84,6 +119,12 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
         ),
     },
     { type: 'separator' },
+    {
+      type: 'item',
+      id: 'archive',
+      label: 'Archive',
+      onPick: () => void call('session/archive', { sessionId: session.id }).catch(failed),
+    },
     { type: 'item', id: 'delete', label: 'Delete', danger: true, onPick: () => void window.koda.deleteSession(session.id) },
   ];
 
@@ -111,8 +152,40 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
             onBlur={() => !query && setQuery(null)}
           />
         )}
+        <button className="side-action" aria-pressed={archivedShown} onClick={() => setArchivedShown((shown) => !shown)}>
+          <ArchiveIcon />
+          Archived
+        </button>
       </div>
-      <div className="groups">
+      {archivedShown && (
+        <div className="groups" data-testid="archived-list">
+          {error && <p className="problem empty">{error}</p>}
+          <section className="group">
+            <h2>Archived</h2>
+            {archived && archived.length === 0 && <p className="empty">No archived sessions.</p>}
+            <ul>
+              {(archived ?? [])
+                .filter((s) => !wanted || title(s).toLowerCase().includes(wanted))
+                .map((session) => (
+                  <li key={session.id} className="session-row">
+                    <button
+                      className={session.id === selectedId ? 'session selected' : 'session'}
+                      title={session.cwd ?? undefined}
+                      onClick={() => onOpenArchived(session.id)}
+                    >
+                      <span className="session-title">{title(session)}</span>
+                      <span className="session-folder">{folderName(session.cwd)}</span>
+                    </button>
+                    <MenuButton label="Session actions" entries={archivedEntries(session)} className="row-menu" right>
+                      <span aria-hidden>⋯</span>
+                    </MenuButton>
+                  </li>
+                ))}
+            </ul>
+          </section>
+        </div>
+      )}
+      <div className="groups" hidden={archivedShown}>
         {sessions.loaded && groups.length === 0 && <p className="empty">{wanted ? 'No session matches.' : 'No sessions yet.'}</p>}
         {error && <p className="problem empty">{error}</p>}
         {groups.map((group) => (

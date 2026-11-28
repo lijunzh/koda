@@ -43,7 +43,7 @@ reads your API keys or config: set those with `koda` (`/key`, `/provider`).
   list stays current when the TUI or another window starts, renames or
   deletes a session. **Search** narrows it by name. Hover a session for its
   **…** menu (or right-click it): open it, open it in split view, rename,
-  fork or delete it.
+  fork, [archive](#archiving-a-session) or delete it.
 - **New session** (Cmd+N) opens an empty session with the prompt box. Under
   the box, pick the folder Koda works in (one you've used before, or
   **Open folder…**), the model and the mode. The session starts with your
@@ -132,6 +132,24 @@ pane you're not working in steps back a little. Clicking a session in the
 list opens it in the pane you last used; a session that's already open goes
 to its pane. ✕, or Cmd+Ctrl+W, takes a session out of split view. Up to four
 sessions fit side by side.
+
+## Archiving a session
+
+**Archive**, in a session's **…** menu or the menu beside its title, puts a
+session away without deleting it. It leaves the session list, here and in
+the TUI, and its pane closes. Archiving doesn't wait: a turn running in the
+session stops, saved as interrupted. The sessions of its sub-agents go with
+it.
+
+**Archived**, under Search, shows the sessions put away, the most recent
+hundred. Click one to read it: its conversation and changes show, with
+**Unarchive** where the prompt box would be. **Unarchive** (there, in the
+session's menu, or in its **…** menu in the Archived list) brings it back
+to the session list, ready to go on. Click **Archived** again to return to
+the session list.
+
+`koda archive` and `koda unarchive` do the same from a terminal
+([Sessions](./sessions.md#archiving-a-session)).
 
 ## Settings
 

@@ -21,6 +21,8 @@ interface Props {
   initial?: Session;
   /** A new session's first prompt, sent once the pane follows the session. */
   firstPrompt?: string;
+  /** An archived session: read, not opened, until it is unarchived. */
+  archived?: boolean;
   /** Hear the server's events; returns the way to stop. */
   subscribe(listener: Listener): () => void;
   listed?: ListedSession;
@@ -37,7 +39,7 @@ interface Props {
   onClose?(): void;
 }
 
-export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, onAnswer, view, onView, planShown, detailsShown, onDetails, onOpen, onClose }: Props) {
+export function Pane({ id, initial, firstPrompt, archived, subscribe, listed, requests, onAnswer, view, onView, planShown, detailsShown, onDetails, onOpen, onClose }: Props) {
   const [selected, setSelected] = useState<Selected>({ id });
   const [transcript, setTranscript] = useState<TranscriptState | null>(null);
   const [controls, setControls] = useState<ControlsState | null>(null);
@@ -69,9 +71,11 @@ export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, on
       if (!open) return;
       setSelected({ id, session });
       setControls(controlsFor(id, session.settings));
-      void call('session/goal/get', { sessionId: id }).then((answer) => {
-        if (open && answer.goal) setControls((c) => (c ? { ...c, goal: answer.goal ?? null } : c));
-      }, () => {});
+      if (!archived) {
+        void call('session/goal/get', { sessionId: id }).then((answer) => {
+          if (open && answer.goal) setControls((c) => (c ? { ...c, goal: answer.goal ?? null } : c));
+        }, () => {});
+      }
       // The snapshot, then what came while it was on its way: the server
       // answers at one point in the session's stream, so nothing repeats.
       setTranscript(withEvents(fromSession(session), early.current));
@@ -83,6 +87,17 @@ export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, on
         );
       }
     };
+    if (archived) {
+      // The server doesn't open an archived session (Codex's rule); it can
+      // still be read.
+      call('session/read', { sessionId: id, includeTurns: true }).then(
+        (answer) => opened(answer.session),
+        (error: Error) => open && setSelected({ id, error: error.message }),
+      );
+      return () => {
+        open = false;
+      };
+    }
     if (initial) opened(initial);
     else {
       call('session/resume', { sessionId: id }).then(
@@ -101,6 +116,7 @@ export function Pane({ id, initial, firstPrompt, subscribe, listed, requests, on
   return (
     <SessionView
       selected={selected}
+      archived={archived}
       listed={listed}
       transcript={transcript}
       view={view}

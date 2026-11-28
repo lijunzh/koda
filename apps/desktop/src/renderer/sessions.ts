@@ -1,8 +1,10 @@
 // The session list's state, as pure functions of the server's answers and
 // notifications. The server sends every connection the sessions others start,
 // rename, delete and run (`session/started`, `session/name/updated`,
-// `session/deleted`, `session/status/changed`), so the list stays current
-// without opening any session.
+// `session/deleted`, `session/archived`, `session/status/changed`), so the
+// list stays current without opening any session. An archived session leaves
+// the list, as Claude Code's desktop app puts it away; the Archived list is
+// asked for on its own (`session/list` with `archived`).
 import type { Session, SessionListResponse, SessionStatus } from '../protocol/types.gen';
 import type { RpcMessage } from './bridge';
 
@@ -72,6 +74,7 @@ export function withMessages(state: SessionsState, batch: readonly RpcMessage[],
         break;
       }
       case 'session/deleted':
+      case 'session/archived':
         if ((byId ?? state.byId).has(params?.sessionId as string)) edit().delete(params?.sessionId as string);
         break;
       case 'turn/started':
@@ -92,6 +95,19 @@ export function withMessages(state: SessionsState, batch: readonly RpcMessage[],
     }
   }
   return byId ? { ...state, byId } : state;
+}
+
+/** With `session` in the list: one brought back from the archive. */
+export function withSession(state: SessionsState, session: Session): SessionsState {
+  if (!listed(session)) return state;
+  const byId = new Map(state.byId);
+  byId.set(session.id, entry(session, byId.get(session.id)));
+  return { ...state, byId };
+}
+
+/** The sessions of a `session/list` page that a list shows, in its order. */
+export function listedPage(page: SessionListResponse): ListedSession[] {
+  return page.data.filter(listed).map((session) => entry(session));
 }
 
 export interface FolderGroup {

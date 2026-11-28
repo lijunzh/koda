@@ -1,7 +1,7 @@
 // The session list's state, from the server's answers and notifications.
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../src/protocol/types.gen';
-import { byFolder, EMPTY, folderName, listed, statusLabel, title, withMessages, withPage } from '../src/renderer/sessions';
+import { byFolder, EMPTY, folderName, listed, listedPage, statusLabel, title, withMessages, withPage, withSession } from '../src/renderer/sessions';
 
 function session(id: string, extra: Partial<Session> = {}): Session {
   return { id, createdAt: 1, updatedAt: 1, ephemeral: false, preview: '', turns: [], ...extra } as Session;
@@ -74,6 +74,23 @@ describe('session list', () => {
     expect(title(other.byId.get('b')!)).toBe('Fix the parser');
     state = withMessages(state, [note('session/name/updated', { sessionId: 'a', sessionName: 'Parser fix' })]);
     expect(title(state.byId.get('a')!)).toBe('Parser fix');
+  });
+
+  it('puts an archived session away, and lists one brought back', () => {
+    let state = withPage(EMPTY, { data: [session('a', { cwd: '/a' }), session('b', { cwd: '/b' })] }, true);
+    state = withMessages(state, [note('session/archived', { sessionId: 'a' })]);
+    expect([...state.byId.keys()]).toEqual(['b']);
+    // `session/unarchived` names the session only: the app reads it, then lists it.
+    expect(withMessages(state, [note('session/unarchived', { sessionId: 'a' })])).toBe(state);
+    state = withSession(state, session('a', { cwd: '/a', name: 'Back again' }));
+    expect(title(state.byId.get('a')!)).toBe('Back again');
+    // A sub-agent's session comes back with its parent, and isn't listed.
+    expect(withSession(state, session('child', { parentSessionId: 'a' }))).toBe(state);
+  });
+
+  it('shows the Archived list what the session list would show', () => {
+    const page = { data: [session('a', { name: 'Kept' }), session('x', { source: 'exec' as const }), session('b')] };
+    expect(listedPage(page).map((s) => s.id)).toEqual(['a', 'b']);
   });
 
   it('leaves the state alone for other messages', () => {
