@@ -828,6 +828,7 @@ fn is_broadcast(line: &Value) -> bool {
         Some(
             "session/started"
                 | "session/name/updated"
+                | "session/confidential/updated"
                 | "session/deleted"
                 | "session/archived"
                 | "session/unarchived"
@@ -1709,6 +1710,46 @@ async fn every_client_hears_a_rename_and_a_delete() {
         .unwrap();
     let deleted = watcher.until_method("session/deleted").await;
     assert_eq!(session_of(deleted.last().unwrap()), Some(session.as_str()));
+    koda.stop().await;
+}
+
+/// A client that lists sessions hears of a session another client marks
+/// confidential, one it never opened, and of the mark coming off after the
+/// session was archived, which closes it in the server: the lock a list
+/// shows follows the session wherever it is.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_client_hears_a_session_marked_confidential() {
+    let server = model(vec![]).await;
+    let koda = Server::start(config(&server), Duration::from_secs(60)).await;
+    let mut owner = Client::ready(&koda).await;
+    let mut watcher = Client::ready(&koda).await;
+    let session = owner.start_session().await;
+    let set = |confidential: bool| json!({"sessionId": session, "confidential": confidential});
+
+    let answer = watcher.request("session/confidential/set", set(true)).await;
+    assert_eq!(answer.unwrap(), json!({}));
+    for client in [&mut owner, &mut watcher] {
+        let heard = client.until_method("session/confidential/updated").await;
+        assert_eq!(heard.last().unwrap()["params"], set(true));
+    }
+    let listed = watcher.request("session/list", json!({})).await.unwrap();
+    assert_eq!(listed["data"][0]["confidential"], json!(true), "{listed}");
+
+    owner
+        .request("session/archive", json!({"sessionId": session}))
+        .await
+        .unwrap();
+    for client in [&mut owner, &mut watcher] {
+        client.until_method("session/archived").await;
+    }
+    owner
+        .request("session/confidential/set", set(false))
+        .await
+        .unwrap();
+    for client in [&mut owner, &mut watcher] {
+        let heard = client.until_method("session/confidential/updated").await;
+        assert_eq!(heard.last().unwrap()["params"], set(false));
+    }
     koda.stop().await;
 }
 

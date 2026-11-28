@@ -183,6 +183,172 @@ async fn typing_in_the_picker_finds_a_session_by_what_was_said() {
     .await;
 }
 
+/// `/confidential` marks the session and `/confidential off` unmarks it,
+/// each saying what it did in one line, and `/status` shows the mark. The
+/// host's own notice of the mark, which follows the answer, isn't said as
+/// well.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn confidential_marks_and_unmarks_the_session() {
+    use koda_state::session_store::SessionStore;
+    let tui = TestTui::start(vec![text("All done.")]).await;
+    tui.run(async |driver: Driver| {
+        let marked = async || {
+            let id = driver.sessions().await[0].clone();
+            let stored = driver.db().await.get_session(&id).await.unwrap().unwrap();
+            stored.confidential
+        };
+        assert!(!marked().await);
+        driver.submit("/confidential").await;
+        driver
+            .wait_for_screen("Marked confidential: only a local model can read this session")
+            .await;
+        assert!(marked().await);
+        // A turn's messages come after the host's notice of the mark: once
+        // it has finished, the TUI has read the notice.
+        driver.submit_and_finish("carry on", "All done.").await;
+        let screen = driver.screen();
+        assert!(
+            !screen.contains("This session is now confidential"),
+            "said twice:\n{screen}"
+        );
+        driver.submit("/status").await;
+        driver.wait_for_screen("Instructions").await;
+        let screen = driver.screen();
+        assert!(
+            screen.contains("Confidential yes: only a local model can read it"),
+            "{screen}"
+        );
+
+        driver.submit("/confidential off").await;
+        driver.wait_for_screen("No longer confidential").await;
+        assert!(!marked().await);
+        driver.submit("/confidential maybe").await;
+        driver.wait_for_screen("Usage: /confidential marks").await;
+        assert!(!marked().await);
+        driver
+    })
+    .await;
+}
+
+/// `/confidential` in a session that was forked marks the fork too, since
+/// it holds a copy of the conversation, and says so; `/confidential off`
+/// unmarks the session alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn confidential_marks_the_sessions_forks_and_says_so() {
+    use koda_state::session_store::SessionStore;
+    let tui = TestTui::start(vec![text("All done.")]).await;
+    tui.run(async |driver: Driver| {
+        driver
+            .submit_and_finish("alpha session words", "All done.")
+            .await;
+        let alpha = driver.sessions().await[0].clone();
+        driver.submit("/fork").await;
+        driver.wait_for_screen("Forked into").await;
+        let sessions = driver.sessions().await;
+        let fork = sessions.iter().find(|id| **id != alpha).unwrap().clone();
+        let marked = async |id: &str| {
+            let stored = driver.db().await.get_session(id).await.unwrap().unwrap();
+            stored.confidential
+        };
+
+        // Back in the session the fork was made from.
+        driver.submit(&format!("/resume {alpha}")).await;
+        driver
+            .wait_for_screen(&format!("Resumed session {}", &alpha[..8]))
+            .await;
+        driver.submit("/confidential").await;
+        driver
+            .wait_for_screen("Marked confidential, with its fork: only a local model can read")
+            .await;
+        assert!(marked(&alpha).await && marked(&fork).await);
+
+        driver.submit("/confidential off").await;
+        driver.wait_for_screen("No longer confidential").await;
+        assert!(!marked(&alpha).await && marked(&fork).await);
+        driver
+    })
+    .await;
+}
+
+/// The `/resume` picker shows a lock on a confidential session's row and
+/// on no other. A session whose model is then given that session's text by
+/// `SearchSessions` becomes confidential itself: the TUI says so in one
+/// line, and the tool's result told the model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn the_picker_marks_a_confidential_session_and_reading_one_is_said() {
+    use crate::widgets::session_menu::CONFIDENTIAL_MARK;
+    use koda_state::session_store::SessionStore;
+    let replies = vec![
+        text("All done."),
+        text("The zebra crossing is the safe place."),
+        tool_calls(&[("call_1", "SearchSessions", json!({"query": "zebra"}))]),
+        text("Found it."),
+    ];
+    let (driver, alpha) = one_turn(TestTui::start(replies).await, "alpha session words").await;
+    let driver = TestTui::start_again(driver, None)
+        .await
+        .run(async |driver: Driver| {
+            driver
+                .submit_and_finish("bravo session words", "zebra crossing")
+                .await;
+            driver.submit("/confidential").await;
+            driver.wait_for_screen("Marked confidential").await;
+            driver
+        })
+        .await;
+    let bravo = driver.sessions().await[0].clone();
+    assert_ne!(alpha, bravo);
+
+    let tui = TestTui::start_again(driver, None).await;
+    tui.run(async |driver: Driver| {
+        driver.submit("/resume").await;
+        driver.wait_for_screen("Sessions").await;
+        let listed = picker_lines(&driver.screen(), "Sessions");
+        let row = |id: &str| {
+            let row = listed.lines().find(|line| line.contains(&id[..8]));
+            row.unwrap_or_else(|| panic!("{id} isn't listed:\n{listed}"))
+        };
+        assert!(
+            row(&bravo).contains(&format!("{CONFIDENTIAL_MARK} bravo session words")),
+            "{listed}"
+        );
+        assert!(!row(&alpha).contains(CONFIDENTIAL_MARK), "{listed}");
+        assert_eq!(listed.matches(CONFIDENTIAL_MARK).count(), 1, "{listed}");
+        driver.key(esc());
+        driver.wait_for_screen_without("Sessions").await;
+
+        // This session runs on a local model, so its search returns the
+        // confidential session's text.
+        driver.submit("charlie looks for the crossing").await;
+        driver
+            .wait_for_screen("This session is now confidential")
+            .await;
+        driver.wait_for_screen("Found it.").await;
+        driver.wait_for_screen_without(BUSY_PROMPT).await;
+        let screen = driver.screen();
+        assert_eq!(
+            screen.matches("This session is now confidential").count(),
+            1,
+            "{screen}"
+        );
+        let sent = driver.model_call(4).await;
+        assert!(
+            sent.contains("The zebra crossing is the safe place.")
+                && sent.contains("This session is now confidential too"),
+            "{sent}"
+        );
+        let charlie = driver.sessions().await[0].clone();
+        assert!(charlie != bravo && charlie != alpha);
+        let stored = driver.db().await.get_session(&charlie).await;
+        assert!(stored.unwrap().unwrap().confidential);
+        driver
+    })
+    .await;
+}
+
 /// `/init` asks the model to write AGENTS.md, as Codex's `/init` does, and
 /// leaves an existing instruction file alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -208,6 +208,35 @@ impl ProviderType {
         self.meta().env_key
     }
 
+    /// Whether this kind of provider is a server the user runs (LM Studio,
+    /// Ollama, vLLM, llama.cpp), not a company's API. The kind alone: where
+    /// a session's endpoint points is [`Self::runs_locally`]'s to say.
+    pub fn is_local(&self) -> bool {
+        match self {
+            Self::LMStudio | Self::Ollama | Self::Vllm | Self::LlamaCpp => true,
+            Self::OpenAI
+            | Self::Anthropic
+            | Self::Gemini
+            | Self::Groq
+            | Self::Grok
+            | Self::DeepSeek
+            | Self::Mistral
+            | Self::MiniMax
+            | Self::OpenRouter
+            | Self::Together
+            | Self::Fireworks => false,
+        }
+    }
+
+    /// Whether a model of this provider at `base_url` runs on the user's
+    /// own machine or network: a local kind ([`Self::is_local`]) whose
+    /// endpoint is a local one ([`is_local_endpoint`]). Without a
+    /// `base_url`, the kind's own endpoint. A confidential session's text
+    /// may be given to such a model and to no other.
+    pub fn runs_locally(&self, base_url: Option<&str>) -> bool {
+        self.is_local() && is_local_endpoint(base_url.unwrap_or(self.default_base_url()))
+    }
+
     /// Detect provider type from a base URL or explicit name.
     pub fn from_url_or_name(url: &str, name: Option<&str>) -> Self {
         if let Some(n) = name {
@@ -309,8 +338,181 @@ impl ProviderType {
     }
 }
 
+/// Host names that stay on the user's own network: mDNS (`.local`), the
+/// loopback names, the home-network names (`.lan`, RFC 8375's
+/// `.home.arpa`) and Tailscale's (`.ts.net`).
+pub const LOCAL_NAME_ENDINGS: [&str; 5] = [".local", ".localhost", ".lan", ".home.arpa", ".ts.net"];
+
+/// Whether `base_url` points at the user's own machine or network, told
+/// from its host alone, with no lookup:
+///
+/// - a loopback address, or `localhost`;
+/// - a private (10/8, 172.16/12, 192.168/16), link-local (169.254/16,
+///   `fe80::/10`), unique-local (`fc00::/7`) or carrier-grade-NAT
+///   (100.64/10, which Tailscale uses) address;
+/// - a host name of one label (`studio`);
+/// - a name ending in one of [`LOCAL_NAME_ENDINGS`].
+///
+/// Anything else is not, and neither is a URL that doesn't parse, has no
+/// host or isn't `http` or `https`. A name can still resolve anywhere: this says what the user wrote,
+/// which is what they chose.
+pub fn is_local_endpoint(base_url: &str) -> bool {
+    use reqwest::Url;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    fn v4(ip: Ipv4Addr) -> bool {
+        let [a, b, ..] = ip.octets();
+        ip.is_loopback() || ip.is_private() || ip.is_link_local() || (a == 100 && b & 0xc0 == 64)
+    }
+    fn v6(ip: Ipv6Addr) -> bool {
+        if let Some(mapped) = ip.to_ipv4_mapped() {
+            return v4(mapped);
+        }
+        let first = ip.segments()[0];
+        ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+    }
+    let Ok(url) = Url::parse(base_url.trim()) else {
+        return false;
+    };
+    // For `http` and `https` the parser reads an address however it is
+    // written (`0x7f.1`, `2130706433`), so a number can't pass for a
+    // one-label name; another scheme's host is left as written.
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let address = host.trim_start_matches('[').trim_end_matches(']');
+    match address.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => v4(ip),
+        Ok(IpAddr::V6(ip)) => v6(ip),
+        Err(_) => {
+            !host.is_empty()
+                && (!host.contains('.')
+                    || LOCAL_NAME_ENDINGS
+                        .iter()
+                        .any(|ending| host.ends_with(ending)))
+        }
+    }
+}
+
+/// Whether two endpoints are the same address, a trailing `/` aside.
+pub fn same_endpoint(a: &str, b: &str) -> bool {
+    a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
+}
+
 impl std::fmt::Display for ProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.meta().name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider's kind is local exactly when its own endpoint is on
+    /// this machine: the two are written apart, and a new provider must
+    /// agree. Without an endpoint of its own a session runs where its kind
+    /// does.
+    #[test]
+    fn a_provider_is_local_when_its_default_endpoint_is_this_machine() {
+        for provider in ProviderType::OFFERED {
+            let on_this_machine = provider.default_base_url().starts_with("http://localhost:");
+            assert_eq!(provider.is_local(), on_this_machine, "{provider}");
+            assert_eq!(provider.runs_locally(None), on_this_machine, "{provider}");
+        }
+    }
+
+    /// An endpoint is local by its host as written: this machine, an
+    /// address of a private network, a one-label name or one of the
+    /// home-network endings. Everything else is remote, including what
+    /// only looks local.
+    #[test]
+    fn an_endpoint_is_local_by_its_host() {
+        for (url, local) in [
+            ("http://localhost:1234/v1", true),
+            ("http://LOCALHOST:1234/v1", true),
+            ("http://127.0.0.1:8080/v1", true),
+            ("http://127.9.9.9", true),
+            ("http://[::1]:11434", true),
+            ("http://10.0.0.5:1234/v1", true),
+            ("http://172.16.0.1/v1", true),
+            ("http://172.31.255.255/v1", true),
+            ("http://192.168.10.50:1234/v1", true),
+            ("http://169.254.7.7/v1", true),
+            ("http://100.64.0.1:1234/v1", true),
+            ("http://100.127.255.254/v1", true),
+            ("http://[fd12:3456::1]:1234/v1", true),
+            ("http://[fe80::1]/v1", true),
+            ("http://[::ffff:192.168.1.2]/v1", true),
+            ("http://studio:1234/v1", true),
+            ("http://studio.:1234/v1", true),
+            ("http://studio.local:1234/v1", true),
+            ("https://api.localhost/v1", true),
+            ("http://nas.lan/v1", true),
+            ("http://nas.home.arpa/v1", true),
+            ("https://studio.tail1234.ts.net/v1", true),
+            ("  http://localhost:1234/v1  ", true),
+            // An address outside those ranges, however it is written.
+            ("http://172.32.0.1/v1", false),
+            ("http://172.15.0.1/v1", false),
+            ("http://100.63.255.255/v1", false),
+            ("http://100.128.0.1/v1", false),
+            ("http://192.169.0.1/v1", false),
+            ("http://8.8.8.8/v1", false),
+            ("http://0.0.0.0:1234/v1", false),
+            ("http://134744072/v1", false),
+            ("http://0x8.0x8.0x8.0x8/v1", false),
+            ("http://[2001:db8::1]/v1", false),
+            ("http://[::ffff:8.8.8.8]/v1", false),
+            // A name that only looks local.
+            ("https://api.openai.com/v1", false),
+            ("https://localhost.example.com/v1", false),
+            ("https://example.local.evil.com/v1", false),
+            ("https://example.notlan/v1", false),
+            ("https://my.notts.net.example/v1", false),
+            ("https://examplets.net/v1", false),
+            ("https://example.com/localhost", false),
+            ("http://localhost@example.com/v1", false),
+            ("http://example.com#.local", false),
+            ("http://example.com?x=.lan", false),
+            // Not a URL with a host.
+            ("localhost:1234/v1", false),
+            ("studio.local/v1", false),
+            ("", false),
+            ("http://", false),
+            ("file:///tmp/sock", false),
+            // Another scheme's host isn't read as an address, so it isn't read.
+            ("grpc://134744072/v1", false),
+            ("grpc://studio/v1", false),
+        ] {
+            assert_eq!(is_local_endpoint(url), local, "{url:?}");
+        }
+        // The written decimal and hex forms of a loopback address are one.
+        assert!(is_local_endpoint("http://2130706433/v1"));
+        assert!(is_local_endpoint("http://0x7f.1/v1"));
+    }
+
+    /// A local kind runs locally only at a local endpoint; a remote kind,
+    /// nowhere.
+    #[test]
+    fn a_local_kind_at_a_remote_endpoint_is_remote() {
+        for (provider, url, local) in [
+            (ProviderType::LMStudio, "http://192.168.10.50:1234/v1", true),
+            (ProviderType::Ollama, "https://ollama.example.com", false),
+            (ProviderType::LlamaCpp, "not a url", false),
+            (ProviderType::OpenAI, "http://localhost:1234/v1", false),
+            (ProviderType::Anthropic, "http://127.0.0.1:9", false),
+        ] {
+            assert_eq!(provider.runs_locally(Some(url)), local, "{provider} {url}");
+        }
+    }
+
+    #[test]
+    fn endpoints_are_the_same_but_for_a_trailing_slash() {
+        assert!(same_endpoint("http://a/v1/", " http://a/v1"));
+        assert!(!same_endpoint("http://a/v1", "http://b/v1"));
     }
 }

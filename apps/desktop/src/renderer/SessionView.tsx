@@ -10,13 +10,13 @@ import { type Entry, MenuButton } from './Menu';
 import { PlanPanel } from './Plan';
 import { Requests } from './RequestCards';
 import type { Pending } from './requests';
-import { ListIcon, PanelIcon } from './Icons';
+import { ConfidentialMark, ListIcon, PanelIcon } from './Icons';
 import { ReviewPanel } from './ReviewPanel';
 import { SessionControls } from './SessionControls';
 import { SessionDetails } from './SessionDetails';
 import { Background } from './SessionExtras';
 import { type SideState, SidePanel, withPane } from './SidePanel';
-import { type ListedSession, statusLabel, title } from './sessions';
+import { CONFIDENTIAL_TIP, type ListedSession, statusLabel, title } from './sessions';
 import { runningTurn, type TranscriptState, type TurnView, type View, VIEWS } from './transcript';
 
 /** Claude Code's names for its desktop views. */
@@ -31,6 +31,8 @@ interface Props {
   /** The item a search result opened the session at. */
   at?: Place;
   listed?: ListedSession;
+  /** Whether the session is marked confidential. */
+  confidential: boolean;
   transcript: TranscriptState | null;
   view: View;
   onView(view: View): void;
@@ -60,6 +62,7 @@ export function SessionView({
   archived,
   at,
   listed,
+  confidential,
   transcript,
   view,
   onView,
@@ -126,6 +129,15 @@ export function SessionView({
       description: 'A copy to go on in, leaving this one as it is',
       onPick: () => void call('session/fork', { sessionId: selected.id }).then((answer) => onOpen(answer.session), failed),
     },
+    {
+      type: 'item',
+      id: 'confidential',
+      label: confidential ? 'Unmark confidential' : 'Mark confidential',
+      description: confidential
+        ? "Let other sessions' models search and read it again"
+        : 'Only a local model can read it from another session',
+      onPick: () => void call('session/confidential/set', { sessionId: selected.id, confidential: !confidential }).catch(failed),
+    },
     { type: 'separator' },
     {
       type: 'submenu',
@@ -181,6 +193,7 @@ export function SessionView({
                 }}
               />
             )}
+            {confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
             <MenuButton label="Session menu" entries={menu} className="icon-button">
               <span aria-hidden>⌄</span>
             </MenuButton>

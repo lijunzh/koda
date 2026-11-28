@@ -422,6 +422,15 @@ textarea {
   color: var(--muted);
   white-space: nowrap;
 }
+/* The lock on a confidential session, in a list and beside its title */
+.lock {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+.title-row .lock {
+  margin: 0 4px;
+}
 .badge.working {
   color: var(--accent);
 }

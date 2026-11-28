@@ -131,15 +131,16 @@ impl TuiContext {
     /// Claude Code's show it.
     pub(crate) async fn show_status(&mut self) {
         use koda_client::protocol::session::SessionReadParams;
-        let name = self
+        let read = self
             .client
             .request::<methods::SessionRead>(SessionReadParams {
                 session_id: self.session.id.clone(),
                 include_turns: false,
             })
             .await
-            .ok()
-            .and_then(|read| read.session.name);
+            .ok();
+        let confidential = read.as_ref().is_some_and(|read| read.session.confidential);
+        let name = read.and_then(|read| read.session.name);
         let settings = &self.settings;
         let model = match &settings.alias {
             Some(alias) => format!("{alias} ({})", settings.model),
@@ -182,6 +183,10 @@ impl TuiContext {
         if let Some(effort) = &settings.effort {
             rows.insert(3, ("Effort", effort.clone()));
         }
+        if confidential {
+            let said = "yes: only a local model can read it from another session";
+            rows.insert(2, ("Confidential", said.to_string()));
+        }
         tui_output::emit_line(&mut self.scroll_buffer, Line::default());
         for (label, value) in rows {
             tui_output::emit_line(
@@ -215,6 +220,59 @@ impl TuiContext {
             .await
         {
             Ok(_) => tui_output::ok_msg(&mut self.scroll_buffer, format!("Renamed to \"{name}\"")),
+            Err(e) => tui_output::err_msg(&mut self.scroll_buffer, format!("{e}")),
+        }
+    }
+
+    /// `/confidential` marks the session confidential and `/confidential
+    /// off` unmarks it (`session/confidential/set`): the text of a marked
+    /// session is given to no model on a remote provider, only to a local
+    /// one, when another session's model searches or reads the user's
+    /// sessions. Koda's own; the nearest in a peer is Codex's
+    /// `thread/memoryMode/set`, which its TUI has no command for.
+    pub(crate) async fn mark_confidential(&mut self, arg: &str) {
+        use koda_client::protocol::session::SessionConfidentialSetParams;
+        let confidential = match arg.trim() {
+            "" | "on" => true,
+            "off" => false,
+            _ => {
+                tui_output::dim_msg(
+                    &mut self.scroll_buffer,
+                    "Usage: /confidential marks this session, /confidential off unmarks it.".into(),
+                );
+                return;
+            }
+        };
+        let session_id = self.session.id.clone();
+        let set = self
+            .client
+            .request::<methods::SessionConfidentialSet>(SessionConfidentialSetParams {
+                session_id: session_id.clone(),
+                confidential,
+            })
+            .await;
+        match set {
+            Ok(set) => {
+                // The host's notice of it is this, and isn't said again.
+                self.confidential = Some((session_id, confidential));
+                let said = if confidential {
+                    // A fork holds a copy of the conversation.
+                    let forks = match set.forks_marked {
+                        0 => String::new(),
+                        1 => ", with its fork".to_string(),
+                        n => format!(", with its {n} forks"),
+                    };
+                    format!(
+                        "Marked confidential{forks}: only a local model can read this session \
+                         from another session. /confidential off unmarks it."
+                    )
+                } else {
+                    "No longer confidential: any session's model can search and read this one. \
+                     Its forks keep their own marks."
+                        .to_string()
+                };
+                tui_output::ok_msg(&mut self.scroll_buffer, said);
+            }
             Err(e) => tui_output::err_msg(&mut self.scroll_buffer, format!("{e}")),
         }
     }

@@ -59,6 +59,16 @@ describe('relay', () => {
     expect(refusal('session/resume', { sessionId: 's1', baseUrl: 'https://x' })).toMatch(/baseUrl/);
   });
 
+  it('marks a session confidential or unmarks it, naming the session and which, and nothing else', () => {
+    expect(refusal('session/confidential/set', { sessionId: 's', confidential: true })).toBeNull();
+    expect(refusal('session/confidential/set', { sessionId: 's', confidential: false })).toBeNull();
+    expect(refusal('session/confidential/set', { confidential: true })).toMatch(/needs a sessionId/);
+    expect(refusal('session/confidential/set', { sessionId: 7, confidential: true })).toMatch(/needs a sessionId/);
+    expect(refusal('session/confidential/set', { sessionId: 's' })).toMatch(/needs confidential/);
+    expect(refusal('session/confidential/set', { sessionId: 's', confidential: 'no' })).toMatch(/needs confidential/);
+    expect(refusal('session/confidential/set', { sessionId: 's', confidential: true, cwd: '/' })).toMatch(/not cwd/);
+  });
+
   it('searches what was said in sessions, by a term, in the list or the archive', () => {
     expect(refusal('session/search', { searchTerm: 'retry budget' })).toBeNull();
     expect(refusal('session/search', { searchTerm: 'retry', archived: true, limit: 25, sortKey: 'updated_at' })).toBeNull();

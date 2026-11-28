@@ -2101,11 +2101,12 @@ async fn test_open_drops_the_owned_files_table() {
 }
 
 /// The file as Koda 0.7.12 left it: version 0, sessions without the columns
-/// versions 2 and 3 add.
+/// versions 2 to 4 add.
 async fn as_koda_0_7_12_left_it(db: &Database) {
     for sql in [
         "DROP INDEX idx_sessions_root_recent",
         "DROP INDEX idx_sessions_recent",
+        "ALTER TABLE sessions DROP COLUMN confidential",
         "ALTER TABLE sessions DROP COLUMN archived_at",
         "ALTER TABLE sessions DROP COLUMN source",
         "ALTER TABLE sessions DROP COLUMN originator",
@@ -2159,7 +2160,7 @@ async fn an_older_file_is_brought_to_the_current_version() {
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 3);
+    assert_eq!(schema_version(&db).await, 4);
     let parent = db.get_session("parent").await.unwrap().unwrap();
     assert_eq!(parent.preview.as_deref(), Some("fix the test"));
     assert_eq!(parent.source, None, "who started it was never recorded");
@@ -2176,11 +2177,12 @@ async fn an_older_file_is_brought_to_the_current_version() {
     assert_eq!(empty.preview, None);
     assert_eq!(empty.updated_unix, empty.created_unix);
     assert_eq!(empty.archived_unix, None);
+    assert!(!empty.confidential);
 
     // Opening it again changes nothing.
     drop(db);
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 3);
+    assert_eq!(schema_version(&db).await, 4);
 }
 
 /// Two Kodas opening an older file at once take turns: both open, and the
@@ -2193,7 +2195,7 @@ async fn two_processes_can_open_an_older_file_at_once() {
     let path = tmp.path().join("test.db");
     let (a, b) = tokio::join!(Database::open(&path), Database::open(&path));
     let (a, _b) = (a.unwrap(), b.unwrap());
-    assert_eq!(schema_version(&a).await, 3);
+    assert_eq!(schema_version(&a).await, 4);
 }
 
 /// A newer Koda's file opens as it is: this version adds nothing to it and
@@ -2219,6 +2221,7 @@ async fn a_version_2_file_gains_the_archive_column() {
     let (db, tmp) = setup().await;
     let session = db.create_session("default", tmp.path()).await.unwrap();
     for sql in [
+        "ALTER TABLE sessions DROP COLUMN confidential",
         "ALTER TABLE sessions DROP COLUMN archived_at",
         "PRAGMA user_version = 2",
     ] {
@@ -2227,11 +2230,310 @@ async fn a_version_2_file_gains_the_archive_column() {
     drop(db);
 
     let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
-    assert_eq!(schema_version(&db).await, 3);
+    assert_eq!(schema_version(&db).await, 4);
     let listed = db.list_sessions(10, tmp.path()).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].archived_unix, None);
     assert_eq!(db.archive_session(&session).await.unwrap(), [session]);
+}
+
+/// A file from before sessions could be marked confidential (version 3)
+/// gains the column: its sessions are as they were, none confidential, an
+/// archived one still archived, and each can be marked.
+#[tokio::test]
+async fn a_version_3_file_gains_the_confidential_column() {
+    let (db, tmp) = setup().await;
+    let session = db.create_session("default", tmp.path()).await.unwrap();
+    let put_away = db.create_session("default", tmp.path()).await.unwrap();
+    db.set_session_title(&session, "Parser work").await.unwrap();
+    db.archive_session(&put_away).await.unwrap();
+    for sql in [
+        "ALTER TABLE sessions DROP COLUMN confidential",
+        "PRAGMA user_version = 3",
+    ] {
+        sqlx::query(sql).execute(db.pool()).await.unwrap();
+    }
+    drop(db);
+
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 4);
+    let stored = db.get_session(&session).await.unwrap().unwrap();
+    assert_eq!(stored.title.as_deref(), Some("Parser work"));
+    assert!(!stored.confidential);
+    let archived = db.get_session(&put_away).await.unwrap().unwrap();
+    assert!(archived.archived_unix.is_some() && !archived.confidential);
+    assert!(db.confidential_sessions().await.unwrap().is_empty());
+    assert_eq!(
+        db.set_session_confidential(&put_away, true).await.unwrap(),
+        [put_away]
+    );
+
+    // A file whose version was lost has the column already: opening it
+    // adds nothing and keeps the mark.
+    sqlx::query("PRAGMA user_version = 3")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    drop(db);
+    let db = Database::open(&tmp.path().join("test.db")).await.unwrap();
+    assert_eq!(schema_version(&db).await, 4);
+    assert_eq!(db.confidential_sessions().await.unwrap().len(), 1);
+}
+
+/// Marking a session confidential marks the sessions of the sub-agents it
+/// ran, and theirs, and says which changed, the session first; unmarking
+/// takes the mark off them all. One already as asked isn't changed again.
+/// A sub-agent's session made afterwards starts with its parent's mark and
+/// a fork with its source's, while a fork made before keeps its own.
+#[tokio::test]
+async fn a_confidential_mark_covers_the_sub_agents_sessions_and_later_copies() {
+    use crate::session_store::{SessionOrigin, source};
+    let (db, tmp) = setup().await;
+    let parent = db.create_session("default", tmp.path()).await.unwrap();
+    let under = |parent: &str| SessionOrigin {
+        source: Some(source::SUB_AGENT.into()),
+        parent_session_id: Some(parent.to_string()),
+        ..Default::default()
+    };
+    let child = db
+        .create_session_from("explore", tmp.path(), &under(&parent))
+        .await
+        .unwrap();
+    let grandchild = db
+        .create_session_from("explore", tmp.path(), &under(&child))
+        .await
+        .unwrap();
+    let earlier_fork = db
+        .fork_session(&parent, "before", tmp.path(), &SessionOrigin::default())
+        .await
+        .unwrap();
+    let other = db.create_session("default", tmp.path()).await.unwrap();
+    let marked = async |id: &str| db.get_session(id).await.unwrap().unwrap().confidential;
+
+    // The grandchild was marked on its own before.
+    assert_eq!(
+        db.set_session_confidential(&grandchild, true)
+            .await
+            .unwrap(),
+        std::slice::from_ref(&grandchild)
+    );
+    assert_eq!(
+        db.set_session_confidential(&parent, true).await.unwrap(),
+        [parent.clone(), child.clone()]
+    );
+    for id in [&parent, &child, &grandchild] {
+        assert!(marked(id).await, "{id}");
+    }
+    for id in [&earlier_fork, &other] {
+        assert!(!marked(id).await, "{id}");
+    }
+    assert!(
+        db.set_session_confidential(&parent, true)
+            .await
+            .unwrap()
+            .is_empty(),
+        "already marked"
+    );
+
+    let later_child = db
+        .create_session_from("explore", tmp.path(), &under(&parent))
+        .await
+        .unwrap();
+    let later_fork = db
+        .fork_session(&parent, "after", tmp.path(), &SessionOrigin::default())
+        .await
+        .unwrap();
+    let unmarked_child = db
+        .create_session_from("explore", tmp.path(), &under(&other))
+        .await
+        .unwrap();
+    assert!(marked(&later_child).await, "a sub-agent's session follows");
+    assert!(marked(&later_fork).await, "a fork holds the same text");
+    assert!(!marked(&unmarked_child).await);
+
+    assert_eq!(
+        db.set_session_confidential(&parent, false).await.unwrap(),
+        [
+            parent.clone(),
+            child.clone(),
+            later_child.clone(),
+            grandchild.clone()
+        ]
+    );
+    for id in [&parent, &child, &grandchild, &later_child] {
+        assert!(!marked(id).await, "{id}");
+    }
+    assert!(marked(&later_fork).await, "a fork is not a descendant");
+    assert!(
+        db.set_session_confidential("no-such-session", true)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Marking as the user does reaches the sessions forked from the session,
+/// and from those, each with its sub-agents' sessions, and counts the forks
+/// a person can list: not a fork's sub-agent's session, a side
+/// conversation's copy or one that was confidential already. The session's
+/// source, a sibling fork and other sessions are left alone, and unmarking
+/// the session leaves its forks marked.
+#[tokio::test]
+async fn marking_with_forks_reaches_every_copy_of_the_session() {
+    use crate::session_store::{SessionOrigin, source};
+    let (db, tmp) = setup().await;
+    let fork = async |source: &str, origin: SessionOrigin| {
+        db.fork_session(source, "a fork", tmp.path(), &origin)
+            .await
+            .unwrap()
+    };
+    let plain = SessionOrigin::default;
+    let root = db.create_session("default", tmp.path()).await.unwrap();
+    let session = fork(&root, plain()).await;
+    let sibling = fork(&root, plain()).await;
+    let child = db
+        .create_session_from(
+            "explore",
+            tmp.path(),
+            &SessionOrigin {
+                source: Some(source::SUB_AGENT.into()),
+                parent_session_id: Some(session.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let first = fork(&session, plain()).await;
+    let second = fork(&first, plain()).await;
+    let seconds_child = db
+        .create_session_from(
+            "explore",
+            tmp.path(),
+            &SessionOrigin {
+                source: Some(source::SUB_AGENT.into()),
+                parent_session_id: Some(second.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let side = fork(
+        &session,
+        SessionOrigin {
+            ephemeral: true,
+            ..Default::default()
+        },
+    )
+    .await;
+    let already = fork(&session, plain()).await;
+    db.set_session_confidential(&already, true).await.unwrap();
+    let marked = async |id: &str| db.get_session(id).await.unwrap().unwrap().confidential;
+
+    let reached = db.mark_confidential_with_forks(&session).await.unwrap();
+    assert_eq!(reached.sessions[0], session);
+    let mut changed = reached.sessions.clone();
+    changed.sort();
+    let mut expected = vec![
+        session.clone(),
+        child.clone(),
+        first.clone(),
+        second.clone(),
+        seconds_child.clone(),
+        side.clone(),
+    ];
+    expected.sort();
+    assert_eq!(changed, expected);
+    assert_eq!(reached.forks, 2, "the two forks a person lists");
+    for id in [&root, &sibling] {
+        assert!(!marked(id).await, "{id}");
+    }
+    assert!(marked(&already).await);
+
+    // Again: nothing left to mark.
+    let again = db.mark_confidential_with_forks(&session).await.unwrap();
+    assert_eq!(again, Default::default());
+    // Unmarking the session leaves every fork as it is.
+    assert_eq!(
+        db.set_session_confidential(&session, false).await.unwrap(),
+        [session.clone(), child.clone()]
+    );
+    for id in [&first, &second, &seconds_child, &side, &already] {
+        assert!(marked(id).await, "{id}");
+    }
+    let none = db.mark_confidential_with_forks("no-such-session").await;
+    assert_eq!(none.unwrap(), Default::default());
+}
+
+/// The confidential sessions are listed whole, the most recently active
+/// first: of every folder and kind, archived ones too, and no others. The
+/// mark changes nothing else about a session: it is listed and found as
+/// before.
+#[tokio::test]
+async fn confidential_sessions_are_counted_whatever_else_they_are() {
+    use crate::session_store::{SessionListQuery, SessionOrigin, source};
+    let (db, tmp) = setup().await;
+    let elsewhere = tmp.path().join("elsewhere");
+    let plain = db.create_session("default", tmp.path()).await.unwrap();
+    let here = db.create_session("default", tmp.path()).await.unwrap();
+    let there = db.create_session("default", &elsewhere).await.unwrap();
+    let put_away = db.create_session("default", tmp.path()).await.unwrap();
+    let from_exec = db
+        .create_session_from(
+            "default",
+            tmp.path(),
+            &SessionOrigin {
+                source: Some(source::EXEC.into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(db.confidential_sessions().await.unwrap().is_empty());
+
+    for id in [&here, &there, &put_away, &from_exec] {
+        db.set_session_confidential(id, true).await.unwrap();
+    }
+    db.archive_session(&put_away).await.unwrap();
+    // Written in this order, a second apart.
+    for (id, at) in [(&there, 10), (&put_away, 20), (&from_exec, 30), (&here, 40)] {
+        sqlx::query("UPDATE sessions SET last_accessed_at = datetime(1795132800 + ?, 'unixepoch') WHERE id = ?")
+            .bind(at)
+            .bind(id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+    let listed: Vec<String> = db
+        .confidential_sessions()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|stored| {
+            assert!(stored.confidential, "{}", stored.id);
+            stored.id
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [here.clone(), from_exec, put_away.clone(), there.clone()]
+    );
+
+    // The user's own list has it as it has any other.
+    let page = db
+        .list_sessions_page(&SessionListQuery {
+            limit: 50,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let ids: Vec<&str> = page.iter().map(|s| s.id.as_str()).collect();
+    assert!(
+        ids.contains(&here.as_str()) && ids.contains(&plain.as_str()),
+        "{ids:?}"
+    );
+
+    db.set_session_confidential(&here, false).await.unwrap();
+    assert_eq!(db.confidential_sessions().await.unwrap().len(), 3);
 }
 
 /// An archived session is left out of every list unless archived ones are

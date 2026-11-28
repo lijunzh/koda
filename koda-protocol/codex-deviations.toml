@@ -39,6 +39,8 @@
 # Koda's own features.
 "agent/list" = "Koda's sub-agent definitions (built-in, user, project)"
 "session/memory/add" = "Koda's memory notes, written by the user"
+"session/confidential/set" = "Koda's confidential mark: a marked session's text is kept from models on a remote provider (Codex's nearest is thread/memoryMode/set, which is about memory generation)"
+"session/confidential/updated" = "Koda's confidential mark: tells every client a session was marked or unmarked, by the user or because it read a confidential session"
 "session/goal/held" = "Koda's goal: held after turns without progress"
 "session/goal/judged" = "Koda's goal: the judge's verdict on a turn"
 "session/backgroundTerminals/exited" = "Koda tells clients when a background command exits"
@@ -54,6 +56,7 @@
 # Trust modes (auto, plan) in place of Codex's approval and sandbox
 # policies.
 "Session.mode" = "Koda's trust mode"
+"Session.confidential" = "Koda's confidential mark, so a client can show it (Codex's Thread has no memory mode field either)"
 "SessionSettings.mode" = "Koda's trust mode"
 "SessionSettingsUpdateParams.mode" = "Koda's trust mode"
 "TurnStartParams.mode" = "Koda's trust mode"

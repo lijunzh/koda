@@ -198,6 +198,11 @@ pub(crate) struct TuiContext {
     pub(crate) mcp_stale: bool,
     /// The session's goal as the host last reported it.
     pub(crate) goal: Option<koda_client::protocol::goal::Goal>,
+    /// The confidential mark this TUI last set or was told of, with the
+    /// session it is of: a `session/confidential/updated` that says the
+    /// same is this TUI's own `/confidential` coming back, and isn't said
+    /// twice.
+    pub(crate) confidential: Option<(String, bool)>,
     /// Where the host is, for reconnecting to it.
     pub(crate) backend: crate::backend::Backend,
     /// The connection to the shared server is lost and reconnecting gave
@@ -699,6 +704,7 @@ impl TuiContext {
             mcp: mcp::McpView::default(),
             mcp_stale: true,
             goal: None,
+            confidential: None,
             backend,
             offline: false,
             turn_cut: false,
@@ -1140,6 +1146,14 @@ impl TuiContext {
             .filter(|rest| rest.is_empty() || rest.starts_with(' '))
         {
             self.rename_session(name).await;
+            return CommandOutcome::Handled;
+        }
+        if let Some(arg) = input
+            .trim()
+            .strip_prefix("/confidential")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            self.mark_confidential(arg).await;
             return CommandOutcome::Handled;
         }
         if let Some(count) = input

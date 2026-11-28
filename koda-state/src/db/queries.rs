@@ -497,6 +497,7 @@ macro_rules! session_info_select {
         s.project_root, s.provider, s.base_url, s.model,
         s.source, s.originator, s.forked_from_id, s.parent_session_id, s.ephemeral,
         CAST(strftime('%s', s.archived_at) AS INTEGER) as archived_unix,
+        s.confidential,
         s.rowid as sequence
      FROM sessions s"
     };
@@ -692,8 +693,9 @@ impl SessionStore for Database {
         sqlx::query(
             "INSERT INTO sessions \
                (id, agent_name, project_root, last_accessed_at, \
-                source, originator, koda_version, parent_session_id, ephemeral) \
-             VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)",
+                source, originator, koda_version, parent_session_id, ephemeral, confidential) \
+             VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, \
+                COALESCE((SELECT p.confidential FROM sessions p WHERE p.id = ?), 0))",
         )
         .bind(&id)
         .bind(agent_name)
@@ -703,6 +705,8 @@ impl SessionStore for Database {
         .bind(env!("CARGO_PKG_VERSION"))
         .bind(origin.parent_session_id.as_deref())
         .bind(origin.ephemeral)
+        // A sub-agent's session holds parts of its parent's conversation.
+        .bind(origin.parent_session_id.as_deref())
         .execute_write(&self.pool)
         .await?;
         tracing::info!("Created session: {id} (project: {root})");
@@ -722,9 +726,10 @@ impl SessionStore for Database {
         let copied = sqlx::query(
             "INSERT INTO sessions \
                (id, agent_name, project_root, last_accessed_at, title, mode, provider, base_url, model, \
-                preview, forked_from_id, source, originator, koda_version, ephemeral) \
+                preview, forked_from_id, source, originator, koda_version, ephemeral, \
+                confidential) \
              SELECT ?, agent_name, ?, datetime('now'), ?, mode, provider, base_url, model, \
-                preview, id, ?, ?, ?, ? \
+                preview, id, ?, ?, ?, ?, confidential \
              FROM sessions WHERE id = ?",
         )
         .bind(&id)
@@ -1396,6 +1401,99 @@ impl SessionStore for Database {
 
     async fn unarchive_session(&self, session_id: &str) -> Result<Vec<String>> {
         self.set_archived(session_id, false).await
+    }
+
+    async fn set_session_confidential(
+        &self,
+        session_id: &str,
+        confidential: bool,
+    ) -> Result<Vec<String>> {
+        let mut tx = self.pool.begin_immediate().await?;
+        // The session and the sub-agents' sessions under it, as
+        // `set_archived` finds them; the session itself first.
+        let subtree: Vec<(String, bool)> = sqlx::query_as(
+            "WITH RECURSIVE subtree(id, depth) AS (
+               SELECT id, 0 FROM sessions WHERE id = ?
+               UNION
+               SELECT s.id, t.depth + 1 FROM sessions s
+                 JOIN subtree t ON s.parent_session_id = t.id
+                WHERE t.depth < 64
+             )
+             SELECT t.id, s.confidential
+               FROM subtree t JOIN sessions s ON s.id = t.id
+              GROUP BY t.id
+              ORDER BY (t.id = ?) DESC, MIN(t.depth), s.rowid",
+        )
+        .bind(session_id)
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut changed = Vec::new();
+        for (id, is) in subtree {
+            if is == confidential {
+                continue;
+            }
+            sqlx::query("UPDATE sessions SET confidential = ? WHERE id = ?")
+                .bind(confidential)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            changed.push(id);
+        }
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    async fn mark_confidential_with_forks(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session_store::ConfidentialMarked> {
+        let mut tx = self.pool.begin_immediate().await?;
+        // The session, the sub-agents' sessions under it, the sessions
+        // forked from any of those, and so on down; `fork` says a session
+        // was reached as a fork. `UNION` and a depth limit, as above.
+        let reach: Vec<(String, bool, bool, bool)> = sqlx::query_as(
+            "WITH RECURSIVE reach(id, depth, fork) AS (
+               SELECT id, 0, 0 FROM sessions WHERE id = ?
+               UNION
+               SELECT s.id, r.depth + 1, s.forked_from_id IS r.id FROM sessions s
+                 JOIN reach r ON s.parent_session_id = r.id OR s.forked_from_id = r.id
+                WHERE r.depth < 64
+             )
+             SELECT r.id, s.confidential, MAX(r.fork), s.ephemeral
+               FROM reach r JOIN sessions s ON s.id = r.id
+              GROUP BY r.id
+              ORDER BY (r.id = ?) DESC, MIN(r.depth), s.rowid",
+        )
+        .bind(session_id)
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut marked = crate::session_store::ConfidentialMarked::default();
+        for (id, is, fork, ephemeral) in reach {
+            if is {
+                continue;
+            }
+            sqlx::query("UPDATE sessions SET confidential = 1 WHERE id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            marked.forks += usize::from(fork && !ephemeral);
+            marked.sessions.push(id);
+        }
+        tx.commit().await?;
+        Ok(marked)
+    }
+
+    async fn confidential_sessions(&self) -> Result<Vec<SessionInfo>> {
+        let rows: Vec<SessionInfoRow> = sqlx::query_as(concat!(
+            session_info_select!(),
+            " WHERE s.confidential = 1
+              ORDER BY COALESCE(s.last_accessed_at, s.created_at) DESC, s.rowid DESC"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {

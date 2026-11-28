@@ -243,6 +243,12 @@ pub struct ToolExecCtx<'a> {
     /// the context.
     pub session: Option<(&'a koda_state::db::Database, &'a str)>,
 
+    /// The session whose confidential mark the tool obeys, read from the
+    /// store at each call since the mark changes while a session runs:
+    /// the session itself, or for a sub-agent its parent. `MemoryWrite`
+    /// reads it; `None` where no session is stored.
+    pub mark_session: Option<(&'a koda_state::db::Database, &'a str)>,
+
     /// The other sessions, for `SearchSessions` and `ReadSession`; `None`
     /// in a sub-agent and in a session no host opened. Other tools ignore
     /// this.
@@ -482,6 +488,7 @@ impl<'a> ToolExecCtx<'a> {
             proxy_port: None,
             socks5_port: None,
             session: None,
+            mark_session: None,
             session_archive: None,
             skill_registry,
             web_searcher: None,
@@ -627,6 +634,7 @@ mod tests {
             proxy_port: None,
             socks5_port: None,
             session: None,
+            mark_session: None,
             session_archive: None,
             skill_registry: skills,
             takes_images: false,

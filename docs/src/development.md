@@ -400,7 +400,8 @@ npm start                 # build into out/ and open the app
   launchd's minimal `PATH`. Only `PATH`: keys come from `/key`.
 - **Sessions:** the sidebar lists every folder's sessions from
   `session/list` and keeps them current from what the server sends every
-  client (`session/started`, `session/name/updated`, `session/deleted`,
+  client (`session/started`, `session/name/updated`,
+  `session/confidential/updated`, `session/deleted`,
   `session/status/changed`). Opening one is `session/resume` with its id
   alone (the relay refuses a `cwd`, `config` or `baseUrl`), so it opens in
   its own folder; the one left is unsubscribed, and a turn running in it goes

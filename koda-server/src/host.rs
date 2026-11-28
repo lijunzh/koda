@@ -22,7 +22,8 @@ use koda_protocol::ServerNotification;
 use koda_protocol::initialize::{ClientInfo, InitializeResponse, ServerInfo};
 use koda_protocol::rpc::{self, ErrorObject, RequestId, codes};
 use koda_protocol::session::{
-    SessionArchiveResponse, SessionArchivedNotification, SessionDeleteResponse,
+    SessionArchiveResponse, SessionArchivedNotification, SessionConfidentialSetParams,
+    SessionConfidentialSetResponse, SessionConfidentialUpdatedNotification, SessionDeleteResponse,
     SessionDeletedNotification, SessionListCwd, SessionListParams, SessionListResponse,
     SessionSearchParams, SessionSearchResponse, SessionSearchResult, SessionSortKey,
     SessionSourceKind, SessionStartParams, SessionStartResponse, SessionUnarchiveResponse,
@@ -351,6 +352,7 @@ fn ordered_session(request: &rpc::Request) -> Option<String> {
         "session/archive",
         "session/unarchive",
         "session/name/set",
+        "session/confidential/set",
         "session/settings/update",
         "session/compact/start",
         "session/revert",
@@ -757,6 +759,14 @@ impl Host {
             }
             ClientRequest::SessionNameSet { params, .. } => {
                 let _ = reply.send(self.set_name(params).await.and_then(to_json));
+                return;
+            }
+            ClientRequest::SessionConfidentialSet { params, .. } => {
+                let confidential = params.confidential;
+                let set = self.set_confidential(params).await;
+                self.answer_then_tell(reply, set, |session_id| {
+                    confidential_updated(session_id, confidential)
+                });
                 return;
             }
             ClientRequest::SessionFork { params, .. } => {
@@ -1233,7 +1243,9 @@ impl Host {
     /// of" its name, then open the copy as `session/resume` opens one, as
     /// Codex's `thread/fork` does. An open source first stores what it has
     /// sent, so the copy has everything its client has been told. The copy
-    /// belongs to this host's project, where it opens.
+    /// belongs to this host's project, where it opens. A confidential
+    /// session's copy is confidential, and opens only where the session
+    /// itself may ([`crate::settings::check_confidential`]).
     async fn fork_session(
         &self,
         params: koda_protocol::session::SessionForkParams,
@@ -1353,6 +1365,55 @@ impl Host {
         Ok(koda_protocol::session::SessionNameSetResponse {})
     }
 
+    /// `session/confidential/set`: mark stored session `id` confidential,
+    /// or unmark it, with the sessions of the sub-agents it ran. Marking
+    /// reaches the sessions forked from it too, which hold copies of its
+    /// text, and the answer says how many; unmarking leaves forks as they
+    /// are. Open or not, archived or not, and whoever has it open: the
+    /// mark is one value on the session's row that nothing a session
+    /// writes for itself touches, so it takes no writer lock, and a user
+    /// can mark a session another Koda process is running. A session
+    /// already as asked is answered the same, with nothing to tell.
+    /// Returns the sessions changed, for their
+    /// `session/confidential/updated`.
+    async fn set_confidential(
+        &self,
+        params: SessionConfidentialSetParams,
+    ) -> Result<(SessionConfidentialSetResponse, Vec<String>), ErrorObject> {
+        use koda_state::session_store::SessionStore;
+        let id = params.session_id;
+        self.stored(&id).await?;
+        let failed = |e: anyhow::Error| internal(format!("couldn't mark the session: {e:#}"));
+        let db = &self.context.db;
+        if !params.confidential {
+            let changed = db.set_session_confidential(&id, false).await;
+            return Ok((
+                SessionConfidentialSetResponse::default(),
+                changed.map_err(failed)?,
+            ));
+        }
+        let marked = db.mark_confidential_with_forks(&id).await.map_err(failed)?;
+        let forks_marked = u32::try_from(marked.forks).unwrap_or(u32::MAX);
+        Ok((
+            SessionConfidentialSetResponse { forks_marked },
+            marked.sessions,
+        ))
+    }
+
+    /// Tell every client that `sessions` are confidential now, or no
+    /// longer: `session/confidential/updated`, one each.
+    fn tell_confidential(&self, sessions: Vec<String>, confidential: bool) {
+        for session_id in sessions {
+            let _ = self
+                .context
+                .events
+                .send(Outgoing::Notification(confidential_updated(
+                    session_id,
+                    confidential,
+                )));
+        }
+    }
+
     /// Close session `id` if it is open here, before it is deleted or
     /// archived, as Codex shuts a loaded thread down first: its running
     /// turn stops, which withdraws the requests still waiting in it
@@ -1399,7 +1460,7 @@ impl Host {
         }
     }
 
-    /// Stored session `id`, for `session/archive` and `session/unarchive`.
+    /// Stored session `id`, for the requests that change one by its id.
     async fn stored(
         &self,
         id: &str,
@@ -1849,6 +1910,14 @@ impl Host {
             sandbox: self.context.sandbox.clone(),
         })
     }
+}
+
+/// `session/confidential/updated` for session `session_id`.
+fn confidential_updated(session_id: String, confidential: bool) -> ServerNotification {
+    ServerNotification::SessionConfidentialUpdated(SessionConfidentialUpdatedNotification {
+        session_id,
+        confidential,
+    })
 }
 
 /// A fork's name: "Fork of" what the source is called, within a name's

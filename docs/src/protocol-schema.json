@@ -3241,6 +3241,10 @@
     "Session": {
       "description": "A session: one stored conversation. Codex's `Thread`. What it's running\nwith (`model` through `instruction_sources`) is there only while it is\nopen, as from `session/start`; `session/list` gives stored sessions\nwithout it.",
       "properties": {
+        "confidential": {
+          "description": "The user marked it confidential (`session/confidential/set`), or it\nread a session that is: its text goes to no model on a remote\nprovider but its own. Koda's own; `session/confidential/updated`\nfollows each change.",
+          "type": "boolean"
+        },
         "contextWindow": {
           "description": "The context window in tokens.",
           "format": "uint64",
@@ -3463,6 +3467,55 @@
     },
     "SessionCompactStartResponse": {
       "description": "The answer to `session/compact/start`.",
+      "type": "object"
+    },
+    "SessionConfidentialSetParams": {
+      "additionalProperties": false,
+      "description": "`session/confidential/set`: mark a stored session confidential, or take\nthe mark off. Koda's own; Codex's nearest thing is\n`thread/memoryMode/set`, which keeps a thread out of memory generation\nand, like this, can be set at any time and leaves the thread usable.\n\nThe text of a confidential session is never given to a model on a\nremote provider. The model's `SearchSessions` and `ReadSession` return\nit only to a session on a local provider (LM Studio, Ollama, vLLM,\nllama.cpp), and that session becomes confidential itself; a session on\na remote provider is told only that confidential sessions exist.\n`session/resume` and `session/fork` open one on a local provider or on\nthe provider and endpoint it already has, and refuse another; in the\nsession itself a sub-agent runs only on such a model, and `MemoryWrite`\nsaves nothing. A local provider is one of those kinds at an endpoint on\nthe user's own machine or network. Marking reaches the session's\nsub-agents' sessions and the sessions already forked from it, and a\nfork made later is confidential; unmarking takes the mark off the\nsession and its sub-agents' sessions only, each fork being unmarked by\nitself. A client's own `session/list`,\n`session/read`, `session/turns/list` and `session/search` are not\naffected: the mark is about what a model is given, not what the user\nsees. It is not encryption; the session is stored as before.\n\nWorks on any stored session, open or not, archived or not, and may be\nrepeated. `session/confidential/updated` follows, one for each session\nchanged, to every client.",
+      "properties": {
+        "confidential": {
+          "description": "Whether it is confidential from now on.",
+          "type": "boolean"
+        },
+        "sessionId": {
+          "description": "The session, by its full id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "confidential"
+      ],
+      "type": "object"
+    },
+    "SessionConfidentialSetResponse": {
+      "description": "The answer to `session/confidential/set`.",
+      "properties": {
+        "forksMarked": {
+          "description": "How many forks of the session were marked with it, each told with\nits own `session/confidential/updated`. Left out when none were;\nalways so for an unmark, which leaves forks as they are.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "SessionConfidentialUpdatedNotification": {
+      "description": "`session/confidential/updated`: a session was marked confidential or\nunmarked, for every client: by `session/confidential/set`, or by Koda\nwhen a session on a local provider read a confidential session. Koda's\nown; Codex's `thread/memoryMode/set` has no notification.",
+      "properties": {
+        "confidential": {
+          "description": "Whether it is confidential now.",
+          "type": "boolean"
+        },
+        "sessionId": {
+          "description": "The session.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "confidential"
+      ],
       "type": "object"
     },
     "SessionDeleteParams": {
@@ -6591,6 +6644,14 @@
         "$ref": "#/$defs/SessionCompactStartResponse"
       }
     },
+    "session/confidential/set": {
+      "params": {
+        "$ref": "#/$defs/SessionConfidentialSetParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SessionConfidentialSetResponse"
+      }
+    },
     "session/delete": {
       "params": {
         "$ref": "#/$defs/SessionDeleteParams"
@@ -6874,6 +6935,11 @@
     "session/backgroundTerminals/exited": {
       "params": {
         "$ref": "#/$defs/BackgroundTerminalsExitedNotification"
+      }
+    },
+    "session/confidential/updated": {
+      "params": {
+        "$ref": "#/$defs/SessionConfidentialUpdatedNotification"
       }
     },
     "session/deleted": {

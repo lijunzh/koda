@@ -21,6 +21,19 @@ function Icon({ children, size = 16 }: { children: ReactNode; size?: number }) {
   );
 }
 
+/** A padlock, for a confidential session: a body with a shackle over it. */
+export const LockIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <rect x="3.5" y="7.2" width="9" height="6.3" rx="1.5" />
+    <path d="M5.6 7.2V5.4a2.4 2.4 0 0 1 4.8 0v1.8" />
+  </Icon>
+);
+/** The lock a confidential session carries in a list and beside its title, with what it means. */
+export const ConfidentialMark = ({ tip }: { tip: string }) => (
+  <span className="lock" role="img" aria-label="Confidential" title={tip} data-testid="confidential">
+    <LockIcon size={12} />
+  </span>
+);
 export const PlusIcon = () => (
   <Icon>
     <path d="M8 3v10M3 8h10" />

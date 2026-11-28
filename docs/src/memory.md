@@ -79,6 +79,10 @@ conversation:
 
 Koda will call `MemoryWrite` automatically when you ask it to remember.
 
+In a [confidential session](./sessions.md#confidential-sessions) the tool
+saves nothing and says so, because every session of the project reads
+these notes; `/memory add` still saves what you type.
+
 ## Order
 
 | File | Where | Sent |

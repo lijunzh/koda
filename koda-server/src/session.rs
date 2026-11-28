@@ -217,6 +217,8 @@ pub(crate) async fn open(
     // The session's writer lock, held while it is open (taken below for a
     // new one).
     let mut writer = None;
+    // A confidential session's own provider and endpoint.
+    let mut confidential_on = None;
     if let Some(id) = &resume {
         // By its full id, as Codex's `thread/resume` takes one: a client
         // matches a shorter one over `session/list`.
@@ -233,6 +235,9 @@ pub(crate) async fn open(
         // Before anything is written: one process writes a session at a
         // time, as Codex's `thread/resume` takes the thread's writer lock.
         writer = Some(take_writer(&db, id).await?);
+        if stored.confidential {
+            confidential_on = Some((stored.provider.clone(), stored.base_url.clone()));
+        }
         // A provider the client doesn't name is the session's own, with its
         // endpoint, whether or not it names a model; `koda exec resume
         // --model` once fell back to the host's provider.
@@ -256,6 +261,12 @@ pub(crate) async fn open(
         choice = crate::settings::with_saved(choice, &saved);
     }
     let alias = crate::settings::apply_start(&mut config, &choice, &saved.model_providers).await?;
+    // Before the provider is asked anything, and before anything is
+    // written: a confidential session (a fork's copy of one too) opens
+    // only where its text may go.
+    if let Some((provider, base_url)) = &confidential_on {
+        crate::settings::check_confidential(&config, provider.as_deref(), base_url.as_deref())?;
+    }
     crate::settings::detect_model(&mut config).await;
     // The file's effort, window, retries and timeouts, now that the
     // provider is known, before the provider is asked for its window.
@@ -1762,6 +1773,7 @@ pub(crate) fn describe(stored: &koda_state::session_store::SessionInfo) -> Sessi
         forked_from_id: stored.forked_from_id.clone(),
         parent_session_id: stored.parent_session_id.clone(),
         ephemeral: stored.ephemeral,
+        confidential: stored.confidential,
         turns: Vec::new(),
     }
 }

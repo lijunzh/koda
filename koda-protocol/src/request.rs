@@ -181,6 +181,13 @@ client_requests! {
         params: crate::session::SessionNameSetParams,
         response: crate::session::SessionNameSetResponse,
     },
+    /// Mark a stored session confidential, or unmark it: its text is then
+    /// kept from models on a remote provider. Koda's own (Codex's nearest
+    /// is `thread/memoryMode/set`). `session/confidential/updated` follows.
+    SessionConfidentialSet => "session/confidential/set" {
+        params: crate::session::SessionConfidentialSetParams,
+        response: crate::session::SessionConfidentialSetResponse,
+    },
     /// Set or change an open session's goal; `session/goal/updated`
     /// follows.
     SessionGoalSet => "session/goal/set" {

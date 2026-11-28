@@ -91,7 +91,8 @@ export function App() {
   // The sessions this window knows are archived: one opened from the
   // Archived list, or archived while the app ran. Opening one reads it.
   const archivedIds = useRef(new Set<string>());
-  // Goes up when the archive changes, for the Archived list to ask again.
+  // Goes up when the archive changes, or a session's confidential mark
+  // does, for the Archived list and a search's results to ask again.
   const [archiveTick, setArchiveTick] = useState(0);
   const listeners = useRef(new Set<Listener>());
   const subscribe = useCallback((listener: Listener) => {
@@ -148,6 +149,10 @@ export function App() {
           closeSession(id);
           setArchiveTick((n) => n + 1);
         }
+        // Its lock shows in the Archived list and in search results, which
+        // are asked for, not kept; the session list and open panes follow
+        // the message themselves.
+        if (message.method === 'session/confidential/updated') setArchiveTick((n) => n + 1);
         // Brought back: it is listed again, and a pane reading it opens it.
         if (message.method === 'session/unarchived') {
           archivedIds.current.delete(id);

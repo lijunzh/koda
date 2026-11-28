@@ -78,9 +78,9 @@ fn folder_of(path: &Path) -> &Path {
 /// transaction. They only add: an older Koda that opens a newer file runs
 /// its own checks, finds what it needs, and leaves the rest alone, as
 /// Codex's migrator ignores migrations it doesn't know.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 /// Sets [`SCHEMA_VERSION`]; a pragma takes no bound value.
-const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 3";
+const SET_SCHEMA_VERSION: &str = "PRAGMA user_version = 4";
 
 impl Database {
     /// Access the underlying connection pool (for tests and raw queries).
@@ -181,10 +181,33 @@ impl Database {
         if found < 3 {
             Self::session_archive(&mut tx).await?;
         }
+        if found < 4 {
+            Self::session_confidential(&mut tx).await?;
+        }
         if found < SCHEMA_VERSION {
             sqlx::query(SET_SCHEMA_VERSION).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Version 4: whether the user marked a session confidential, which
+    /// keeps its text from a model on a remote provider; 0 for every session
+    /// from before it. Koda's own: Codex's nearest is a thread's memory
+    /// mode (`threads.memory_mode`).
+    async fn session_confidential(conn: &mut sqlx::SqliteConnection) -> Result<()> {
+        // Checked, like version 3's: a file whose version was lost may
+        // have it already.
+        let present: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM pragma_table_info('sessions') WHERE name = 'confidential'",
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+        if present.is_none() {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN confidential INTEGER NOT NULL DEFAULT 0")
+                .execute(&mut *conn)
+                .await?;
+        }
         Ok(())
     }
 
@@ -584,6 +607,7 @@ pub(crate) struct SessionInfoRow {
     pub parent_session_id: Option<String>,
     pub ephemeral: bool,
     pub archived_unix: Option<i64>,
+    pub confidential: bool,
     pub sequence: i64,
 }
 
@@ -608,6 +632,7 @@ impl From<SessionInfoRow> for SessionInfo {
             parent_session_id: r.parent_session_id,
             ephemeral: r.ephemeral,
             archived_unix: r.archived_unix,
+            confidential: r.confidential,
             sequence: r.sequence,
         }
     }

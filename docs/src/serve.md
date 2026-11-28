@@ -179,6 +179,7 @@ Each session has its `id`, `name`, `preview` (the start of its first prompt),
 `createdAt` and `updatedAt` in Unix seconds, `cwd`, the `model` and `modelProvider`
 it last ran with, `mode`, where it came from (`source`, `originator`, the
 name its client gave in `initialize`, `forkedFromId` and `parentSessionId`),
+`confidential` when it is [marked](#marking-a-session-confidential),
 and its `status`, as Codex's `Thread.status`: `{"type": "notLoaded"}` for a
 stored session that isn't open, `{"type": "idle"}`, or `{"type": "active",
 "activeFlags": […]}` while a turn runs or an answer is waited on, with
@@ -186,11 +187,12 @@ stored session that isn't open, `{"type": "idle"}`, or `{"type": "active",
 request) and `waitingOnUserInput` (the model's question) among the flags.
 
 Every client hears `session/started`, `session/name/updated`,
+`session/confidential/updated`,
 `session/deleted`, `session/archived`, `session/unarchived` and
 `session/status/changed` for every session, as Codex
 sends them to every connection, so a list a client shows stays right when
-another client makes, renames, archives or deletes a session, and shows what
-each is doing. `koda exec --json` leaves `session/status/changed` out. A session's turns and requests go only to the clients that
+another client makes, renames, marks, archives or deletes a session, and
+shows what each is doing. `koda exec --json` leaves `session/status/changed` out. A session's turns and requests go only to the clients that
 have it open.
 
 ## Searching sessions
@@ -280,6 +282,54 @@ it back, as Codex's `thread/archive` and `thread/unarchive` do:
 
 The `Session` object has no archived field, as Codex's `Thread` has none: a
 client knows from the list it asked for and from the two notifications.
+
+## Marking a session confidential
+
+`session/confidential/set` marks a stored session confidential, or takes
+the mark off. It is Koda's own; the nearest thing in Codex is
+`thread/memoryMode/set`, which keeps a thread out of memory generation and,
+like this, is set at any time and leaves the thread usable.
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"session/confidential/set","params":{"sessionId":"<id>","confidential":true}}
+{"jsonrpc":"2.0","id":7,"result":{}}
+{"jsonrpc":"2.0","method":"session/confidential/updated","params":{"sessionId":"<id>","confidential":true}}
+```
+
+- **What it changes** is what a model is given, not what a client sees:
+  `session/list`, `session/read`, `session/turns/list` and `session/search`
+  return a confidential session as before, with `"confidential": true`
+  (the field is left out for a session that isn't). The model's
+  `SearchSessions` and `ReadSession` give its text only to a session on a
+  local provider ([Other sessions](./tools.md#other-sessions)).
+- **Any stored session,** open or not, archived or not, whoever has it
+  open. Sent again for a session already as asked, it answers the same and
+  tells nothing.
+- **Sub-agents' sessions** are marked and unmarked with it.
+- **Forks:** marking also marks the stored sessions forked from it, and
+  from those, each with its sub-agents' sessions, and the answer says how
+  many forks: `{"forksMarked": 2}` (left out when none). A fork made later
+  starts with its source's mark. Unmarking doesn't reach forks: each is
+  unmarked by its own request.
+- **`session/confidential/updated`** goes to every client, one for each
+  session changed, a fork's included. Koda sends it by itself too: a session on a local
+  provider whose model is given a confidential session's text becomes
+  confidential, before the tool's result goes to the model.
+- **A local provider** is a local kind (LM Studio, Ollama, vLLM,
+  llama.cpp) at an endpoint on the user's own machine or network
+  ([what counts](./sessions.md#what-counts-as-a-local-model)).
+- **In the session itself,** `InvokeAgent` refuses a sub-agent configured
+  for a model that is neither local nor the session's own provider and
+  endpoint, and `MemoryWrite` refuses; `session/memory/add` is the user's
+  and is not affected.
+- **`session/resume` and `session/fork`** open a confidential session on a
+  local provider, or on the provider and endpoint it already has. Another
+  remote `modelProvider`, or another `baseUrl` on its own, is refused with
+  `-32600` ("this session is confidential: it opens only on a local
+  provider or on its own (…). Unmark it first to open it there."); a
+  refused fork leaves no copy. A fork's `session` has
+  `"confidential": true`.
+- **Refused with `-32600`:** an ID that names no session.
 
 ## A session's earlier turns
 

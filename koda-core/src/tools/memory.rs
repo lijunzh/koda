@@ -110,6 +110,27 @@ fn memory_write_in(config: &Path, project_root: &Path, args: &Value) -> Result<S
     }
 }
 
+/// Why `MemoryWrite` saves nothing in a confidential session, if this is
+/// one: a note is read by every session of the project, the ones on
+/// remote providers too, so the model of a confidential session doesn't
+/// write them. The mark is read from the store at each call. The user's
+/// own `/memory add` goes another way and still works.
+async fn confidential_refusal(ctx: &ToolExecCtx<'_>) -> Option<anyhow::Error> {
+    use koda_state::session_store::SessionStore;
+    let (db, session_id) = ctx.mark_session?;
+    match db.get_session(session_id).await {
+        Ok(Some(stored)) if stored.confidential => Some(anyhow::anyhow!(
+            "This session is confidential, so MemoryWrite saves nothing: Koda's notes are read \
+             by every session of the project, including ones on remote providers. The user can \
+             save a note themselves with /memory add."
+        )),
+        Ok(_) => None,
+        Err(e) => Some(anyhow::anyhow!(
+            "Couldn't read whether this session is confidential, so nothing was saved: {e:#}"
+        )),
+    }
+}
+
 // =============================================================
 // Tool trait implementations (#1265 item 5, PR-7/N).
 //
@@ -160,7 +181,10 @@ impl Tool for MemoryWriteTool {
         ToolEffect::LocalMutation
     }
     async fn execute(&self, ctx: &ToolExecCtx<'_>, args: &serde_json::Value) -> ToolResult {
-        let r = memory_write(ctx.project_root, args).await;
+        let r = match confidential_refusal(ctx).await {
+            Some(refusal) => Err(refusal),
+            None => memory_write(ctx.project_root, args).await,
+        };
         crate::tools::wrap_result(r)
     }
 }

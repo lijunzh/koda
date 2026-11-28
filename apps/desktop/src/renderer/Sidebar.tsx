@@ -2,17 +2,18 @@
 // Search at the top; every folder's sessions, the most recently active
 // first; a mark on a session that is working or waiting for you; and a "…"
 // menu on each (also on a right-click) to open it beside another, rename,
-// fork, archive or delete it. Option-click opens a session in split view.
+// fork, mark confidential, archive or delete it; a confidential session
+// carries a lock. Option-click opens a session in split view.
 // "Archived" shows the sessions put away, to read, unarchive or delete.
 // Search narrows the list by title as you type and, under those, lists the
 // sessions in which the text was said (`search.ts`).
 import { useEffect, useRef, useState } from 'react';
 import type { Session } from '../protocol/types.gen';
 import { call } from './bridge';
-import { ArchiveIcon, GearIcon, PlusIcon, SearchIcon } from './Icons';
+import { ArchiveIcon, ConfidentialMark, GearIcon, PlusIcon, SearchIcon } from './Icons';
 import { type Entry, MenuButton, MenuList } from './Menu';
 import { answered, asking, emptyLine, failed as searchFailed, type Found, IDLE, marked, SEARCH_DELAY_MS, SEARCH_LIMIT, type SearchState, searchTerm, unshown } from './search';
-import { byFolder, folderName, type ListedSession, listedPage, type SessionsState, statusLabel, title } from './sessions';
+import { byFolder, CONFIDENTIAL_TIP, folderName, type ListedSession, listedPage, type SessionsState, statusLabel, title } from './sessions';
 
 /** How many archived sessions the list asks for: the most recent ones. */
 const ARCHIVED_SHOWN = 100;
@@ -107,8 +108,17 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
     }, SEARCH_DELAY_MS);
     return () => clearTimeout(timer);
   }, [term, archivedShown, archiveTick]);
+  // Mark a session confidential, or unmark it: in every session's menu.
+  const confidentialEntry = (session: ListedSession): Entry => ({
+    type: 'item',
+    id: 'confidential',
+    label: session.confidential ? 'Unmark confidential' : 'Mark confidential',
+    onPick: () =>
+      void call('session/confidential/set', { sessionId: session.id, confidential: !session.confidential }).catch(failed),
+  });
   const archivedEntries = (session: ListedSession): Entry[] => [
     { type: 'item', id: 'open', label: 'Open', onPick: () => onOpenArchived(session.id) },
+    confidentialEntry(session),
     {
       type: 'item',
       id: 'unarchive',
@@ -150,6 +160,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
                 >
                   <span className="found-head">
                     <span className="session-title">{title(found.session)}</span>
+                    {found.session.confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
                     <span className="session-folder">{folderName(found.session.cwd ?? null)}</span>
                   </span>
                   <span className="snippet">
@@ -185,6 +196,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
           (e: Error) => setError(e.message),
         ),
     },
+    confidentialEntry(session),
     { type: 'separator' },
     {
       type: 'item',
@@ -240,6 +252,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
                     onClick={() => onOpenArchived(session.id)}
                   >
                     <span className="session-title">{title(session)}</span>
+                    {session.confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
                     <span className="session-folder">{folderName(session.cwd)}</span>
                   </button>
                   <MenuButton label="Session actions" entries={archivedEntries(session)} className="row-menu" right>
@@ -304,6 +317,7 @@ export function Sidebar({ sessions, openIds, selectedId, canSplit, onOpen, onOpe
                       }}
                     >
                       <span className="session-title">{title(session)}</span>
+                      {session.confidential && <ConfidentialMark tip={CONFIDENTIAL_TIP} />}
                       {label === 'working' && (
                         <span className="mark working" role="img" aria-label="working" title="Working" />
                       )}
