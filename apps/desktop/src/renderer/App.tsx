@@ -42,16 +42,18 @@ export function App() {
   const [sessions, setSessions] = useState<SessionsState>(EMPTY);
   const [panes, setPanes] = useState<PaneState[]>([{ key: 0, id: null }]);
   const [focused, setFocused] = useState(0);
-  const [view, setView] = useState<View>('normal');
   const [pending, setPending] = useState<readonly Pending[]>([]);
   const [planShown, setPlanShown] = useState(true);
   const [detailsShown, setDetailsShown] = useState(true);
   const [prefs, setPrefs] = useState<Prefs>(() => loadPrefs(window.localStorage));
+  // The view the app opens in is a setting; Ctrl+O changes it for now.
+  const [view, setView] = useState<View>(prefs.view);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The theme and the width are attributes the stylesheet reads.
   useEffect(() => {
     applyPrefs(document.documentElement, prefs);
     savePrefs(window.localStorage, prefs);
+    void window.koda.setAppPrefs({ notifications: prefs.notifications, keepAwake: prefs.keepAwake }).catch(() => {});
   }, [prefs]);
   // `open` runs after awaits (a new session's dialog): it reads these, not a render's.
   const current = useRef({ panes, focused });
@@ -235,7 +237,12 @@ export function App() {
       {settingsOpen && (
         <Settings
           prefs={prefs}
-          onPrefs={setPrefs}
+          onPrefs={(next) => {
+            // A new default view shows at once.
+            if (next.view !== prefs.view) setView(next.view);
+            setPrefs(next);
+          }}
+          appVersion={status?.state === 'connected' ? status.appVersion : null}
           version={connected ? status.serverVersion : null}
           onClose={() => setSettingsOpen(false)}
         />

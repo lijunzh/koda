@@ -463,11 +463,15 @@ npm start                 # build into out/ and open the app
   main-process action (`setMode` in `src/main/sessions.ts`) after a system
   confirmation. A model picked here is the session's; it isn't saved to
   `config.toml`.
-- **Settings** (`Settings.tsx`, `prefs.ts`): the theme and the transcript
-  width are the page's own, kept in its `localStorage` and applied as
-  `data-theme` and `data-width` on the document before the first paint.
-  The dark tokens apply when the system is dark and no theme is chosen, or
-  when dark is chosen.
+- **Settings** (`Settings.tsx`, `prefs.ts`): kept in the page's
+  `localStorage`. The theme and the transcript width are applied as
+  `data-theme` and `data-width` on the document before the first paint; the
+  dark tokens apply when the system is dark and no theme is chosen, or when
+  dark is chosen. The default transcript view is the view the app starts
+  in. Notifications and "Keep computer awake" are the main process's to act
+  on: the page sends the two switches (`setAppPrefs`), and
+  `src/main/app-prefs.ts` checks their shape, gates the notifications and
+  holds Electron's `powerSaveBlocker`.
 - **The look** (`src/renderer/styles.css`): every colour, corner and gap
   comes from the tokens at the top of the file, set once for light and once
   for dark, after Claude Code's desktop app (neutral white and grey in

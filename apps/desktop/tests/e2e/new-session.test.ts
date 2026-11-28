@@ -80,7 +80,24 @@ describe.skipIf(!koda)('a new session', () => {
     expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).toBe('rgb(26, 26, 25)');
     await settings.getByRole('group', { name: 'Transcript width' }).getByRole('button', { name: 'Wide' }).click();
     expect(await page.evaluate(() => document.documentElement.dataset.width)).toBe('wide');
-    expect(await page.evaluate(() => window.localStorage.getItem('koda.prefs'))).toBe('{"theme":"dark","width":"wide"}');
+    expect(JSON.parse((await page.evaluate(() => window.localStorage.getItem('koda.prefs'))) ?? '{}')).toMatchObject({
+      theme: 'dark',
+      width: 'wide',
+    });
+    // The view the app opens in: picking one shows it at once.
+    await settings.getByRole('button', { name: 'Conversation' }).click();
+    await settings.getByRole('group', { name: 'Default transcript view' }).getByRole('button', { name: 'Verbose' }).click();
+    expect(await page.getByTestId('session-view').getAttribute('data-view')).toBe('verbose');
+    // The desktop app's switches reach the main process, which holds the computer awake.
+    await settings.getByRole('button', { name: 'Desktop app' }).click();
+    await settings.getByRole('switch', { name: 'Keep computer awake' }).click();
+    await expect
+      .poll(() => app.evaluate(({ powerSaveBlocker }) => [0, 1, 2, 3].some((id) => powerSaveBlocker.isStarted(id))))
+      .toBe(true);
+    await settings.getByRole('switch', { name: 'Keep computer awake' }).click();
+    await expect
+      .poll(() => app.evaluate(({ powerSaveBlocker }) => [0, 1, 2, 3].some((id) => powerSaveBlocker.isStarted(id))))
+      .toBe(false);
     await page.keyboard.press('Escape');
     expect(await page.getByTestId('settings').count()).toBe(0);
     // Cmd+, opens it again.

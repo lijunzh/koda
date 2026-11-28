@@ -22,6 +22,7 @@ interface KodaBridge {
   startSession(options: { folder: string; provider?: string; model?: string }): Promise<Session>;
   deleteSession(id: string): Promise<boolean>;
   setMode(id: string, mode: 'auto' | 'plan'): Promise<boolean>;
+  setAppPrefs(prefs: { notifications: boolean; keepAwake: boolean }): Promise<void>;
   replaceServer(turns: 'wait' | 'stop'): Promise<void>;
   retry(): Promise<void>;
   relaunch(): Promise<void>;

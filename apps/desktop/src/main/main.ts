@@ -9,6 +9,7 @@ import {
   dialog,
   ipcMain,
   Notification,
+  powerSaveBlocker,
   protocol,
   session,
   shell,
@@ -18,6 +19,7 @@ import {
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { answerRefusal } from './answers';
+import { appPrefs, DEFAULT_APP_PREFS, KeepAwake } from './app-prefs';
 import { Connection } from './connection';
 import type { RpcId } from './koda-client';
 import { refusal } from './relay';
@@ -164,8 +166,18 @@ async function main() {
   );
   // While the window isn't in front, say when Koda needs you or has finished,
   // as the TUI's notifications do.
+  // What Settings says of notifications and of keeping the computer awake.
+  let prefs = DEFAULT_APP_PREFS;
+  const awake = new KeepAwake(powerSaveBlocker);
+  ipcMain.handle(
+    'koda:setAppPrefs',
+    guarded((sent: unknown) => {
+      prefs = appPrefs(sent);
+      awake.set(prefs.keepAwake);
+    }),
+  );
   conn.on('messages', (batch: Array<{ method?: string; id?: unknown; params?: Record<string, unknown> }>) => {
-    if (!win || win.isFocused() || !Notification.isSupported()) return;
+    if (!prefs.notifications || !win || win.isFocused() || !Notification.isSupported()) return;
     for (const message of batch) {
       const said = notice(message);
       if (said) new Notification({ title: 'Koda', body: said }).show();
